@@ -1,0 +1,23 @@
+[
+  {
+    "objectID": "harvest-overview",
+    "title": "harvest tool - Harvest time tracking in one dispatcher",
+    "content": "The `harvest` tool talks to the tenant's connected Harvest account (api.harvestapp.com v2). One dispatcher tool: pass `action` plus that action's arguments. Actions: `list_clients`, `list_projects`, `list_task_assignments`, `list_time_entries`, `create_time_entry`, `connection_status`. All list actions accept `page` (from 1) and `per_page`, and return Harvest's envelope `{ <items>, total_entries, page, total_pages }`. If a call fails with 'No Harvest account linked', the tenant must open the Harvest app settings page and click Connect Harvest; check with `{\"action\":\"connection_status\"}` first when unsure.",
+    "category": "guide",
+    "keywords": "harvest, time tracking, timesheet, hours, clients, projects, time entries, getharvest, dispatcher, connection_status"
+  },
+  {
+    "objectID": "harvest-log-time",
+    "title": "create_time_entry - log hours to a Harvest project task",
+    "content": "Logging time needs three ids in order: (1) find the project via `{\"action\":\"list_projects\",\"is_active\":true}` (optionally filter with `client_id` from `list_clients`); (2) get a valid task for that project via `{\"action\":\"list_task_assignments\",\"project_id\":123}` - the `task.id` inside each assignment is the `task_id` to use; (3) create with `{\"action\":\"create_time_entry\",\"project_id\":123,\"task_id\":456,\"spent_date\":\"2026-07-24\",\"hours\":1.5,\"notes\":\"...\"}`. `spent_date` is YYYY-MM-DD and required. Omitting `hours` starts a RUNNING TIMER instead of a fixed entry - only omit it when the user explicitly wants a timer. A 422 from Harvest usually means the task is not assigned to that project or the project is archived; re-run list_task_assignments.",
+    "category": "reference",
+    "keywords": "create_time_entry, log time, log hours, track time, timer, spent_date, task_id, task assignment, project, 422, billable"
+  },
+  {
+    "objectID": "harvest-report-time",
+    "title": "list_time_entries - read logged hours with date filters",
+    "content": "Use `{\"action\":\"list_time_entries\",\"from\":\"2026-07-01\",\"to\":\"2026-07-24\"}` to pull logged time; filter further with `project_id`, `client_id`, or `user_id`. Dates are YYYY-MM-DD inclusive. Entries come newest-first with `hours`, `spent_date`, `notes`, and nested `project`, `client`, `task`, `user` objects, so a per-project or per-person total is a simple sum over pages - follow `total_pages` and iterate `page` when `total_entries` exceeds one page.",
+    "category": "reference",
+    "keywords": "list_time_entries, time report, hours report, timesheet summary, from, to, date range, user_id, project hours, pagination"
+  }
+]

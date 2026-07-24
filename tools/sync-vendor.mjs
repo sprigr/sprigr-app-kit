@@ -1,0 +1,199 @@
+#!/usr/bin/env node
+/**
+ * sync-vendor — mirror `packages/<pkg>/src/` → `apps/<app>/src/lib/vendor/<pkg>/`
+ *
+ * Why this exists:
+ * The marketplace build-runner installs each app's `package.json` with
+ * **npm** in a fresh sandbox, with no monorepo context — so
+ * `import { X } from "@sprigr/apps-foo"` (a `workspace:*` resolution)
+ * resolves at local dev but breaks the moment we `sprigr app publish`.
+ *
+ * The fix the repo settled on (see docs/marketplace-app-development.md):
+ * Each app vendors a *copy* of the shared package's source under
+ * `src/lib/vendor/<pkg>/`, and imports from the relative path. This
+ * script is what keeps those copies in sync.
+ *
+ * Each app opts in by declaring `sprigrVendor` in its package.json:
+ *
+ *   {
+ *     "name": "intabot",
+ *     "sprigrVendor": ["timezone-picker", "app-sdk"]
+ *   }
+ *
+ * Run modes:
+ *   pnpm sync:vendor           — mirror every package referenced by any app
+ *   pnpm sync:vendor --check   — exit 1 if any vendored copy is out of date
+ *                                (intended for CI; prevents shipping a
+ *                                drifted vendor copy by accident)
+ *   pnpm sync:vendor --pkg X   — only sync package X across all consumers
+ *
+ * The script is deliberately small + dependency-free (Node stdlib only) so
+ * it Just Works in fresh checkouts before `pnpm install`.
+ */
+import { readdirSync, readFileSync, statSync, mkdirSync, copyFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { join, relative, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const PACKAGES_DIR = join(ROOT, "packages");
+// Both your apps and the shipped reference examples vendor packages.
+const APP_ROOTS = ["apps", "examples"];
+
+const args = process.argv.slice(2);
+const CHECK_ONLY = args.includes("--check");
+const onlyIdx = args.indexOf("--pkg");
+const ONLY_PKG = onlyIdx >= 0 ? args[onlyIdx + 1] : null;
+
+/** List directory entries that are themselves directories. */
+function listDirs(parent) {
+  if (!existsSync(parent)) return [];
+  return readdirSync(parent).filter((name) => {
+    try {
+      return statSync(join(parent, name)).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
+/** Read an app's `sprigrVendor` declaration. Returns []` if none. */
+function readVendorList(appDir) {
+  const pkgPath = join(appDir, "package.json");
+  if (!existsSync(pkgPath)) return [];
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    const list = pkg.sprigrVendor;
+    if (!Array.isArray(list)) return [];
+    return list.filter((x) => typeof x === "string" && x.length > 0);
+  } catch (err) {
+    console.warn(`[sync-vendor] WARN: could not read ${pkgPath}: ${err.message}`);
+    return [];
+  }
+}
+
+/** Recursive copy of `srcDir` → `dstDir`. Replaces existing files; removes
+ * stale ones that no longer exist in source. We rebuild the dest dir
+ * entirely each sync to avoid drift from leftover files after a refactor. */
+function mirrorTree(srcDir, dstDir) {
+  if (existsSync(dstDir)) rmSync(dstDir, { recursive: true });
+  mkdirSync(dstDir, { recursive: true });
+  function walk(rel) {
+    const sPath = join(srcDir, rel);
+    const dPath = join(dstDir, rel);
+    const st = statSync(sPath);
+    if (st.isDirectory()) {
+      mkdirSync(dPath, { recursive: true });
+      for (const child of readdirSync(sPath)) walk(join(rel, child));
+    } else if (st.isFile()) {
+      copyFileSync(sPath, dPath);
+    }
+  }
+  walk("");
+}
+
+/** Compare a source tree to its vendored copy. Returns true if any byte
+ * differs (or the dest is missing files). Doesn't care about timestamps. */
+function treesEqual(srcDir, dstDir) {
+  if (!existsSync(dstDir)) return false;
+  const seen = new Set();
+  function walk(rel) {
+    const sPath = join(srcDir, rel);
+    const dPath = join(dstDir, rel);
+    const st = statSync(sPath);
+    if (st.isDirectory()) {
+      if (!existsSync(dPath)) return false;
+      for (const child of readdirSync(sPath)) {
+        seen.add(join(rel, child));
+        if (!walk(join(rel, child))) return false;
+      }
+      return true;
+    }
+    if (!existsSync(dPath)) return false;
+    return readFileSync(sPath).equals(readFileSync(dPath));
+  }
+  if (!walk("")) return false;
+  // Also fail if dst has extra files (stale vendor data) — except for the
+  // sync-script-generated VENDORED.md marker file, which doesn't exist
+  // in source by design.
+  function walkDst(rel) {
+    const p = join(dstDir, rel);
+    if (statSync(p).isDirectory()) {
+      for (const child of readdirSync(p)) {
+        if (!walkDst(join(rel, child))) return false;
+      }
+      return true;
+    }
+    const base = rel.split("/").pop();
+    if (base === "VENDORED.md") return true;
+    return existsSync(join(srcDir, rel));
+  }
+  return walkDst("");
+}
+
+const VENDOR_HEADER = (pkgName) =>
+  `// Auto-generated by tools/sync-vendor.mjs from packages/${pkgName}/.
+// DO NOT EDIT THIS COPY DIRECTLY — edit the source under packages/${pkgName}/
+// and run \`pnpm sync:vendor\` from the repo root.\n`;
+
+function syncOne(rootName, appName, pkgName) {
+  const srcDir = join(PACKAGES_DIR, pkgName, "src");
+  const dstDir = join(ROOT, rootName, appName, "src", "lib", "vendor", pkgName);
+  if (!existsSync(srcDir)) {
+    console.error(`[sync-vendor] ERROR: package "${pkgName}" has no src/ at ${srcDir}`);
+    return false;
+  }
+  if (CHECK_ONLY) {
+    const ok = treesEqual(srcDir, dstDir);
+    if (!ok) {
+      console.error(
+        `[sync-vendor] DRIFT: ${rootName}/${appName}/src/lib/vendor/${pkgName} is out of sync ` +
+          `with packages/${pkgName}/src — run \`pnpm sync:vendor\` to fix.`,
+      );
+    }
+    return ok;
+  }
+  mirrorTree(srcDir, dstDir);
+  // Drop a README so devs who click into the vendor folder understand it
+  // isn't the source of truth.
+  writeFileSync(
+    join(dstDir, "VENDORED.md"),
+    `# Vendored copy of \`packages/${pkgName}/\`\n\n` +
+      `This directory is **auto-generated** by \`tools/sync-vendor.mjs\` and\n` +
+      `mirrored from \`packages/${pkgName}/src/\` at the repo root.\n\n` +
+      `**Do not edit files in here directly.** Edit the source under\n` +
+      `\`packages/${pkgName}/src/\` and run \`pnpm sync:vendor\` from the\n` +
+      `repo root to re-mirror.\n\n` +
+      `Why vendored: the marketplace build-runner installs each app's\n` +
+      `\`package.json\` with npm in a fresh sandbox, with no monorepo\n` +
+      `context. \`workspace:*\` resolutions break at publish time. The\n` +
+      `vendor copy is the workaround.\n`,
+  );
+  console.log(
+    `[sync-vendor] OK: ${rootName}/${appName}/src/lib/vendor/${pkgName} ← packages/${pkgName}/src`,
+  );
+  return true;
+}
+
+let driftDetected = false;
+let syncedCount = 0;
+for (const rootName of APP_ROOTS) {
+  for (const appName of listDirs(join(ROOT, rootName))) {
+    const want = readVendorList(join(ROOT, rootName, appName));
+    for (const pkgName of want) {
+      if (ONLY_PKG && pkgName !== ONLY_PKG) continue;
+      const ok = syncOne(rootName, appName, pkgName);
+      if (!ok && CHECK_ONLY) driftDetected = true;
+      if (!CHECK_ONLY) syncedCount++;
+    }
+  }
+}
+
+if (CHECK_ONLY) {
+  if (driftDetected) {
+    console.error("[sync-vendor] check FAILED — vendor copies are out of date.");
+    process.exit(1);
+  }
+  console.log("[sync-vendor] check OK — every vendored copy matches its source.");
+} else {
+  console.log(`[sync-vendor] done. ${syncedCount} vendor tree(s) synced.`);
+}

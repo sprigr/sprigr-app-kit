@@ -1,0 +1,22 @@
+{
+  "name": "sprigr-app-kit",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@10.24.0",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "test": "turbo test",
+    "typecheck": "turbo typecheck",
+    "sync:vendor": "node tools/sync-vendor.mjs",
+    "sync:vendor:check": "node tools/sync-vendor.mjs --check",
+    "create:app": "node tools/create-app.mjs",
+    "bump": "node tools/bump-version.mjs",
+    "verify:local": "pnpm sync:vendor:check && node tools/check-migrations-immutable.mjs"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.6.0"
+  }
+}

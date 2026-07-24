@@ -1,0 +1,128 @@
+/*
+ * @sprigr/apps-dashboard-kit — component classes
+ *
+ * The hand-authored class layer the kit's React components rely on: buttons,
+ * pills, cards, inputs, keycaps, animations, shimmer. Depends on the token
+ * vars from tokens.css. Import order: tokens.css first, then this file.
+ */
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  border-radius: 9px;
+  font-weight: 500;
+  font-size: 13px;
+  padding: 6px 12px;
+  transition: all var(--fast) var(--ease);
+  white-space: nowrap;
+  cursor: pointer;
+  border: none;
+}
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-primary { background: var(--accent); color: #fff; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.15), 0 1px 2px rgba(79, 70, 229, 0.3); }
+.btn-primary:hover:not(:disabled) { background: var(--accent-2); transform: translateY(-0.5px); }
+.btn-ghost { color: var(--text-2); background: transparent; }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-inset); color: var(--text); }
+.btn-soft { background: var(--surface-inset); color: var(--text); }
+.btn-soft:hover:not(:disabled) { background: var(--border-strong); }
+.btn-outline { background: var(--surface); color: var(--text); border: 1px solid var(--border-strong); box-shadow: var(--shadow-sm); }
+.btn-outline:hover:not(:disabled) { background: var(--surface-2); }
+.btn-danger { background: var(--err); color: #fff; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 1px 2px rgba(220, 38, 38, 0.3); }
+.btn-danger:hover:not(:disabled) { background: #b91c1c; transform: translateY(-0.5px); }
+.btn-sm { font-size: 12px; padding: 4px 9px; border-radius: 7px; }
+
+/* Keycap */
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 500;
+  box-shadow: 0 1px 0 var(--border-strong);
+}
+.theme-dark .kbd { background: var(--surface-inset); }
+
+/* Pill */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+/* Card */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Inputs */
+.inp {
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  padding: 7px 11px;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  transition: all var(--fast) var(--ease);
+  width: 100%;
+}
+.inp:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.inp::placeholder { color: var(--text-4); }
+select.inp {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23817c76' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+}
+
+/* Grid paper backdrop for empty states */
+.gridpaper {
+  background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+
+/* Animations */
+@keyframes sk-fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes sk-fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sk-shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes sk-pulseDot { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes sk-scaleIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+@keyframes sk-slideLeft { from { transform: translateX(100%); } to { transform: translateX(0); } }
+@keyframes sk-overlayIn { from { opacity: 0; } to { opacity: 1; } }
+.anim-fade-up { animation: sk-fadeUp var(--med) var(--ease) both; }
+.anim-fade-in { animation: sk-fadeIn var(--med) var(--ease) both; }
+.anim-scale-in { animation: sk-scaleIn var(--med) var(--ease) both; }
+.anim-slide-left { animation: sk-slideLeft 260ms var(--ease) both; }
+.anim-overlay-in { animation: sk-overlayIn 180ms var(--ease) both; }
+.pulse-dot { animation: sk-pulseDot 1.8s ease-in-out infinite; }
+.shimmer {
+  background: linear-gradient(90deg, transparent, var(--surface-inset) 50%, transparent);
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .anim-fade-up, .anim-fade-in, .anim-scale-in, .anim-slide-left, .anim-overlay-in, .pulse-dot, .shimmer {
+    animation: none;
+  }
+}

@@ -1,0 +1,156 @@
+{
+  "sprigr_app": {
+    "version": "1"
+  },
+  "metadata": {
+    "name": "Harvest",
+    "slug": "harvest",
+    "version": "0.0.1",
+    "description": "Connect Harvest time tracking: list clients and projects, and read or log time entries from agent chat.",
+    "author": {
+      "name": "Sprigr Company",
+      "email": "platform@sprigr.com"
+    },
+    "category": "productivity",
+    "tags": ["time-tracking", "harvest", "timesheets", "projects", "billing"]
+  },
+  "kind": "integration",
+  "runtime": {
+    "entry": "src/app/page.tsx",
+    "tier": "ssr",
+    "framework": "next"
+  },
+  "permissions": {
+    "scopes": [
+      "tools:register"
+    ],
+    "network_domains": [
+      "id.getharvest.com",
+      "api.harvestapp.com"
+    ]
+  },
+  "secrets": [
+    {
+      "key": "HARVEST_CLIENT_ID",
+      "label": "Harvest OAuth client id",
+      "type": "secret",
+      "required": true,
+      "description": "Publisher-provided OAuth client id for the Harvest developer app (id.getharvest.com)."
+    },
+    {
+      "key": "HARVEST_CLIENT_SECRET",
+      "label": "Harvest OAuth client secret",
+      "type": "secret",
+      "required": true,
+      "description": "Publisher-provided OAuth client secret for the Harvest developer app (id.getharvest.com)."
+    }
+  ],
+  "migrations": [
+    {
+      "file": "migrations/0001_init.sql",
+      "version": 1,
+      "description": "Initial schema: settings + secrets key-value tables."
+    }
+  ],
+  "docs": [
+    { "file": "docs/tools.json" }
+  ],
+  "tools": [
+    {
+      "name": "harvest",
+      "description": "Harvest time tracking. Actions: list_clients, list_projects (optionally by client_id), list_task_assignments (billable tasks of a project; needed before creating a time entry), list_time_entries (filter by project_id/client_id/user_id/from/to dates), create_time_entry (project_id + task_id + spent_date, optional hours + notes; omit hours to start a running timer), connection_status.",
+      "handler": "src/handlers/harvest-tool.ts",
+      "idempotency": {
+        "mode": "content",
+        "actionField": "action",
+        "actions": ["create_time_entry"]
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list_clients",
+              "list_projects",
+              "list_task_assignments",
+              "list_time_entries",
+              "create_time_entry",
+              "connection_status"
+            ],
+            "description": "Which Harvest operation to run."
+          },
+          "client_id": {
+            "type": "number",
+            "description": "Harvest client id. Filter for list_projects / list_time_entries."
+          },
+          "project_id": {
+            "type": "number",
+            "description": "Harvest project id. Required for list_task_assignments and create_time_entry; filter for list_time_entries."
+          },
+          "task_id": {
+            "type": "number",
+            "description": "Harvest task id (from list_task_assignments). Required for create_time_entry."
+          },
+          "user_id": {
+            "type": "number",
+            "description": "Filter list_time_entries to one Harvest user."
+          },
+          "is_active": {
+            "type": "boolean",
+            "description": "Filter list_clients / list_projects by active state."
+          },
+          "from": {
+            "type": "string",
+            "description": "list_time_entries: only entries on or after this date (YYYY-MM-DD)."
+          },
+          "to": {
+            "type": "string",
+            "description": "list_time_entries: only entries on or before this date (YYYY-MM-DD)."
+          },
+          "spent_date": {
+            "type": "string",
+            "description": "create_time_entry: the date the time was spent (YYYY-MM-DD). Required."
+          },
+          "hours": {
+            "type": "number",
+            "description": "create_time_entry: decimal hours (e.g. 1.5). Omit to start a running timer instead."
+          },
+          "notes": {
+            "type": "string",
+            "description": "create_time_entry: free-text notes on the entry."
+          },
+          "page": {
+            "type": "number",
+            "description": "Page number for list actions (Harvest pages from 1)."
+          },
+          "per_page": {
+            "type": "number",
+            "description": "Page size for list actions (max 2000)."
+          }
+        },
+        "required": ["action"]
+      }
+    },
+    {
+      "name": "harvest_oauth_callback",
+      "description": "Dispatched by the publisher-shared OAuth bouncer after Harvest redirects with a code. Exchanges the code and persists tokens to per-install D1.",
+      "handler": "src/handlers/oauth-callback.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "redirectUri": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "redirectUri"
+        ]
+      }
+    }
+  ]
+}

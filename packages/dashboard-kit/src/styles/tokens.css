@@ -1,0 +1,181 @@
+/*
+ * @sprigr/apps-dashboard-kit — design tokens
+ *
+ * The warm-neutral + indigo Sprigr dashboard palette, typography, density,
+ * radii, shadows, and motion, as CSS custom properties. Light is the default
+ * (:root); dark is opt-in via the `.theme-dark` class on a root element.
+ *
+ * Consumption (Tailwind v4 app):
+ *   @import "tailwindcss";
+ *   @import "@sprigr/apps-dashboard-kit/styles";   // tokens + components
+ *
+ * The @theme block below registers the palette + fonts as Tailwind utilities
+ * (text-ink-3, bg-surface-2, text-accent, font-mono, …). The :root vars below
+ * stay live so dark mode + the raw var(--err-soft) / var(--row-h) usages in
+ * the kit keep working. Override --accent et al. at runtime to re-skin.
+ */
+
+:root {
+  /* Warm neutrals */
+  --bg: #f7f6f2;
+  --surface: #ffffff;
+  --surface-2: #fbfaf6;
+  --surface-inset: #f1efe8;
+  --border: rgba(17, 17, 17, 0.07);
+  --border-strong: rgba(17, 17, 17, 0.12);
+  --text: #171514;
+  --text-2: #3c3937;
+  --text-3: #817c76;
+  --text-4: #aea8a1;
+
+  /* Accent — refined indigo (override these four + paired tokens to re-skin) */
+  --accent: #4f46e5;
+  --accent-2: #6366f1;
+  --accent-soft: #eef2ff;
+  --accent-ink: #312e81;
+
+  /* Semantic */
+  --ok: #059669;
+  --ok-soft: rgba(5, 150, 105, 0.10);
+  --warn: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.10);
+  --err: #dc2626;
+  --err-soft: rgba(220, 38, 38, 0.10);
+  --info: #2563eb;
+  --info-soft: rgba(37, 99, 235, 0.10);
+
+  /* Motion */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --fast: 140ms;
+  --med: 240ms;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 0 rgba(17, 17, 17, 0.03), 0 1px 2px rgba(17, 17, 17, 0.04);
+  --shadow: 0 1px 0 rgba(17, 17, 17, 0.03), 0 2px 4px rgba(17, 17, 17, 0.04), 0 8px 24px rgba(17, 17, 17, 0.05);
+  --shadow-lg: 0 1px 0 rgba(17, 17, 17, 0.04), 0 4px 8px rgba(17, 17, 17, 0.05), 0 24px 48px rgba(17, 17, 17, 0.10);
+
+  /* Drawer width (overridable per-app / per-user pref) */
+  --drawer-w: 560px;
+}
+
+.theme-dark {
+  --bg: #0e0d0c;
+  --surface: #1a1917;
+  --surface-2: #161513;
+  --surface-inset: #242220;
+  --border: rgba(255, 255, 255, 0.06);
+  --border-strong: rgba(255, 255, 255, 0.12);
+  --text: #f4f1ec;
+  --text-2: #c9c4bc;
+  --text-3: #8a847a;
+  --text-4: #5a554e;
+  --accent-soft: rgba(99, 102, 241, 0.14);
+  --accent-ink: #c7d2fe;
+  --ok-soft: rgba(5, 150, 105, 0.16);
+  --warn-soft: rgba(217, 119, 6, 0.18);
+  --err-soft: rgba(220, 38, 38, 0.18);
+  --info-soft: rgba(37, 99, 235, 0.18);
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.4);
+  --shadow: 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 6px 12px rgba(0, 0, 0, 0.45), 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+/*
+ * Tailwind v4 theme registration. Maps the token vars to Tailwind color +
+ * font utilities so the kit's classes (text-ink-3, bg-surface-2, text-accent,
+ * bg-accent-soft, font-mono, …) resolve. Values reference the live vars above
+ * so dark mode + runtime re-skinning flow through automatically.
+ *
+ * Requires Tailwind v4 in the consuming app (this file imported AFTER
+ * `@import "tailwindcss"`). If you are not on Tailwind, the .text-ink / .bg-*
+ * fallback utilities at the bottom of this file cover the kit's color classes.
+ */
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-inset: var(--surface-inset);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-ink-2: var(--text-2);
+  --color-ink-3: var(--text-3);
+  --color-ink-4: var(--text-4);
+  --color-accent: var(--accent);
+  --color-accent-2: var(--accent-2);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-ink);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-err: var(--err);
+  --color-info: var(--info);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-serif: "Instrument Serif", ui-serif, Georgia, serif;
+}
+
+/* Base */
+html,
+body {
+  background: var(--bg);
+  color: var(--text);
+  height: 100%;
+}
+body {
+  font-family: "Inter", ui-sans-serif, system-ui;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+  margin: 0;
+}
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Density — drives DataTable row/cell sizing. Put on a dashboard root el. */
+.density-compact { --row-h: 34px; --cell-py: 6px; --cell-px: 12px; }
+.density-cozy { --row-h: 42px; --cell-py: 9px; --cell-px: 14px; }
+.density-airy { --row-h: 52px; --cell-py: 13px; --cell-px: 16px; }
+
+/* Focus ring */
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* Scrollbars */
+.scroll-thin::-webkit-scrollbar { width: 10px; height: 10px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
+.scroll-thin::-webkit-scrollbar-thumb:hover { background: var(--text-4); background-clip: padding-box; border: 3px solid transparent; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* Lock body scroll when a drawer/modal is open */
+html.modal-open { overflow: hidden; }
+
+/*
+ * Non-Tailwind fallback color utilities. Harmless duplicates of what the
+ * @theme block generates; kept so the kit's color classes still resolve in a
+ * consumer that has NOT adopted Tailwind. Safe to delete if you are on v4.
+ */
+.bg-bg { background: var(--bg); }
+.bg-surface { background: var(--surface); }
+.bg-surface-2 { background: var(--surface-2); }
+.bg-surface-inset { background: var(--surface-inset); }
+.bg-accent { background: var(--accent); }
+.bg-accent-soft { background: var(--accent-soft); }
+.text-ink { color: var(--text); }
+.text-ink-2 { color: var(--text-2); }
+.text-ink-3 { color: var(--text-3); }
+.text-ink-4 { color: var(--text-4); }
+.text-accent { color: var(--accent); }
+.text-accent-ink { color: var(--accent-ink); }
+.font-mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+.tnum { font-variant-numeric: tabular-nums; }

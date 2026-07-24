@@ -1,0 +1,12 @@
+/*
+ * @sprigr/apps-dashboard-kit — style entrypoint.
+ * Import AFTER `@import "tailwindcss";` in your app's global stylesheet:
+ *
+ *   @import "tailwindcss";
+ *   @import "@sprigr/apps-dashboard-kit/styles";
+ *
+ * (Vendored apps import the relative mirror, e.g.
+ *   @import "../lib/vendor/dashboard-kit/styles/index.css";)
+ */
+@import "./tokens.css";
+@import "./components.css";
