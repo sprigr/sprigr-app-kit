@@ -1,12 +1,12 @@
 /**
  * Harvest - per-install D1 stores.
  *
- * Thin wrappers around the vendored d1-kv package, pinned to this
+ * Thin wrappers around @sprigr/apps-d1-kv, pinned to this
  * app's table names (created by migrations/0001_init.sql).
  */
 
-import { makeSettingsStore, makeD1TokenStore } from './vendor/d1-kv';
-import type { D1Like } from './vendor/app-sdk';
+import { makeSettingsStore, makeD1TokenStore } from '@sprigr/apps-d1-kv';
+import type { D1Like } from '@sprigr/apps-app-sdk';
 
 export const settings = (db: D1Like) => makeSettingsStore({ db, table: 'harvest_settings' });
 export const tokens = (db: D1Like) => makeD1TokenStore({ db, table: 'harvest_secrets' });

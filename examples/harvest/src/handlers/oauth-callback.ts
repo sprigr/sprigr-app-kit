@@ -14,7 +14,7 @@ import { completeOAuthCallback } from '../lib/oauth';
 import { listAccounts, ACCOUNT_ID_SETTING, ACCOUNT_NAME_SETTING } from '../lib/harvest';
 import { requireClientId, requireClientSecret } from '../lib/env';
 import { getSetting, setSetting, deleteSetting } from '../lib/store';
-import { decodeState } from '../lib/vendor/app-sdk';
+import { decodeState } from '@sprigr/apps-app-sdk';
 import type { HarvestEnv } from '../lib/env';
 
 interface CallbackArgs {

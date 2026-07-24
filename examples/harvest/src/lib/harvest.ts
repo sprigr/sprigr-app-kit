@@ -13,8 +13,8 @@
  * refresh_token first).
  */
 
-import { getValidAccessToken } from './vendor/oauth-utils';
-import { fetchWithRetry } from './vendor/app-sdk';
+import { getValidAccessToken } from '@sprigr/apps-oauth-utils';
+import { fetchWithRetry } from '@sprigr/apps-app-sdk';
 import { providerConfig } from './oauth';
 import { tokens, getSetting } from './store';
 import { requireClientId, requireClientSecret } from './env';
@@ -38,7 +38,7 @@ export class HarvestApiError extends Error {
   }
 }
 
-async function accessToken(env: HarvestEnv): Promise<string> {
+export async function accessToken(env: HarvestEnv): Promise<string> {
   const config = providerConfig(requireClientId(env), requireClientSecret(env));
   return getValidAccessToken(config, tokens(env.DB));
 }

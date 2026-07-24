@@ -20,10 +20,10 @@
  *   --no-oauth  skip the OAuth files, manifest secrets, and oauth-utils
  *               vendor dependency (for apps with no third-party login)
  *
- * After generating, the script runs `tools/sync-vendor.mjs` so the
- * declared `sprigrVendor` packages are mirrored into the new app, then
- * prints the manual follow-up checklist (manifest description/scopes,
- * OAuth app registration, etc.).
+ * After generating, the script prints the manual follow-up checklist
+ * (manifest description/scopes, OAuth app registration, etc.). Shared
+ * kit code arrives as exact-pinned @sprigr/apps-* npm deps; run
+ * `pnpm install` after scaffolding to resolve them.
  *
  * Like sync-vendor.mjs this is dependency-free (Node stdlib only).
  */
@@ -77,7 +77,11 @@ const NAME =
 // Templates
 // ---------------------------------------------------------------------------
 
-const VENDORS = NO_OAUTH ? ["app-sdk", "d1-kv"] : ["app-sdk", "oauth-utils", "d1-kv"];
+// Published kit packages, consumed as exact-pinned npm deps. (Vendoring via
+// sprigrVendor + pnpm sync:vendor remains available for the unpublished UI
+// packages: dashboard-kit, timezone-picker.)
+const KIT_DEPS = NO_OAUTH ? ["app-sdk", "d1-kv"] : ["app-sdk", "oauth-utils", "d1-kv"];
+const KIT_DEP_VERSION = "0.1.0";
 
 const manifest = {
   sprigr_app: { version: "1" },
@@ -174,7 +178,6 @@ const packageJson = {
   name: SLUG,
   version: "0.0.1",
   private: true,
-  sprigrVendor: VENDORS,
   scripts: {
     build: "next build",
     dev: "next dev",
@@ -184,8 +187,9 @@ const packageJson = {
     "test:watch": "vitest",
   },
   dependencies: {
+    ...Object.fromEntries(KIT_DEPS.map((p) => [`@sprigr/apps-${p}`, KIT_DEP_VERSION])),
     "@opennextjs/cloudflare": "^1.0.0",
-    next: "15.5.18",
+    next: "15.5.21",
     react: "19.0.0",
     "react-dom": "19.0.0",
   },
@@ -358,7 +362,7 @@ const envTs = `/**
  }
  */
 
-import type { D1Like } from './vendor/app-sdk';
+import type { D1Like } from '@sprigr/apps-app-sdk';
 
 export interface ${PASCAL}Env {
   DB: D1Like;${
@@ -416,8 +420,8 @@ const storeTs = `/**
  * app's table names (created by migrations/0001_init.sql).
  */
 
-import { makeSettingsStore, makeD1TokenStore } from './vendor/d1-kv';
-import type { D1Like } from './vendor/app-sdk';
+import { makeSettingsStore, makeD1TokenStore } from '@sprigr/apps-d1-kv';
+import type { D1Like } from '@sprigr/apps-app-sdk';
 
 export const settings = (db: D1Like) => makeSettingsStore({ db, table: '${SLUG_U}_settings' });
 export const tokens = (db: D1Like) => makeD1TokenStore({ db, table: '${SLUG_U}_secrets' });
@@ -446,9 +450,9 @@ const oauthTs = `/**
  * handler.
  */
 
-import { exchangeAndPersist, type ProviderConfig, type AuthCodeResponse } from './vendor/oauth-utils';
+import { exchangeAndPersist, type ProviderConfig, type AuthCodeResponse } from '@sprigr/apps-oauth-utils';
 import { tokens } from './store';
-import type { D1Like } from './vendor/app-sdk';
+import type { D1Like } from '@sprigr/apps-app-sdk';
 
 // TODO: replace with the real ${NAME} endpoints.
 export const AUTHORIZE_URL = 'https://TODO.example.com/oauth/authorize';
@@ -545,7 +549,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { buildAuthorizeUrl } from '../../../lib/oauth';
 import { setSetting } from '../../../lib/store';
-import { encodeState, randomHex } from '../../../lib/vendor/app-sdk';
+import { encodeState, randomHex } from '@sprigr/apps-app-sdk';
 import { requireClientId } from '../../../lib/env';
 
 export const dynamic = 'force-dynamic';
@@ -612,7 +616,7 @@ const oauthCallbackHandler = `/**
 import { completeOAuthCallback } from '../lib/oauth';
 import { requireClientId, requireClientSecret } from '../lib/env';
 import { getSetting, deleteSetting } from '../lib/store';
-import { decodeState } from '../lib/vendor/app-sdk';
+import { decodeState } from '@sprigr/apps-app-sdk';
 import type { ${PASCAL}Env } from '../lib/env';
 
 interface CallbackArgs {
@@ -750,8 +754,7 @@ if (!NO_OAUTH) {
 }
 
 // Mirror the declared vendor packages into the new app.
-console.log(`[create-app] vendoring: ${VENDORS.join(", ")}`);
-execFileSync("node", [join(ROOT, "tools", "sync-vendor.mjs")], { stdio: "inherit" });
+console.log(`[create-app] kit deps (exact-pinned): ${KIT_DEPS.map((p) => `@sprigr/apps-${p}@${KIT_DEP_VERSION}`).join(", ")}`);
 
 console.log(`
 [create-app] done. apps/${SLUG} scaffolded. Next steps:

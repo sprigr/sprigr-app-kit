@@ -9,9 +9,9 @@
  * handler.
  */
 
-import { exchangeAndPersist, type ProviderConfig, type AuthCodeResponse } from './vendor/oauth-utils';
+import { exchangeAndPersist, type ProviderConfig, type AuthCodeResponse } from '@sprigr/apps-oauth-utils';
 import { tokens } from './store';
-import type { D1Like } from './vendor/app-sdk';
+import type { D1Like } from '@sprigr/apps-app-sdk';
 
 // Harvest ID OAuth2 endpoints.
 // https://help.getharvest.com/api-v2/authentication-api/authentication/authentication/

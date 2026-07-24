@@ -10,7 +10,7 @@ The deep reference for the manifest schema, runtime bindings (`env.SPRIGR.*`), a
 
 ## 0. Prerequisites
 
-1. A Sprigr publisher account and the `sprigr` CLI, logged in (`sprigr login`; credentials land in `~/.config/sprigr/credentials.json`). Reference §8.
+1. A Sprigr publisher account and the CLI: `npm install -g @sprigr/cli` (the `sprigr` binary), then `sprigr login`; credentials land in `~/.config/sprigr/credentials.json`. Reference §8.
 2. Your app slug (kebab-case, unique on the marketplace). Everything keys off it: install URLs, OAuth callback routing, tool namespacing.
 3. OAuth apps only: a developer-app registration with your external provider. You will register the Sprigr bouncer redirect URIs there (step 2 below).
 4. This kit checked out; `pnpm install` at the root. Node 20+.
@@ -23,7 +23,7 @@ The deep reference for the manifest schema, runtime bindings (`env.SPRIGR.*`), a
 
 1. **NEVER edit a migration file after a version that includes it has been published** (`apps/*/migrations/*.sql`), not even a comment. The platform records each migration's sha256 per install when it applies it; changing a byte blocks every existing install from upgrading, silently. Schema changes go in a NEW numbered file (`0002_*.sql`). While your app is unpublished, edit `0001_init.sql` freely. The guard: `pnpm verify:local` (also run it before every publish).
 2. **A publish ships nothing unless `metadata.version` moved.** `pnpm bump <slug> [patch|minor|major]` moves `sprigr-app.json` and `package.json` together.
-3. **Shared code is vendored, not workspace-imported.** The marketplace build-runner installs your app's `package.json` with plain `npm` in a sandbox: no monorepo, no `workspace:*`. Declare kit packages in your app's `package.json` `sprigrVendor` array, run `pnpm sync:vendor`, and import from the relative `src/lib/vendor/<pkg>/` mirror. `pnpm sync:vendor:check` catches drift.
+3. **Shared code arrives as exact-pinned npm deps, never `workspace:*`.** The marketplace build-runner installs your app's `package.json` with plain `npm` in a sandbox: no monorepo context, so `workspace:*` breaks at publish. The kit packages are published to npm; depend on `@sprigr/apps-<pkg>` at an **exact** version (the scaffolder does this for you). Pin exactly: the build-runner reinstalls on every install build, and a version range would roll new helper code into production without an app release. (Vendoring via `sprigrVendor` + `pnpm sync:vendor` still exists for the unpublished UI packages, dashboard-kit and timezone-picker.)
 4. **Real OAuth and per-install databases only exist on the platform.** Local `pnpm dev` is for UI iteration and typecheck; the shakedown loop is publish, install, click through (step 9).
 
 ---
@@ -36,7 +36,7 @@ A marketplace app is a **Next.js app** running on Cloudflare Workers-for-Platfor
 - `migrations/0001_init.sql`: per-install D1 schema. Every install gets its own D1 database bound as `env.DB`.
 - `src/app/`: the Next.js settings UI plus the `/oauth/start` route.
 - `src/handlers/`: modules the platform dispatches into (agent tools, the OAuth callback, scheduled jobs, webhooks).
-- `src/lib/`: your provider client, OAuth glue, and the `vendor/` mirror of kit packages.
+- `src/lib/`: your provider client and OAuth glue, on top of the `@sprigr/apps-*` npm packages.
 
 The platform provides per-install bindings at build time: `DB` (D1), every manifest `secrets[]` entry, `INSTALL_ID`, `COMPANY_ID`, `APP_SLUG`, `SPRIGR_INSTALL_TOKEN`, `SPRIGR_PLATFORM_BASE`, and (inside dispatched handlers only) the `env.SPRIGR` host object for platform callbacks (events, collections, search index, file storage, cross-app calls). Full table: reference §4.
 
@@ -81,7 +81,7 @@ Fill this in from your provider's developer docs before writing code:
 
 Register your developer app with the provider using **both** bouncer redirect URIs. If the provider allows only one redirect URI per registration, create one registration per environment and note that client id/secret then differ per environment.
 
-Client id/secret handling: declare them as manifest `secrets[]`. If you (the publisher) run one shared OAuth app for all installs, seed them once with `sprigr app set-publisher-secrets` after the first publish and mark them `"publisher_provides": true`. If each installing tenant brings their own OAuth app, leave that off; the installer pastes them in the portal.
+Client id/secret handling: declare them as manifest `secrets[]`. If you (the publisher) run one shared OAuth app for all installs, add `"publisher_provides": true` to each secret's entry in the manifest `secrets[]` array and seed the values once with `sprigr app set-publisher-secrets` after the first publish. If each installing tenant brings their own OAuth app, leave that off; the installer pastes them in the portal.
 
 > Never commit real credentials to the repo or paste them into logs. They live in the platform's secret store only.
 
@@ -95,7 +95,7 @@ pnpm create:app <slug> --kind tool --no-oauth  # pure tool app, no OAuth
 pnpm install                                   # register the new workspace package
 ```
 
-The scaffolder generates the full skeleton: manifest, `package.json` with `sprigrVendor` pre-declared, `migrations/0001_init.sql` (settings + secrets key-value tables), `src/lib/env.ts` (typed bindings with the required `CloudflareEnv` global augmentation), `src/lib/store.ts`, `src/lib/oauth.ts` stub, `src/app/oauth/start/route.ts` (environment-aware bouncer URL, CSRF minting), `src/handlers/oauth-callback.ts` (csrf verification + token exchange), a tool handler stub, a settings page, and a smoke test. It runs the vendor sync and prints a TODO checklist.
+The scaffolder generates the full skeleton: manifest, `package.json` with the kit packages exact-pinned, `migrations/0001_init.sql` (settings + secrets key-value tables), `src/lib/env.ts` (typed bindings with the required `CloudflareEnv` global augmentation), `src/lib/store.ts`, `src/lib/oauth.ts` stub, `src/app/oauth/start/route.ts` (environment-aware bouncer URL, CSRF minting), `src/handlers/oauth-callback.ts` (csrf verification + token exchange), a tool handler stub, a settings page, and a smoke test. It runs the vendor sync and prints a TODO checklist.
 
 Don't hand-copy the harvest example into a new app; scaffold, then use harvest to see how each TODO was filled for a real provider.
 
@@ -107,7 +107,7 @@ Open `apps/<slug>/sprigr-app.json`. Full schema: reference §2. Always touch:
 
 - `metadata`: description, category, tags. Agents and the marketplace listing read these.
 - `permissions.network_domains`: every host you call, including the OAuth login host. Declarative (not a runtime firewall), but the platform's inbound-OAuth SSRF guard and agent sandbox read it.
-- `secrets[]`: `<PREFIX>_CLIENT_ID`, `<PREFIX>_CLIENT_SECRET`, plus the scaffolded `INTERNAL_TRIGGER_SECRET` if you expose internal trigger routes.
+- `secrets[]`: `<PREFIX>_CLIENT_ID`, `<PREFIX>_CLIENT_SECRET`, plus an `INTERNAL_TRIGGER_SECRET` if you add internal trigger routes (the scaffolder does not generate either).
 - `tools[]`: one entry per agent-callable tool plus the `<slug>_oauth_callback` entry. Write real descriptions; agents pick tools by them.
 - `schedules[]`: the scaffolder does NOT generate one; for refresh-token providers, declare a token-refresh cron yourself (snippet in step 6d). Non-expiring-token providers skip it.
 - `docs[]`: AI-facing doc JSON files (see [examples/harvest/docs/tools.json](../examples/harvest/docs/tools.json)); the platform ingests them into a per-app search index so agents learn your tools. Authoring rules and caps: reference §2b.
@@ -138,7 +138,7 @@ Validation gotchas that reject a publish (details: reference §2):
 
 ### 6b. The kit primitives (do not reimplement these)
 
-From `src/lib/vendor/oauth-utils` ([packages/oauth-utils/src](../packages/oauth-utils/src)):
+From `@sprigr/apps-oauth-utils` ([packages/oauth-utils/src](../packages/oauth-utils/src)):
 
 - `exchangeAuthCode(config, code, opts)`: authorization code to tokens.
 - `exchangeAndPersist(config, store, code, opts)`: exchange plus race-safe persistence (refresh token written first). Returns `AuthCodeResponse { accessToken, refreshToken, expiresIn, scope? }`.
@@ -180,7 +180,7 @@ Rule: when exchanging the code, use the **bouncer's** `redirectUri` from the dis
 ### 6d. Runtime token access, refresh, disconnect
 
 - One wrapper so handlers just call `getAccessToken(env)`: build the `ProviderConfig`, hand it `getValidAccessToken(config, makeD1TokenStore(env.DB))`. See [harvest's client](../examples/harvest/src/lib/harvest.ts).
-- For refresh-token providers, declare a refresh cron in the manifest and a handler that calls your `getAccessToken(env)`; it keeps refresh tokens warm (some providers expire unused ones). The manifest entry:
+- For refresh-token providers, declare a refresh cron in the manifest and a handler that calls your `getAccessToken(env)`; it keeps refresh tokens warm (some providers expire unused ones). Worked example: harvest's `refresh_harvest_tokens` schedule + [src/handlers/refresh-tokens.ts](../examples/harvest/src/handlers/refresh-tokens.ts). The manifest entry:
 
   ```jsonc
   "schedules": [
@@ -254,7 +254,7 @@ Subsequent releases: `pnpm bump <slug> patch`, `pnpm verify:local`, publish, the
 | `state.installId === 'unknown'` at the bouncer | Stale build without the INSTALL_ID binding | Upgrade the install to rebuild |
 | Provider: redirect URI mismatch | Bouncer URL not registered (staging and prod are DIFFERENT URLs), or a stale flow | Register both; restart the flow fresh |
 | Bouncer shows `expired_or_unknown_csrf` | Replayed/stale consent link, or two parallel starts | Restart from the settings page |
-| Publish build fails to resolve an import that works locally | `workspace:*` dep or direct `packages/*` import | Vendor it: `sprigrVendor` + `pnpm sync:vendor` |
+| Publish build fails to resolve an import that works locally | `workspace:*` dep or direct `packages/*` import | Use the published `@sprigr/apps-*` npm dep (exact pin); vendor only unpublished packages |
 | `env.DB` undefined in a handler | Env rebuilt by spread | Plain property access; `Object.create(env)` to overlay |
 
 ---

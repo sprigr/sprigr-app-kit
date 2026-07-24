@@ -74,17 +74,20 @@ pnpm create:app my-tool --kind tool --no-oauth
 
 It generates the full skeleton above (manifest, configs, env typing, D1 settings/secrets tables, OAuth-through-the-bouncer plumbing, a smoke test), runs the vendor sync, and prints the follow-up checklist. Source: [`tools/create-app.mjs`](../tools/create-app.mjs).
 
-**Critical gotcha**: the marketplace build-runner installs your `package.json` with **npm** in a fresh sandbox (no monorepo context, no `workspace:*` resolution). So you **cannot import** from sibling `packages/*` directly:
+**Critical gotcha**: the marketplace build-runner installs your `package.json` with **npm** in a fresh sandbox (no monorepo context, no `workspace:*` resolution). A `workspace:*` dependency or a direct sibling `packages/*` import breaks at publish. Two consumption mechanisms work:
 
 ```ts
-// BAD — works locally with pnpm workspace, breaks on publish
-import { encodeState } from '@sprigr/apps-app-sdk';
+// GOOD (preferred) — published npm package, exact-pinned in package.json
+import { encodeState } from '@sprigr/apps-app-sdk';   // "@sprigr/apps-app-sdk": "0.1.0"
 
-// GOOD — vendored copy under src/lib/vendor/
-import { encodeState } from '../../lib/vendor/app-sdk';
+// GOOD (unpublished packages only) — vendored copy under src/lib/vendor/
+import { TimezoneSelect } from '../../lib/vendor/timezone-picker';
+
+// BAD — workspace resolution, breaks in the build-runner sandbox
+// "@sprigr/apps-app-sdk": "workspace:*"
 ```
 
-The fix we settled on: a `vendor/` folder under `src/lib/`, mirrored from `packages/` by a tooling script.
+Pin npm deps to an **exact** version: the build-runner reinstalls on every install build, so a range rolls new helper code into production installs without an app release. Vendoring (below) remains for packages not yet on npm.
 
 **Use the script — don't hand-copy:**
 
@@ -139,6 +142,7 @@ Single source of truth. Validated server-side at publish.
       "label": "Procore OAuth client_id",
       "type": "secret",                      // ALWAYS "secret", never "string" (validation rejects)
       "required": true,
+      "publisher_provides": true,            // optional: publisher seeds one shared value via `sprigr app set-publisher-secrets` instead of each installer pasting their own
       "description": "..."
     }
   ],
@@ -586,7 +590,7 @@ Workflow:
 
 ## 8. CLI / API auth
 
-CLI credentials live at `~/.config/sprigr/credentials.json`:
+Install the CLI with `npm install -g @sprigr/cli` (provides the `sprigr` binary), then `sprigr login`. CLI credentials live at `~/.config/sprigr/credentials.json`:
 ```json
 {
   "apiKey": "sk_mcp_...",

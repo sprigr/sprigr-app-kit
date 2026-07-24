@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getCloudflareContext } from '@opennextjs/cloudflare';
 import { buildAuthorizeUrl } from '../../../lib/oauth';
 import { setSetting } from '../../../lib/store';
-import { encodeState, randomHex } from '../../../lib/vendor/app-sdk';
+import { encodeState, randomHex } from '@sprigr/apps-app-sdk';
 import { requireClientId } from '../../../lib/env';
 
 export const dynamic = 'force-dynamic';
@@ -21,6 +21,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const url = new URL(req.url);
   const returnTo = url.searchParams.get('return_to') ?? undefined;
   const installId = env.INSTALL_ID ?? 'unknown';
+
+  // Refuse to restart a completed flow unless explicitly asked
+  // (?reconnect=1): a drive-by GET must not clobber a pending csrf or
+  // needlessly re-arm the flow once connected.
+  const wantsReconnect = url.searchParams.get('reconnect') === '1';
+  if (!wantsReconnect) {
+    const connected = await env.DB
+      .prepare("SELECT value FROM harvest_secrets WHERE key = 'access_token'")
+      .bind()
+      .first<{ value: string }>();
+    if (connected?.value) {
+      return NextResponse.redirect(new URL('/', req.url), 303);
+    }
+  }
 
   const csrf = randomHex(16);
   await setSetting(env.DB, 'oauth_csrf', csrf);

@@ -32,12 +32,12 @@ Then follow [docs/build-guide.md](docs/build-guide.md) from step 3 (provider fac
 ## Prerequisites
 
 - Node 20+, pnpm.
-- A Sprigr publisher account and the `sprigr` CLI, logged in.
+- A Sprigr publisher account and the CLI: `npm install -g @sprigr/cli`, then `sprigr login`.
 - For OAuth apps: a developer-app registration with your provider, with both Sprigr bouncer redirect URIs registered (`https://oauth-bouncer.sprigr.com/<slug>/oauth/callback` and the `staging-oauth-bouncer` variant).
 
 ## The two rules that save you days
 
 1. **Never edit a published migration file.** The platform ledgers each migration's hash per install; a one-byte change silently blocks every install from upgrading. New schema = new numbered migration file.
-2. **Never `workspace:*`-import shared code into an app.** The platform build runs plain `npm install` with no monorepo context. Declare `sprigrVendor` in the app's `package.json` and run `pnpm sync:vendor`.
+2. **Never `workspace:*`-import shared code into an app.** The platform build runs plain `npm install` with no monorepo context. Depend on the published `@sprigr/apps-*` packages at exact versions (the scaffolder does this); vendor only the unpublished UI packages.
 
 Both are enforced by `pnpm verify:local`.

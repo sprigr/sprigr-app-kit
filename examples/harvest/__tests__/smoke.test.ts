@@ -8,7 +8,7 @@ import { runTool } from '../src/handlers/harvest-tool';
 import { requireClientId } from '../src/lib/env';
 import { buildAuthorizeUrl, AUTHORIZE_URL, TOKEN_URL } from '../src/lib/oauth';
 import type { HarvestEnv } from '../src/lib/env';
-import type { D1Like } from '../src/lib/vendor/app-sdk';
+import type { D1Like } from '@sprigr/apps-app-sdk';
 
 /** Minimal in-memory D1 fake covering the key-value stores' SQL. */
 function fakeDb(rows: Record<string, string> = {}): D1Like {

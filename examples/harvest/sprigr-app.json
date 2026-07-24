@@ -12,7 +12,13 @@
       "email": "platform@sprigr.com"
     },
     "category": "productivity",
-    "tags": ["time-tracking", "harvest", "timesheets", "projects", "billing"]
+    "tags": [
+      "time-tracking",
+      "harvest",
+      "timesheets",
+      "projects",
+      "billing"
+    ]
   },
   "kind": "integration",
   "runtime": {
@@ -53,7 +59,9 @@
     }
   ],
   "docs": [
-    { "file": "docs/tools.json" }
+    {
+      "file": "docs/tools.json"
+    }
   ],
   "tools": [
     {
@@ -63,7 +71,9 @@
       "idempotency": {
         "mode": "content",
         "actionField": "action",
-        "actions": ["create_time_entry"]
+        "actions": [
+          "create_time_entry"
+        ]
       },
       "input_schema": {
         "type": "object",
@@ -129,7 +139,9 @@
             "description": "Page size for list actions (max 2000)."
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       }
     },
     {
@@ -151,6 +163,23 @@
           "redirectUri"
         ]
       }
+    },
+    {
+      "name": "refresh_harvest_tokens",
+      "description": "Scheduled keep-warm refresh of the stored Harvest OAuth tokens. Not intended for direct agent use.",
+      "handler": "src/handlers/refresh-tokens.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "schedules": [
+    {
+      "name": "refresh_harvest_tokens",
+      "cron": "*/45 * * * *",
+      "tool": "refresh_harvest_tokens",
+      "scope": "per_install"
     }
   ]
 }

@@ -10,7 +10,7 @@
  *     `sprigr app set-publisher-secrets`)
  */
 
-import type { D1Like } from './vendor/app-sdk';
+import type { D1Like } from '@sprigr/apps-app-sdk';
 
 export interface HarvestEnv {
   DB: D1Like;
