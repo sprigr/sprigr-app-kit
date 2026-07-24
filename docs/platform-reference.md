@@ -586,8 +586,9 @@ The **final shakedown still happens on the platform** — the full marketplace r
 
 - **Tool dispatch**: `POST http://localhost:8666/__sprigr/tool/<name>` with a JSON body invokes your handler with the platform's `{ ok: true, result }` envelope. Handlers get a real env: `DB` (per-install D1 backed by a local SQLite file under `.sprigr/dev/`, manifest migrations applied with the platform's ledger semantics), `INSTALL_ID`/`COMPANY_ID`/`APP_SLUG`, and your `secrets[]` values from `--secrets-file` → `.sprigr/dev/secrets.json` → the environment. `env.SPRIGR` throws with a pointer to the platform.
 - **Bouncer emulation (§6)**: `GET http://localhost:8666/<slug>/oauth/callback?code&state` decodes the state and dispatches `{ code, state, redirectUri, environment, installId }` to your `<slug>_oauth_callback` tool, with the real bouncer's success/failure rendering (including the inner `ok:false` check). Register the localhost callback URL on your provider's **dev** OAuth app and set `<PREFIX>_REDIRECT_URI` to it; the whole consent → csrf-verify → token-exchange → D1-persist loop then runs on your machine. `GET /dev/state?csrf=...` mints a wire-correct state blob.
+- **Local D1 seeding**: `POST /dev/sql` with `{ "sql": "...", "params": [...] }` runs a statement against the local per-install D1 — the harness doesn't serve your Next.js routes, so seed the `oauth_csrf` row your `/oauth/start` would write this way before driving the callback's success path (full recipe: build-guide step 6). Dev-only; no platform equivalent.
 
-Handlers are re-bundled per request, so edits apply without a restart. Add `.sprigr/` to the app's `.gitignore`.
+Handlers are re-bundled per request, so edits apply without a restart. The scaffolder gitignores `.sprigr/` and pins `esbuild` as a devDependency (the harness bundles handlers with it); apps scaffolded earlier need both added by hand.
 
 ### Platform workflow
 1. Edit + typecheck locally (`pnpm typecheck`); exercise handlers + OAuth with `sprigr app dev`.

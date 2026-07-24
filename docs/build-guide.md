@@ -152,9 +152,9 @@ Two facts to know up front:
 - The token store key names are fixed: `refresh_token`, `access_token`, `expires_at`. Your D1 rows hold exactly those keys (`expires_at` is the string `'never'` for non-expiring providers).
 - `exchangeAuthCode` **throws** if the token response has no `refresh_token`, unless you pass `allowNoRefreshToken: true` (the non-expiring-provider pattern above). Providers that only issue a refresh token on first consent need the forcing params on the authorize URL (`access_type=offline`, `prompt=consent` or equivalent).
 
-From `src/lib/vendor/d1-kv`: `makeD1TokenStore({ db, table })` and `makeSettingsStore({ db, table })`, D1-backed stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables.
+From `@sprigr/apps-d1-kv` (npm dep, exact-pinned by the scaffolder): `makeD1TokenStore({ db, table })` and `makeSettingsStore({ db, table })`, D1-backed stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables.
 
-From `src/lib/vendor/app-sdk`: `encodeState`/`decodeState` (the bouncer decodes YOUR state, so always build it with `encodeState`), `randomHex`, `hmacSha256Hex` + `constantTimeEqual` (webhook signatures), `fetchWithRetry` (rate-limited provider APIs).
+From `@sprigr/apps-app-sdk` (npm dep): `encodeState`/`decodeState` (the bouncer decodes YOUR state, so always build it with `encodeState`), `randomHex`, `hmacSha256Hex` + `constantTimeEqual` (webhook signatures), `fetchWithRetry` (rate-limited provider APIs).
 
 Why tokens live in D1 and not manifest secrets: manifest `secrets[]` are read-only at runtime, and refresh rotation needs writes. Per-install D1 is isolated and encrypted at rest.
 
@@ -164,7 +164,7 @@ The scaffolder generates all four with TODOs; the harvest example shows them fil
 
 **1. `src/lib/oauth.ts`** ([harvest](../examples/harvest/src/lib/oauth.ts)): the provider endpoints, `buildAuthorizeUrl` (add provider-required params: scope, audience, ...), and `completeOAuthCallback` which calls `exchangeAndPersist` and records anything refresh needs later (environment, account id).
 
-**2. `src/lib/store.ts`**: pins the vendored stores to your app's table names. Generated; rarely needs edits.
+**2. `src/lib/store.ts`**: pins the d1-kv stores to your app's table names. Generated; rarely needs edits.
 
 **3. `src/app/oauth/start/route.ts`** ([harvest](../examples/harvest/src/app/oauth/start/route.ts)): already complete from the scaffold. What it does and why:
 
@@ -231,9 +231,22 @@ sprigr app dev --dir apps/<slug>          # defaults: port 8666, install inst_lo
 It emulates the two platform pieces your backend touches, against a per-install D1 backed by a local SQLite file (`.sprigr/dev/` — gitignore it) with your manifest migrations applied:
 
 - **Tool dispatch**: `curl -X POST localhost:8666/__sprigr/tool/<name> -d '<json args>'` runs your handler with the platform's `{ ok: true, result }` envelope and a real env (`DB`, `INSTALL_ID`, your `secrets[]` from `--secrets-file` → `.sprigr/dev/secrets.json` → the environment).
-- **OAuth end to end**: register `http://localhost:8666/<slug>/oauth/callback` as a redirect URI on your provider's **dev** OAuth app and set `<PREFIX>_REDIRECT_URI` to it; the consent → csrf-verify → token-exchange → D1-persist loop then runs on your machine, with the bouncer's exact dispatch shape and failure rendering. `GET /dev/state?csrf=...` mints a state blob for driving a callback by hand.
+- **OAuth end to end**: register `http://localhost:8666/<slug>/oauth/callback` as a redirect URI on your provider's **dev** OAuth app and set `<PREFIX>_REDIRECT_URI` to it; the consent → csrf-verify → token-exchange → D1-persist loop then runs on your machine, with the bouncer's exact dispatch shape and failure rendering.
 
-Handlers re-bundle per request, so edit and re-curl without restarting. `env.SPRIGR.*` throws locally (platform-only); those code paths still need step 9.
+**Driving the callback by hand (no provider round-trip):** the harness serves your handlers, NOT your Next.js routes — so `/oauth/start` (which normally stashes the csrf) isn't reachable in dev. Seed and drive it like this:
+
+```bash
+# 1. Stash the csrf your /oauth/start route would have written:
+curl -X POST localhost:8666/dev/sql -d '{"sql":"INSERT OR REPLACE INTO <slug>_settings (key, value) VALUES (?, ?)","params":["oauth_csrf","dev-csrf-1"]}'
+# 2. Mint a matching state blob:
+curl "localhost:8666/dev/state?csrf=dev-csrf-1"
+# 3. Drive the callback with any code (fake creds -> your provider's invalid-client error proves the loop):
+curl "localhost:8666/<slug>/oauth/callback?code=x&state=<state-from-step-2>"
+```
+
+The scaffolded callback deletes `oauth_csrf` on a successful match, so re-run step 1 before each success-path attempt. `POST /dev/sql` (`{ sql, params? }`) works for any local-D1 seeding or inspection; it is dev-only, with no platform equivalent.
+
+Handlers re-bundle per request, so edit and re-curl without restarting. `env.SPRIGR.*` throws locally (platform-only); those code paths still need step 9. Apps scaffolded before esbuild was a default devDependency need `pnpm -F <slug> add -D esbuild` once (the harness bundles handlers with esbuild from your app's node_modules).
 
 ---
 
@@ -248,9 +261,9 @@ Publish stages source; builds run per-install (install or upgrade triggers a bui
 
 First-time OAuth shakedown:
 
-1. `sprigr app bouncer-status <slug>` — confirms the slug is live on the shared bouncer and prints the callback URL to register with your provider. Exit 0 means ready; the failure output names what to fix (publish missing, `<slug>_oauth_callback` tool undeclared, or app disabled).
+1. `sprigr app bouncer-status <slug>` — confirms the slug is live on the shared bouncer and prints the callback URL to register with your provider. Exit 0 means ready; the failure output names what to fix (publish missing, `<slug>_oauth_callback` tool undeclared, or app disabled). If a bouncer answers with a raw 404, that environment's bouncer predates `/status` support — check against the other environment or retry after the next platform release.
 2. Install the app from the marketplace tab of your portal. Confirm the install URL renders.
-3. Seed publisher secrets if you use them: `sprigr app set-publisher-secrets --slug <slug> <PREFIX>_CLIENT_ID=... <PREFIX>_CLIENT_SECRET=...`
+3. Seed publisher secrets if you use them: `sprigr app set-publisher-secrets <slug> --secrets '{"<PREFIX>_CLIENT_ID":"...","<PREFIX>_CLIENT_SECRET":"..."}'`
 4. Click Connect; sign in at the provider; you should land back on a bouncer success page and see the app connected.
 5. Confirm tokens landed: the settings page's connected state is the proxy for rows in `<slug>_secrets`.
 6. Exercise one tool end to end via an agent.

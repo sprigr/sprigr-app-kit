@@ -198,6 +198,10 @@ const packageJson = {
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@vitest/coverage-v8": "2.1.9",
+    // `sprigr app dev` bundles handler modules with esbuild resolved from
+    // the app's node_modules; without this pin the harness exits before
+    // binding its port.
+    esbuild: "^0.24.0",
     typescript: "^5.6.0",
     vitest: "^2.0.0",
   },
@@ -302,6 +306,8 @@ out/
 .DS_Store
 .env*
 *.tsbuildinfo
+# sprigr app dev harness state: local per-install SQLite + optional secrets file
+.sprigr/
 `;
 
 const nextEnvDts = `/// <reference types="next" />
@@ -326,8 +332,8 @@ const migration = `-- Per-install D1 schema for the ${NAME} marketplace app.
 -- D1 is allocated one-per-install by the marketplace runtime and bound
 -- as env.DB to handlers + Next.js route code.
 --
--- NOTE: this file is IMMUTABLE once shipped (see repo CLAUDE.md).
--- Schema changes go in new numbered migration files.
+-- NOTE: this file is IMMUTABLE once shipped (see the ground rules in
+-- docs/build-guide.md). Schema changes go in new numbered migration files.
 
 -- Key-value table backing the OAuth TokenStore / handler-written
 -- secrets (refresh_token, access_token, expires_at, ...).
@@ -771,8 +777,8 @@ console.log(`
        https://oauth-bouncer.sprigr.com/${SLUG}/oauth/callback
        https://staging-oauth-bouncer.sprigr.com/${SLUG}/oauth/callback
   5. Seed publisher secrets after first publish:
-       sprigr app set-publisher-secrets --slug ${SLUG} \\
-         ${ENV_PREFIX}_CLIENT_ID=... ${ENV_PREFIX}_CLIENT_SECRET=...`
+       sprigr app set-publisher-secrets ${SLUG} \\
+         --secrets '{"${ENV_PREFIX}_CLIENT_ID":"...","${ENV_PREFIX}_CLIENT_SECRET":"..."}'`
   }
   Then: pnpm -F ${SLUG} typecheck && pnpm -F ${SLUG} test && pnpm -F ${SLUG} build
 
