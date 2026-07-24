@@ -1,0 +1,47 @@
+name: release
+
+# Publishes the core packages to npm under the @sprigr scope.
+# Manual trigger only: bump the package versions in a PR first, merge,
+# then run this workflow. Already-published versions are skipped, so the
+# workflow is safe to re-run.
+#
+# Required repo secret: NPM_TOKEN (automation token with publish rights
+# on the @sprigr npm scope).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - name: Test
+        run: pnpm -r --filter './packages/*' test
+      - name: Publish (skips versions already on npm)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for pkg in app-sdk oauth-utils d1-kv sync-cursor dedup-latch webhook-registry; do
+            dir="packages/$pkg"
+            name=$(node -p "require('./$dir/package.json').name")
+            version=$(node -p "require('./$dir/package.json').version")
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "skip: $name@$version already published"
+              continue
+            fi
+            echo "publishing $name@$version"
+            (cd "$dir" && pnpm build && npm publish --access public --provenance)
+          done

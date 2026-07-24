@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.24.0",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "turbo build",
     "dev": "turbo dev",
@@ -16,6 +18,7 @@
     "verify:local": "pnpm sync:vendor:check && node tools/check-migrations-immutable.mjs"
   },
   "devDependencies": {
+    "tsup": "^8.5.1",
     "turbo": "^2.5.0",
     "typescript": "^5.6.0"
   }

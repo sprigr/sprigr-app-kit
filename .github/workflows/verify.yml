@@ -1,0 +1,28 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Vendor drift + migration immutability
+        run: pnpm verify:local
+      - name: Package tests
+        run: pnpm -r --filter './packages/*' test
+      - name: Package builds
+        run: pnpm -r --filter './packages/*' --if-present build
+      - name: Reference app
+        run: pnpm -F harvest typecheck && pnpm -F harvest test && pnpm -F harvest build
