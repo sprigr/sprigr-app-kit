@@ -3,7 +3,8 @@
  *
  * The publisher-shared OAuth bouncer receives Harvest's redirect,
  * decodes `state` to find this install, and dispatches here with
- * { code, redirectUri }. Exchanges the code, persists tokens to
+ * { code, state, redirectUri, environment, installId }. Verifies the
+ * csrf carried in `state`, exchanges the code, persists tokens to
  * per-install D1, then resolves + stores the granted Harvest account
  * id (api.harvestapp.com requires a `Harvest-Account-Id` header on
  * every call).
@@ -12,18 +13,33 @@
 import { completeOAuthCallback } from '../lib/oauth';
 import { listAccounts, ACCOUNT_ID_SETTING, ACCOUNT_NAME_SETTING } from '../lib/harvest';
 import { requireClientId, requireClientSecret } from '../lib/env';
-import { setSetting } from '../lib/store';
+import { getSetting, setSetting, deleteSetting } from '../lib/store';
+import { decodeState } from '../lib/vendor/app-sdk';
 import type { HarvestEnv } from '../lib/env';
 
 interface CallbackArgs {
   code: string;
   redirectUri: string;
+  state?: string;
 }
 
-type CallbackResult = { ok: true; account?: string } | { ok: false; reason: string };
+type CallbackResult =
+  | { ok: true; account?: string }
+  | { ok: false; reason: string; error?: string };
 
 export async function runOAuthCallback(env: HarvestEnv, args: CallbackArgs): Promise<CallbackResult> {
   try {
+    // A stale or replayed consent link must fail loudly; the bouncer
+    // surfaces `error` to the user instead of a false success page.
+    if (args.state) {
+      const { csrf } = decodeState(args.state) as { csrf?: string };
+      const expected = await getSetting(env.DB, 'oauth_csrf');
+      if (!expected || !csrf || csrf !== expected) {
+        return { ok: false, reason: 'csrf mismatch', error: 'expired_or_unknown_csrf' };
+      }
+      await deleteSetting(env.DB, 'oauth_csrf');
+    }
+
     await completeOAuthCallback({
       db: env.DB,
       clientId: requireClientId(env),

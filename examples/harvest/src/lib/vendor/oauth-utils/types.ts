@@ -24,8 +24,18 @@ export interface TokenResponse {
 /** Result of an authorization-code → tokens exchange. */
 export interface AuthCodeResponse {
   accessToken: string;
-  refreshToken: string;
-  expiresIn: number;
+  /**
+   * Null only when the provider issues no refresh token AND the caller
+   * passed `allowNoRefreshToken` (non-expiring-token providers like
+   * Todoist or GitHub OAuth apps). Otherwise always present.
+   */
+  refreshToken: string | null;
+  /**
+   * Null when the provider omits `expires_in` (non-expiring access
+   * tokens). The persistence helpers store `expires_at = 'never'` in
+   * that case and `getValidAccessToken` serves the cached token forever.
+   */
+  expiresIn: number | null;
   /**
    * Space-separated scopes the provider actually granted, when the token
    * response includes a `scope` field (Google always does). Callers that
@@ -52,4 +62,11 @@ export interface ExchangeOptions {
   redirectUri: string;
   /** Additional form-encoded body params (e.g. scope=...). */
   extra?: Record<string, string>;
+  /**
+   * Accept a token response with no `refresh_token`. Set this for
+   * providers whose access tokens never expire and that issue no
+   * refresh token (Todoist, GitHub OAuth apps). Without it, a missing
+   * refresh token is treated as a misconfigured OAuth app and throws.
+   */
+  allowNoRefreshToken?: boolean;
 }

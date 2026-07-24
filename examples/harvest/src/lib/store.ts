@@ -18,3 +18,7 @@ export async function getSetting(db: D1Like, key: string): Promise<string | null
 export async function setSetting(db: D1Like, key: string, value: string): Promise<void> {
   return settings(db).set(key, value);
 }
+
+export async function deleteSetting(db: D1Like, key: string): Promise<void> {
+  return settings(db).delete(key);
+}

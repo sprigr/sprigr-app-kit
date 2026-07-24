@@ -36,7 +36,28 @@ import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
-const base = process.argv[2] || process.env.BASE_SHA || 'origin/main';
+// Base ref for the diff: explicit argv/env wins; otherwise the first ref
+// that exists in this clone. A fresh checkout with no remote still gets a
+// working default instead of `fatal: bad revision 'origin/main'`.
+function firstExistingRef(candidates) {
+  for (const ref of candidates) {
+    try {
+      execSync(`git rev-parse --verify --quiet ${ref}`, { stdio: 'pipe' });
+      return ref;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+const base =
+  process.argv[2] ||
+  process.env.BASE_SHA ||
+  firstExistingRef(['origin/main', 'origin/master', 'main', 'master']);
+if (!base) {
+  console.error('[migrations-guard] no usable base ref (tried origin/main, origin/master, main, master); pass one explicitly: node tools/check-migrations-immutable.mjs <ref>');
+  process.exit(2);
+}
 const ALLOWLIST_PATH = 'tools/migration-ledger-renames.json';
 
 function sh(cmd) {

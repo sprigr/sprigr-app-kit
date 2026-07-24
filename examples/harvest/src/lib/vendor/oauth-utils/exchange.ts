@@ -55,21 +55,21 @@ export async function exchangeAuthCode(
   const data = (await response.json()) as {
     access_token: string;
     refresh_token?: string;
-    expires_in: number;
+    expires_in?: number;
     token_type?: string;
     scope?: string;
   };
 
-  if (!data.refresh_token) {
+  if (!data.refresh_token && !opts.allowNoRefreshToken) {
     throw new Error(
-      `No refresh token returned from ${config.provider}. Ensure the OAuth app is configured for offline access (use 'offline_access' scope or check the provider's docs).`,
+      `No refresh token returned from ${config.provider}. Ensure the OAuth app is configured for offline access (use 'offline_access' scope or check the provider's docs). If this provider issues non-expiring access tokens with no refresh token (Todoist, GitHub OAuth apps), pass allowNoRefreshToken: true.`,
     );
   }
 
   return {
     accessToken: data.access_token,
-    refreshToken: data.refresh_token,
-    expiresIn: data.expires_in,
+    refreshToken: data.refresh_token ?? null,
+    expiresIn: typeof data.expires_in === 'number' ? data.expires_in : null,
     // Granted-scope echo (space-separated). Present on Google and most
     // spec-compliant providers; absent elsewhere, so it stays optional.
     ...(typeof data.scope === 'string' && data.scope.length > 0 ? { scope: data.scope } : {}),
@@ -87,10 +87,15 @@ export async function exchangeAndPersist(
   prefix = '',
 ): Promise<AuthCodeResponse> {
   const result = await exchangeAuthCode(config, code, opts);
-  const expiresAt = Date.now() + result.expiresIn * 1000;
   // Same write-order as refreshAndPersist — refresh_token first.
-  await store.put(key(prefix, REFRESH_TOKEN_KEY), result.refreshToken);
+  if (result.refreshToken !== null) {
+    await store.put(key(prefix, REFRESH_TOKEN_KEY), result.refreshToken);
+  }
   await store.put(key(prefix, ACCESS_TOKEN_KEY), result.accessToken);
-  await store.put(key(prefix, EXPIRES_AT_KEY), String(expiresAt));
+  // Non-expiring tokens persist the explicit sentinel 'never' rather than
+  // omitting the key: a MISSING expires_at means a crashed partial write
+  // and must trigger a refresh, not an infinite cache hit.
+  const expiresAt = result.expiresIn === null ? 'never' : String(Date.now() + result.expiresIn * 1000);
+  await store.put(key(prefix, EXPIRES_AT_KEY), expiresAt);
   return result;
 }

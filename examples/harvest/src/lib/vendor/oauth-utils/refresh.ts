@@ -101,6 +101,13 @@ export async function getValidAccessToken(
   const cached = await store.get(key(prefix, ACCESS_TOKEN_KEY));
   const expiresAtStr = await store.get(key(prefix, EXPIRES_AT_KEY));
   if (cached && expiresAtStr) {
+    // 'never' = non-expiring provider token (persisted by exchangeAndPersist
+    // with allowNoRefreshToken). There is no refresh cycle; serve the cached
+    // token. If the provider revokes it, API calls 401 and the app should
+    // surface a reconnect.
+    if (expiresAtStr === 'never') {
+      return cached;
+    }
     const expiresAt = parseInt(expiresAtStr, 10);
     if (Date.now() < expiresAt - REFRESH_BUFFER_MS) {
       return cached;

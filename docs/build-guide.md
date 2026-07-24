@@ -15,7 +15,7 @@ The deep reference for the manifest schema, runtime bindings (`env.SPRIGR.*`), a
 3. OAuth apps only: a developer-app registration with your external provider. You will register the Sprigr bouncer redirect URIs there (step 2 below).
 4. This kit checked out; `pnpm install` at the root. Node 20+.
 
-> Bouncer routing for a new slug is path-based (`/<slug>/oauth/callback`); confirm with Sprigr platform support that your publisher slug is enabled for the shared bouncer before your first OAuth shakedown.
+> Bouncer routing for a new slug is path-based (`/<slug>/oauth/callback`); confirm with Sprigr platform support (platform@sprigr.com) that your publisher slug is enabled for the shared bouncer before your first OAuth shakedown.
 
 ---
 
@@ -109,7 +109,7 @@ Open `apps/<slug>/sprigr-app.json`. Full schema: reference §2. Always touch:
 - `permissions.network_domains`: every host you call, including the OAuth login host. Declarative (not a runtime firewall), but the platform's inbound-OAuth SSRF guard and agent sandbox read it.
 - `secrets[]`: `<PREFIX>_CLIENT_ID`, `<PREFIX>_CLIENT_SECRET`, plus the scaffolded `INTERNAL_TRIGGER_SECRET` if you expose internal trigger routes.
 - `tools[]`: one entry per agent-callable tool plus the `<slug>_oauth_callback` entry. Write real descriptions; agents pick tools by them.
-- `schedules[]`: keep the scaffolded token-refresh cron.
+- `schedules[]`: the scaffolder does NOT generate one; for refresh-token providers, declare a token-refresh cron yourself (snippet in step 6d). Non-expiring-token providers skip it.
 - `docs[]`: AI-facing doc JSON files (see [examples/harvest/docs/tools.json](../examples/harvest/docs/tools.json)); the platform ingests them into a per-app search index so agents learn your tools. Authoring rules and caps: reference §2b.
 
 Validation gotchas that reject a publish (details: reference §2):
@@ -133,6 +133,7 @@ Validation gotchas that reject a publish (details: reference §2):
 | One connection per install, standard refresh tokens | Install-level: the scaffold default and the harvest example. Start here. |
 | Each user/agent connects their own account | Per-actor: same primitives, but the token table keys rows by actor id, and `/oauth/start` carries the actor in the state. |
 | Short-lived access tokens with single-use rotating refresh tokens | The kit's `oauth-utils` already persists the rotated refresh token first and retries once on a stale-token race; keep your own writes in that order too. |
+| Non-expiring access token, no refresh token at all (Todoist, GitHub OAuth apps) | Pass `allowNoRefreshToken: true` to `exchangeAndPersist`; it stores `expires_at = 'never'` and `getValidAccessToken` serves the cached token without a refresh cycle. No refresh cron needed. If the provider revokes the token, API calls 401: surface a reconnect. |
 | Incremental scope expansion | Track granted scopes per connection (persist `AuthCodeResponse.scope`); pass the provider's incremental-consent param on reconnect. |
 
 ### 6b. The kit primitives (do not reimplement these)
@@ -148,8 +149,8 @@ From `src/lib/vendor/oauth-utils` ([packages/oauth-utils/src](../packages/oauth-
 
 Two facts to know up front:
 
-- The token store key names are fixed: `refresh_token`, `access_token`, `expires_at`. Your D1 rows hold exactly those keys.
-- `exchangeAuthCode` **throws** if the token response has no `refresh_token`. Providers that only issue one on first consent need the forcing params on the authorize URL (`access_type=offline`, `prompt=consent` or equivalent).
+- The token store key names are fixed: `refresh_token`, `access_token`, `expires_at`. Your D1 rows hold exactly those keys (`expires_at` is the string `'never'` for non-expiring providers).
+- `exchangeAuthCode` **throws** if the token response has no `refresh_token`, unless you pass `allowNoRefreshToken: true` (the non-expiring-provider pattern above). Providers that only issue a refresh token on first consent need the forcing params on the authorize URL (`access_type=offline`, `prompt=consent` or equivalent).
 
 From `src/lib/vendor/d1-kv`: `makeD1TokenStore({ db, table })` and `makeSettingsStore({ db, table })`, D1-backed stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables.
 
@@ -179,7 +180,15 @@ Rule: when exchanging the code, use the **bouncer's** `redirectUri` from the dis
 ### 6d. Runtime token access, refresh, disconnect
 
 - One wrapper so handlers just call `getAccessToken(env)`: build the `ProviderConfig`, hand it `getValidAccessToken(config, makeD1TokenStore(env.DB))`. See [harvest's client](../examples/harvest/src/lib/harvest.ts).
-- Keep the scaffolded refresh cron pointing at a handler that calls `getAccessToken`; it keeps refresh tokens warm (some providers expire unused ones).
+- For refresh-token providers, declare a refresh cron in the manifest and a handler that calls your `getAccessToken(env)`; it keeps refresh tokens warm (some providers expire unused ones). The manifest entry:
+
+  ```jsonc
+  "schedules": [
+    { "name": "refresh_tokens", "cron": "*/45 * * * *", "tool": "refresh_<slug>_tokens", "scope": "per_install" }
+  ]
+  ```
+
+  plus a `tools[]` entry named `refresh_<slug>_tokens` whose handler default-exports `{ refresh_<slug>_tokens: async (_args, env) => { await getAccessToken(env); return { ok: true }; } }` (catch `OAuthError` and audit failures rather than throwing). Keep `name` equal to `tool`.
 - Disconnect: best-effort revoke at the provider, then wipe the token rows. Report partial success rather than failing the wipe on a network error.
 
 ---

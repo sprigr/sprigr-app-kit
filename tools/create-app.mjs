@@ -313,8 +313,8 @@ TODO: what this app does, which third-party service it talks to, and any
 publisher-side setup (developer app registration, webhook subscriptions).
 
 Scaffolded by \`pnpm create:app\`. See
-[docs/marketplace-app-development.md](../../docs/marketplace-app-development.md)
-for the full build/publish guide.
+[docs/build-guide.md](../../docs/build-guide.md) for the full
+build/publish guide.
 `;
 
 const migration = `-- Per-install D1 schema for the ${NAME} marketplace app.
@@ -556,6 +556,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const returnTo = url.searchParams.get('return_to') ?? undefined;
   const installId = env.INSTALL_ID ?? 'unknown';
 
+  // Refuse to restart a completed flow unless explicitly asked
+  // (?reconnect=1): a drive-by GET must not clobber a pending csrf or
+  // needlessly re-arm the flow once connected.
+  const wantsReconnect = url.searchParams.get('reconnect') === '1';
+  if (!wantsReconnect) {
+    const connected = await env.DB
+      .prepare("SELECT value FROM ${SLUG_U}_secrets WHERE key = 'access_token'")
+      .bind()
+      .first<{ value: string }>();
+    if (connected?.value) {
+      return NextResponse.redirect(new URL('/', req.url), 303);
+    }
+  }
+
   const csrf = randomHex(16);
   await setSetting(env.DB, 'oauth_csrf', csrf);
 
@@ -759,6 +773,9 @@ console.log(`
   }
   Then: pnpm -F ${SLUG} typecheck && pnpm -F ${SLUG} test && pnpm -F ${SLUG} build
 
-Ship via a PR to main with a version already at 0.0.1 - publishing is
-gated on the manifest version, see docs/build-guide.md §9 (publishing).
+Publish with:
+  sprigr app validate --dir apps/${SLUG}
+  sprigr app publish  --dir apps/${SLUG}
+Subsequent releases need a version bump first (pnpm bump ${SLUG});
+see docs/build-guide.md (publishing).
 `);
