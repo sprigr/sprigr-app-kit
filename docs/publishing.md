@@ -2,9 +2,9 @@
 
 The six core packages publish to npm so apps (internal and external) can depend on them directly instead of vendoring:
 
-`@sprigr/apps-app-sdk`, `@sprigr/apps-oauth-utils`, `@sprigr/apps-d1-kv`, `@sprigr/apps-sync-cursor`, `@sprigr/apps-dedup-latch`, `@sprigr/apps-webhook-registry`
+`@sprigr/apps-app-sdk`, `@sprigr/apps-oauth-utils`, `@sprigr/apps-d1-kv`, `@sprigr/apps-sync-cursor`, `@sprigr/apps-dedup-latch`, `@sprigr/apps-webhook-registry`, `@sprigr/apps-faceted-search` (React, peer-deps react/react-dom >= 18; extra `./embed` entry)
 
-(`dashboard-kit` and `timezone-picker` stay private/vendored for now: React + CSS packaging is a separate effort.)
+(`dashboard-kit` and `timezone-picker` stay private/vendored for now: their CSS packaging is a separate effort.)
 
 ## One-time setup
 

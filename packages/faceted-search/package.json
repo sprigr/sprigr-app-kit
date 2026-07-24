@@ -1,0 +1,53 @@
+{
+  "name": "@sprigr/apps-faceted-search",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Reusable, parameterized faceted-catalog search UI for Sprigr marketplace app dashboards and agent-built static websites. Dark facet rail with live counts, chips, sub-search, range filters, pagination, skeletons. Three data sources (gateway tool, search key, custom). Ships raw TS source for the sprigrVendor pattern, plus a standalone IIFE embed build with a global mount()/unmount() API.",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./embed": {
+      "types": "./dist/embed/mount.d.ts",
+      "default": "./dist/embed/mount.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:embed": "node scripts/build-embed.mjs",
+    "check:embed": "node scripts/build-embed.mjs --check",
+    "publish:embed": "node scripts/publish-embed.mjs",
+    "build": "tsup src/index.ts embed/mount.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "react": ">=18",
+    "react-dom": ">=18"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "esbuild": "^0.24.0",
+    "jsdom": "^25.0.0",
+    "preact": "^10.24.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/faceted-search"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

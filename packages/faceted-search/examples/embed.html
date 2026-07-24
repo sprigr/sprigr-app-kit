@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Faceted search embed demo</title>
+    <style>
+      html, body { margin: 0; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <!--
+      Standalone embed demo. This page is NOT served anywhere; it exists so a
+      human (or the DOM smoke test) can see mount() drive the UI. In a real
+      static site an agent inlines dist/facet-browse.js and calls mount() with
+      a searchKey source pointed at a public search-only key.
+
+      Build the bundle first:
+        pnpm --filter @sprigr/apps-faceted-search build:embed
+    -->
+    <div id="browse"></div>
+    <script src="../dist/facet-browse.js"></script>
+    <script>
+      SprigrFacetBrowse.mount('#browse', {
+        title: 'Boardcave surfboards',
+        searchPlaceholder: 'Search shape, brand, size…',
+        source: {
+          kind: 'searchKey',
+          indexName: 'boardcave_au_BOA_products',
+          apiKey: 'REPLACE_WITH_SEARCH_ONLY_KEY',
+        },
+        facets: [
+          { attr: 'brand', label: 'Brand', searchable: true },
+          { attr: 'category', label: 'Category' },
+          { attr: 'volume_litres', label: 'Volume', numeric: true, suffix: 'L', collapsed: true },
+        ],
+        ranges: [{ attr: 'price', label: 'Price', unit: 'AUD' }],
+        sorts: [
+          { value: 'relevance', label: 'Best match' },
+          { value: 'price_asc', label: 'Price: low to high' },
+        ],
+        card: {
+          image: 'images.0.url',
+          title: 'title',
+          subtitle: 'brand',
+          primary: { attr: 'price', format: 'money', locale: 'en-AU' },
+          badges: [{ attr: 'availability', map: { in_stock: { label: 'In stock', tone: 'ok' }, sold_out: { label: 'Sold out', tone: 'err' } } }],
+          meta: [{ attr: 'volume_litres', suffix: 'L' }, { attr: 'length_cm', suffix: 'cm' }],
+          href: 'product_url',
+        },
+        theme: { '--fb-accent': '#4fc3f7', '--fb-accent-deep': '#0277bd' },
+      });
+    </script>
+  </body>
+</html>
