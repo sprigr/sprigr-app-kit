@@ -10,7 +10,9 @@ The deep reference for the manifest schema, runtime bindings (`env.SPRIGR.*`), a
 
 ## 0. Prerequisites
 
-1. A Sprigr publisher account and the CLI: `npm install -g @sprigr/cli` (the `sprigr` binary, [published on npm](https://www.npmjs.com/package/@sprigr/cli)), then `sprigr login`; credentials land in `~/.config/sprigr/credentials.json`. CLI >= 0.2.0 adds `sprigr app dev` (local harness, needs Node >= 22.5) and `sprigr app bouncer-status`; upgrade with `npm install -g @sprigr/cli@latest`. Reference §8.
+First time on Sprigr? [getting-started.md](getting-started.md) walks the full setup (machine, account, CLI, provider registration) before this guide takes over.
+
+1. A Sprigr publisher account (sign up at https://team.sprigr.com/signup; onboarding creates your workspace) and the CLI: `npm install -g @sprigr/cli` (the `sprigr` binary, [published on npm](https://www.npmjs.com/package/@sprigr/cli)), then `sprigr login`; credentials land in `~/.config/sprigr/credentials.json`. CLI >= 0.2.0 adds `sprigr app dev` (local harness, needs Node >= 22.5) and `sprigr app bouncer-status`; upgrade with `npm install -g @sprigr/cli@latest`. Reference §8.
 2. Your app slug (kebab-case, unique on the marketplace). Everything keys off it: install URLs, OAuth callback routing, tool namespacing.
 3. OAuth apps only: a developer-app registration with your external provider. You will register the Sprigr bouncer redirect URIs there (step 2 below).
 4. This kit checked out; `pnpm install` at the root. Node 20+.
