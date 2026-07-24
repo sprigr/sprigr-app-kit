@@ -10,12 +10,12 @@ The deep reference for the manifest schema, runtime bindings (`env.SPRIGR.*`), a
 
 ## 0. Prerequisites
 
-1. A Sprigr publisher account and the CLI: `npm install -g @sprigr/cli` (the `sprigr` binary), then `sprigr login`; credentials land in `~/.config/sprigr/credentials.json`. Reference §8.
+1. A Sprigr publisher account and the CLI: `npm install -g @sprigr/cli` (the `sprigr` binary, [published on npm](https://www.npmjs.com/package/@sprigr/cli)), then `sprigr login`; credentials land in `~/.config/sprigr/credentials.json`. CLI >= 0.2.0 adds `sprigr app dev` (local harness, needs Node >= 22.5) and `sprigr app bouncer-status`; upgrade with `npm install -g @sprigr/cli@latest`. Reference §8.
 2. Your app slug (kebab-case, unique on the marketplace). Everything keys off it: install URLs, OAuth callback routing, tool namespacing.
 3. OAuth apps only: a developer-app registration with your external provider. You will register the Sprigr bouncer redirect URIs there (step 2 below).
 4. This kit checked out; `pnpm install` at the root. Node 20+.
 
-> Bouncer routing for a new slug is path-based (`/<slug>/oauth/callback`); confirm with Sprigr platform support (platform@sprigr.com) that your publisher slug is enabled for the shared bouncer before your first OAuth shakedown.
+> Bouncer routing for a new slug is path-based (`/<slug>/oauth/callback`). Check it yourself with `sprigr app bouncer-status <slug>` — it reports whether the slug is registered + enabled and whether your manifest declares the `<slug>_oauth_callback` tool, and prints the exact callback URL to register with your provider (exit 0 only when ready, so CI can gate on it). Only contact platform support (platform@sprigr.com) if it reports the app as disabled.
 
 ---
 
@@ -24,7 +24,7 @@ The deep reference for the manifest schema, runtime bindings (`env.SPRIGR.*`), a
 1. **NEVER edit a migration file after a version that includes it has been published** (`apps/*/migrations/*.sql`), not even a comment. The platform records each migration's sha256 per install when it applies it; changing a byte blocks every existing install from upgrading, silently. Schema changes go in a NEW numbered file (`0002_*.sql`). While your app is unpublished, edit `0001_init.sql` freely. The guard: `pnpm verify:local` (also run it before every publish).
 2. **A publish ships nothing unless `metadata.version` moved.** `pnpm bump <slug> [patch|minor|major]` moves `sprigr-app.json` and `package.json` together.
 3. **Shared code arrives as exact-pinned npm deps, never `workspace:*`.** The marketplace build-runner installs your app's `package.json` with plain `npm` in a sandbox: no monorepo context, so `workspace:*` breaks at publish. The kit packages are published to npm; depend on `@sprigr/apps-<pkg>` at an **exact** version (the scaffolder does this for you). Pin exactly: the build-runner reinstalls on every install build, and a version range would roll new helper code into production without an app release. (Vendoring via `sprigrVendor` + `pnpm sync:vendor` still exists for the unpublished UI packages, dashboard-kit and timezone-picker.)
-4. **Real OAuth and per-install databases only exist on the platform.** Local `pnpm dev` is for UI iteration and typecheck; the shakedown loop is publish, install, click through (step 9).
+4. **The full platform runtime only exists on the platform, but handlers + the OAuth callback run locally with `sprigr app dev`.** Local `pnpm dev` is for UI iteration and typecheck; `sprigr app dev --dir apps/<slug>` (step 8) additionally runs your tool handlers and the whole OAuth callback loop against a local per-install D1 before your first publish. What still needs the platform: `env.SPRIGR.*` callbacks, webhooks/schedules dispatch, and the build pipeline — the final shakedown loop is still publish, install, click through (step 9).
 
 ---
 
@@ -220,6 +220,21 @@ pnpm -F <slug> typecheck && pnpm -F <slug> test && pnpm -F <slug> build
 pnpm verify:local     # vendor drift + migration immutability
 ```
 
+### Exercise handlers + OAuth locally with `sprigr app dev`
+
+Before your first publish, run the local harness (CLI >= 0.2.0, Node >= 22.5):
+
+```bash
+sprigr app dev --dir apps/<slug>          # defaults: port 8666, install inst_local_dev
+```
+
+It emulates the two platform pieces your backend touches, against a per-install D1 backed by a local SQLite file (`.sprigr/dev/` — gitignore it) with your manifest migrations applied:
+
+- **Tool dispatch**: `curl -X POST localhost:8666/__sprigr/tool/<name> -d '<json args>'` runs your handler with the platform's `{ ok: true, result }` envelope and a real env (`DB`, `INSTALL_ID`, your `secrets[]` from `--secrets-file` → `.sprigr/dev/secrets.json` → the environment).
+- **OAuth end to end**: register `http://localhost:8666/<slug>/oauth/callback` as a redirect URI on your provider's **dev** OAuth app and set `<PREFIX>_REDIRECT_URI` to it; the consent → csrf-verify → token-exchange → D1-persist loop then runs on your machine, with the bouncer's exact dispatch shape and failure rendering. `GET /dev/state?csrf=...` mints a state blob for driving a callback by hand.
+
+Handlers re-bundle per request, so edit and re-curl without restarting. `env.SPRIGR.*` throws locally (platform-only); those code paths still need step 9.
+
 ---
 
 ## 9. Step 7: publish and shake down
@@ -233,11 +248,12 @@ Publish stages source; builds run per-install (install or upgrade triggers a bui
 
 First-time OAuth shakedown:
 
-1. Install the app from the marketplace tab of your portal. Confirm the install URL renders.
-2. Seed publisher secrets if you use them: `sprigr app set-publisher-secrets --slug <slug> <PREFIX>_CLIENT_ID=... <PREFIX>_CLIENT_SECRET=...`
-3. Click Connect; sign in at the provider; you should land back on a bouncer success page and see the app connected.
-4. Confirm tokens landed: the settings page's connected state is the proxy for rows in `<slug>_secrets`.
-5. Exercise one tool end to end via an agent.
+1. `sprigr app bouncer-status <slug>` — confirms the slug is live on the shared bouncer and prints the callback URL to register with your provider. Exit 0 means ready; the failure output names what to fix (publish missing, `<slug>_oauth_callback` tool undeclared, or app disabled).
+2. Install the app from the marketplace tab of your portal. Confirm the install URL renders.
+3. Seed publisher secrets if you use them: `sprigr app set-publisher-secrets --slug <slug> <PREFIX>_CLIENT_ID=... <PREFIX>_CLIENT_SECRET=...`
+4. Click Connect; sign in at the provider; you should land back on a bouncer success page and see the app connected.
+5. Confirm tokens landed: the settings page's connected state is the proxy for rows in `<slug>_secrets`.
+6. Exercise one tool end to end via an agent.
 
 Subsequent releases: `pnpm bump <slug> patch`, `pnpm verify:local`, publish, then upgrade installs (portal Upgrade banner or the upgrade endpoint).
 

@@ -578,19 +578,35 @@ Common failure modes:
 
 ## 7. Local dev
 
-`sprigr-apps` is set up for local dev but the **real shakedown happens on staging** (per `sprigr-team`'s `.claude/CLAUDE.md`):
-- The marketplace runtime (WFP dispatch, build-runner container, oauth-bouncer) only exists on Cloudflare infra.
-- `pnpm dev` in `apps/<slug>/` runs Next.js locally for typecheck + style iteration, but the OAuth flow + per-install D1 won't work.
+The **final shakedown still happens on the platform** — the full marketplace runtime (WFP dispatch, build-runner container, `env.SPRIGR` platform callbacks) only exists on Cloudflare infra, and `pnpm dev` in `apps/<slug>/` runs Next.js locally with no `env.DB` or platform bindings. But since CLI 0.2.0, handlers and the OAuth callback run locally first:
 
-Workflow:
-1. Edit + typecheck locally (`pnpm typecheck`).
+### `sprigr app dev` — exercise handlers + OAuth callback before first publish
+
+`sprigr app dev --dir apps/<slug>` (Node >= 22.5) runs a local harness emulating the two platform pieces your backend touches:
+
+- **Tool dispatch**: `POST http://localhost:8666/__sprigr/tool/<name>` with a JSON body invokes your handler with the platform's `{ ok: true, result }` envelope. Handlers get a real env: `DB` (per-install D1 backed by a local SQLite file under `.sprigr/dev/`, manifest migrations applied with the platform's ledger semantics), `INSTALL_ID`/`COMPANY_ID`/`APP_SLUG`, and your `secrets[]` values from `--secrets-file` → `.sprigr/dev/secrets.json` → the environment. `env.SPRIGR` throws with a pointer to the platform.
+- **Bouncer emulation (§6)**: `GET http://localhost:8666/<slug>/oauth/callback?code&state` decodes the state and dispatches `{ code, state, redirectUri, environment, installId }` to your `<slug>_oauth_callback` tool, with the real bouncer's success/failure rendering (including the inner `ok:false` check). Register the localhost callback URL on your provider's **dev** OAuth app and set `<PREFIX>_REDIRECT_URI` to it; the whole consent → csrf-verify → token-exchange → D1-persist loop then runs on your machine. `GET /dev/state?csrf=...` mints a wire-correct state blob.
+
+Handlers are re-bundled per request, so edits apply without a restart. Add `.sprigr/` to the app's `.gitignore`.
+
+### Platform workflow
+1. Edit + typecheck locally (`pnpm typecheck`); exercise handlers + OAuth with `sprigr app dev`.
 2. `sprigr app publish --dir apps/<slug>` (or via the platform MCP `publish_version`).
-3. `POST /install/upgrade` to bump existing installs.
-4. Verify on `https://<slug>-<id>.staging-apps.sprigr.com/`.
+3. `sprigr app bouncer-status <slug>` — self-serve check that the slug is live on the shared bouncer (registered + enabled + `<slug>_oauth_callback` declared) and prints the exact callback URL to register with the provider. Exit code gates CI.
+4. `POST /install/upgrade` to bump existing installs.
+5. Verify on `https://<slug>-<id>.staging-apps.sprigr.com/`.
 
 ## 8. CLI / API auth
 
-Install the CLI with `npm install -g @sprigr/cli` (provides the `sprigr` binary), then `sprigr login`. CLI credentials live at `~/.config/sprigr/credentials.json`:
+The `sprigr` binary ships as [`@sprigr/cli` on npm](https://www.npmjs.com/package/@sprigr/cli). Node >= 20 (>= 22.5 for `sprigr app dev`).
+
+```bash
+npm install -g @sprigr/cli    # or one-off: npx @sprigr/cli <command>
+sprigr login                  # browser flow
+sprigr --help                 # full command list
+```
+
+`sprigr app dev` and `sprigr app bouncer-status` need CLI >= 0.2.0 (`npm install -g @sprigr/cli@latest` to upgrade). Command map: `login` / `logout` / `whoami` (auth), `app validate|dev|publish|bouncer-status|upgrade|install|share|set-publisher-secrets|delete` (marketplace apps), `deploy` / `pull` / `builds list|get` (tenant sites). CLI credentials live at `~/.config/sprigr/credentials.json`:
 ```json
 {
   "apiKey": "sk_mcp_...",
