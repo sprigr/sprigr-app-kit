@@ -5,8 +5,7 @@
  * that genuinely need operator re-auth from transient blips (rotation
  * race, 5xx, network) that should be retried without nagging the user.
  *
- * Modeled on the simPRO classifier in sprigr-team
- * (packages/auth/src/errors.ts), kept generic so the same shape covers
+ * Modeled on the Sprigr platform's simPRO error classifier, kept generic so the same shape covers
  * Procore and any future OAuth provider an app in this repo wraps.
  */
 

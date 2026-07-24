@@ -48,7 +48,7 @@ export type {
  * per-integration forwarder.
  *
  * Mirrors the platform-side `MarketplaceEventSourceIntegration`
- * type in sprigr-team `packages/shared/src/types/queue.ts`. Keep
+ * type in the Sprigr platform source. Keep
  * the field set + nullability in sync — the queue-consumer's
  * marketplace-event-handler reads these unconditionally on the
  * dispatch path, so a missing `integrationId` or `integrationType`
@@ -92,8 +92,7 @@ export interface MarketplaceEventEmitOpts {
 
 /**
  * Options for `env.SPRIGR.data.search`. Mirrors the platform's
- * /internal/wfp/data/search body (sprigr-team
- * workers/provisioning/src/wfp-data.ts). All fields optional; an
+ * /internal/wfp/data/search body (the platform provisioning worker). All fields optional; an
  * empty call returns the first page of everything.
  */
 export interface SprigrDataSearchOpts {
@@ -160,7 +159,7 @@ export interface SprigrDataApi {
 
 /**
  * Durable app file storage exposed on `env.SPRIGR.files` by the platform
- * wrapper (sprigr-team build-runner). Persists bytes into the install's
+ * wrapper (the platform build-runner). Persists bytes into the install's
  * contained R2 namespace (every key is confined server-side to
  * `_apps/{installId}/...`, so an app can only ever touch its own files) and
  * mints signed, time-limited download URLs.

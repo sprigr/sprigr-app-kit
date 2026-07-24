@@ -3,8 +3,7 @@
  */
 
 /**
- * Persistence backend for OAuth tokens. Mirrors `KVStore` from
- * sprigr-team but stays binding-agnostic so the marketplace app can
+ * Persistence backend for OAuth tokens. Mirrors the Sprigr platform's `KVStore` shape but stays binding-agnostic so the marketplace app can
  * back it with whatever the runtime exposes (today: per-install D1;
  * future: env.SECRETS when the runtime ships handler-side secret
  * rotation).

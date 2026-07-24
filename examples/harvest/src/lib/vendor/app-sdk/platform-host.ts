@@ -13,10 +13,8 @@
  *   - staging : https://staging-webhooks.sprigr.com
  *
  * The marketplace build-runner already injects this value as
- * `env.SPRIGR_PLATFORM_BASE` on every per-install WFP upload (see
- * sprigr-team `packages/shared/src/utils/cf-resources.ts` +
- * `workers/build-runner/src/site-resources.ts` +
- * `packages/db/src/queries/marketplace-install-bridge.ts`). Apps
+ * `env.SPRIGR_PLATFORM_BASE` on every per-install WFP upload (platform
+ * build-runner). Apps
  * just need to read it.
  *
  * The bug this prevents:

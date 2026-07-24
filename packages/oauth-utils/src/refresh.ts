@@ -1,8 +1,8 @@
 /**
  * @sprigr/apps-oauth-utils — race-safe OAuth refresh.
  *
- * Seeded from sprigr-team's packages/auth/src/simpro.ts. The race-safety
- * pattern there is hard-won; we preserve it intact and just generalise
+ * Seeded from the Sprigr platform's battle-tested simPRO auth
+ * implementation. The race-safety pattern there is hard-won; we preserve it intact and just generalise
  * over the provider config.
  *
  * Concurrency model:
@@ -17,7 +17,7 @@
  *     rotated), retry once. On second failure: bubble.
  *
  * NOTE: this module deliberately does NOT depend on a Durable-Object
- * single-flight coordinator. The simPRO impl in sprigr-team uses one
+ * single-flight coordinator. The platform-internal simPRO impl uses one
  * for cross-isolate coalescing; a marketplace app's per-install WFP
  * script runs as a small number of isolates and the inline retry
  * recovers from the rare race. If we hit production races, add a

@@ -15,7 +15,7 @@
  * per-user audit) must read identity from `args.actor` only — body fields
  * are agent-supplied and spoofable.
  *
- * Wired in sprigr-team commit abc489e0 ([#1370]).
+ * Wired in the platform dispatch wrapper.
  */
 export interface Actor {
   /** Calling agent's id. Always present when dispatch is agent-initiated. */
