@@ -10,28 +10,21 @@ or Enter), loading skeletons, empty/error states, responsive collapse, and real
 prev/next pagination. Extracted from the realestate app's SearchApp so every app
 stops re-implementing the same catalog UI.
 
-Ships raw TypeScript source (consumed via the `sprigrVendor` pattern) plus a
-standalone IIFE embed build for static sites.
+Published to npm as compiled ESM + type declarations, plus a standalone IIFE
+embed build for static sites.
 
 ## Install (in an app)
 
-Declare the vendor and sync:
-
 ```jsonc
-// apps/<slug>/package.json
-{ "sprigrVendor": ["faceted-search"] }
+// apps/<slug>/package.json  — exact pin, no range (the marketplace
+// build-runner reinstalls per install build; a range would roll new
+// UI code into production without an app release)
+{ "dependencies": { "@sprigr/apps-faceted-search": "0.1.0" } }
 ```
-
-```bash
-pnpm sync:vendor
-```
-
-Then import from the vendored path (never from `@sprigr/apps-faceted-search`
-directly - the build-runner has no workspace context):
 
 ```tsx
-import { FacetBrowse } from '../lib/vendor/faceted-search';
-import type { FacetBrowseConfig } from '../lib/vendor/faceted-search';
+import { FacetBrowse } from '@sprigr/apps-faceted-search';
+import type { FacetBrowseConfig } from '@sprigr/apps-faceted-search';
 ```
 
 React is a peer dependency (`react` and, for the embed, `react-dom`).
