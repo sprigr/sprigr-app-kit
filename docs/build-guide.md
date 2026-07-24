@@ -110,7 +110,7 @@ Open `apps/<slug>/sprigr-app.json`. Full schema: reference §2. Always touch:
 - `secrets[]`: `<PREFIX>_CLIENT_ID`, `<PREFIX>_CLIENT_SECRET`, plus an `INTERNAL_TRIGGER_SECRET` if you add internal trigger routes (the scaffolder does not generate either).
 - `tools[]`: one entry per agent-callable tool plus the `<slug>_oauth_callback` entry. Write real descriptions; agents pick tools by them.
 - `schedules[]`: the scaffolder does NOT generate one; for refresh-token providers, declare a token-refresh cron yourself (snippet in step 6d). Non-expiring-token providers skip it.
-- `docs[]`: AI-facing doc JSON files (see [examples/harvest/docs/tools.json](../examples/harvest/docs/tools.json)); the platform ingests them into a per-app search index so agents learn your tools. Authoring rules and caps: reference §2b.
+- `docs[]`: AI-facing doc JSON files (see [examples/harvest/docs/tools.json](../examples/harvest/docs/tools.json)); the platform ingests them into a per-app search index so agents learn your tools. Authoring rules and caps: reference §2b. Validation split: `sprigr app validate` checks the declaration shape and that each file exists and parses; the content caps (object count, content length, objectID casing) are enforced server-side at publish, so self-check them against §2b before your first publish.
 
 Validation gotchas that reject a publish (details: reference §2):
 
@@ -203,6 +203,7 @@ Each `tools[]` entry points at a handler in `src/handlers/` whose default export
 - **Never rebuild the env by spread**: `{ ...env }` on the dispatch path yields `env.DB === undefined` (the bindings live on the prototype). Use plain property access; overlay with `Object.create(env)` if needed.
 - Declare `idempotency` on costly or side-effectful tools so a model double-call collapses to one execution (reference §2). Don't retry POSTs in your fetch wrapper for the same reason.
 - Provider webhooks: verify signatures with `hmacSha256Hex` + `constantTimeEqual`.
+- The scaffold tsconfig is strict, including `noUncheckedIndexedAccess`: index access types as `T | undefined`, so `array[0]` needs a guard. This is deliberate; do not loosen it.
 
 ---
 
@@ -224,8 +225,8 @@ pnpm verify:local     # vendor drift + migration immutability
 ## 9. Step 7: publish and shake down
 
 ```bash
-sprigr app validate --dir apps/<slug>    # manifest schema gate
-sprigr app publish --dir apps/<slug>     # stages the version server-side
+sprigr app validate --dir apps/<slug>    # manifest schema gate; works WITHOUT a login
+sprigr app publish --dir apps/<slug>     # stages the version server-side; requires `sprigr login`
 ```
 
 Publish stages source; builds run per-install (install or upgrade triggers a build). Reference §5 has the pipeline and the direct curl commands for triggering upgrades and polling build status.
