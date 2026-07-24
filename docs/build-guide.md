@@ -208,7 +208,7 @@ Each `tools[]` entry points at a handler in `src/handlers/` whose default export
 
 ## 8. Step 6: settings UI and local verification
 
-`src/app/page.tsx`: show connection status, a Connect button to `/oauth/start` (and a `?reconnect=1` variant), and provider-specific pickers. Wrap the initial load in try/catch: on a cold install the migrations may not have run yet.
+`src/app/page.tsx`: show connection status, a Connect button to `/oauth/start` (and a `?reconnect=1` variant), and provider-specific pickers. Wrap the initial load in try/catch: on a cold install the migrations may not have run yet. For a filterable catalog UI over your app's search index (listings, products, jobs), use `@sprigr/apps-faceted-search` instead of hand-rolling one: see [faceted-search.md](faceted-search.md).
 
 Inline routes get env via `const { env } = await getCloudflareContext({ async: true })`. Do NOT pass a generic type parameter (it is not for env); typing comes from the scaffolded global `CloudflareEnv` augmentation in `src/lib/env.ts`.
 

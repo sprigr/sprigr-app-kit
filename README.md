@@ -11,7 +11,7 @@ Sprigr marketplace apps are Next.js apps that run isolated per install on the Sp
 | [docs/build-guide.md](docs/build-guide.md) | **Start here.** Step-by-step: scaffold, manifest, OAuth, tools, publish. Written so an AI agent can follow it end to end. |
 | [docs/platform-reference.md](docs/platform-reference.md) | Deep reference: manifest schema, runtime bindings (`env.SPRIGR.*`), publish pipeline, bouncer contract. |
 | [examples/harvest](examples/harvest) | A complete reference app: OAuth against Harvest (time tracking), token refresh, agent tools, AI-facing docs, tests. |
-| [packages/](packages) | The shared helper packages your app vendors: `oauth-utils` (code exchange, race-safe refresh), `app-sdk` (state codec, crypto, retrying fetch, platform types), `d1-kv` (token/settings stores), `sync-cursor`, `dedup-latch`, `webhook-registry`, `dashboard-kit` (settings-page UI), `timezone-picker`. |
+| [packages/](packages) | The shared packages, published to npm as `@sprigr/apps-*` (exact-pin them): `oauth-utils` (code exchange, race-safe refresh), `app-sdk` (state codec, crypto, retrying fetch, platform types), `d1-kv` (token/settings stores), `sync-cursor`, `dedup-latch`, `webhook-registry`, `faceted-search` (catalog search UI, [guide](docs/faceted-search.md)). Unpublished, vendor-only: `dashboard-kit`, `timezone-picker`. |
 | [tools/](tools) | `create-app.mjs` (scaffolder), `sync-vendor.mjs` (vendoring + drift check), `bump-version.mjs`, `check-migrations-immutable.mjs`. |
 
 ## Quick start
