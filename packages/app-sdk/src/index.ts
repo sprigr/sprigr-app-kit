@@ -200,6 +200,87 @@ export interface SprigrFilesApi {
   ): Promise<{ ok: boolean; url: string; expires_at: number; key: string }>;
 }
 
+/**
+ * Platform document-engine bridge types (`env.SPRIGR.files.edit` / `.create`
+ * / `.job`). Canonical declaration: previously copied consumer-side into
+ * microsoft-365 and google-workspace to avoid a repo-wide vendor re-sync;
+ * upstreamed here once two live consumers shipped (m365 0.15/0.16,
+ * google-workspace 0.4).
+ */
+
+/** Input to `env.SPRIGR.files.edit` (the platform surgical document edit bridge). */
+export interface SprigrFilesEditInput {
+  /** App-relative key of the source file already in app storage. */
+  file_key: string;
+  /** pdf runs the PyMuPDF ops engine (list_fields / fill_form / replace_text);
+   *  docx/xlsx run python-docx / openpyxl. */
+  format: 'docx' | 'xlsx' | 'pdf';
+  operations: Array<Record<string, unknown>>;
+  output_filename?: string;
+  output_key?: string;
+  allow_lossy?: boolean;
+  /** Deterministic idempotency token: the platform persists the pipeline's
+   *  terminal result under it, so a retry of the same logical edit after a
+   *  dispatch timeout replays the finished result instead of re-running the
+   *  engine. Filename-safe: ^[A-Za-z0-9_-]{8,128}$. */
+  job_token?: string;
+}
+
+/** Result from `env.SPRIGR.files.edit`. */
+export interface SprigrFilesEditResult {
+  ok: boolean;
+  out_file_key?: string;
+  size?: number;
+  operations_applied?: Array<Record<string, unknown>>;
+  failed_operations?: Array<Record<string, unknown>>;
+  warning?: string;
+  error?: string;
+}
+
+/** Input to `env.SPRIGR.files.create` (build a NEW docx/xlsx from a spec). */
+export interface SprigrFilesCreateInput {
+  format: 'docx' | 'xlsx';
+  /** docx: content blocks (heading/paragraph/table/…). xlsx: sheet defs ({name, headers, rows, …}). */
+  spec: Array<Record<string, unknown>>;
+  properties?: Record<string, unknown>;
+  output_filename?: string;
+  output_key?: string;
+  /** Same idempotency semantics as SprigrFilesEditInput.job_token. */
+  job_token?: string;
+}
+
+/** Result from `env.SPRIGR.files.create`. */
+export interface SprigrFilesCreateResult {
+  ok: boolean;
+  out_file_key?: string;
+  size?: number;
+  error?: string;
+}
+
+/** Result from `env.SPRIGR.files.job` (read-only job-record status). */
+export interface SprigrFilesJobResult {
+  ok: boolean;
+  job_token: string;
+  status: 'not_found' | 'running' | 'done' | 'error';
+  /** True when the record is older than the platform's freshness windows
+   *  (an orphaned `running` or an expired terminal record). */
+  stale?: boolean;
+  started_at?: number;
+  finished_at?: number;
+  http_status?: number;
+  /** The stored edit/create response body (terminal records only). */
+  result?: Record<string, unknown>;
+}
+
+/** The platform files bridge plus the document-engine methods. */
+export interface SprigrFilesApiWithEdit extends SprigrFilesApi {
+  edit(input: SprigrFilesEditInput): Promise<SprigrFilesEditResult>;
+  create(input: SprigrFilesCreateInput): Promise<SprigrFilesCreateResult>;
+  /** Optional: absent on wrapper builds older than the job-token surface;
+   *  callers must feature-detect. */
+  job?(jobToken: string): Promise<SprigrFilesJobResult>;
+}
+
 /** Narrow structural type for the per-install D1 binding. */
 export interface D1Like {
   prepare(sql: string): D1PreparedStatementLike;
