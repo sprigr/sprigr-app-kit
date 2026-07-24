@@ -213,12 +213,17 @@ export interface SprigrFilesEditInput {
   /** App-relative key of the source file already in app storage. */
   file_key: string;
   /** pdf runs the PyMuPDF ops engine (list_fields / fill_form / replace_text);
-   *  docx/xlsx run python-docx / openpyxl. */
-  format: 'docx' | 'xlsx' | 'pdf';
+   *  docx/xlsx run python-docx / openpyxl; xer/pmxml/mspdi run the platform's
+   *  pure-TS schedule engine in-worker (Primavera P6 / MS Project XML, no
+   *  sandbox cold-start exposure). */
+  format: 'docx' | 'xlsx' | 'pdf' | 'xer' | 'pmxml' | 'mspdi';
   operations: Array<Record<string, unknown>>;
   output_filename?: string;
   output_key?: string;
   allow_lossy?: boolean;
+  /** Schedule formats only: write even when the FK-integrity gate finds
+   *  errors (the validation result is still returned). */
+  skip_validation?: boolean;
   /** Deterministic idempotency token: the platform persists the pipeline's
    *  terminal result under it, so a retry of the same logical edit after a
    *  dispatch timeout replays the finished result instead of re-running the
@@ -235,6 +240,10 @@ export interface SprigrFilesEditResult {
   failed_operations?: Array<Record<string, unknown>>;
   warning?: string;
   error?: string;
+  /** Schedule formats only: the FK-integrity result ({errorCount, warningCount, issues}). */
+  validation?: Record<string, unknown>;
+  /** Schedule formats only: one-line engine summary incl. matched counts. */
+  summary?: string;
 }
 
 /** Input to `env.SPRIGR.files.create` (build a NEW docx/xlsx from a spec). */
