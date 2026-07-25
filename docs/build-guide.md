@@ -55,7 +55,8 @@ install settings UI                    provider                bouncer (stable U
                                         ── redirect_uri=bouncer ──►
                                                                    decodeState(state).installId
                                                                    dispatch /__sprigr/tool/<slug>_oauth_callback
-                                                                   { code, state, redirectUri, environment, installId }
+                                                                   { code, state, redirectUri, environment,
+                                                                     installId, providerParams }
                                                                             │
                                                     install's callback handler verifies csrf,
                                                     exchanges the code, persists tokens in its D1
@@ -177,9 +178,20 @@ The scaffolder generates all four with TODOs; the harvest example shows them fil
 - Mints a CSRF (`randomHex(16)`), stores it in D1 as `oauth_csrf`, includes it in the state.
 - Picks the bouncer URL by environment from the request host (`staging-apps.sprigr.com` means staging) so one bundle serves both environments.
 
-**4. `src/handlers/oauth-callback.ts`** ([harvest](../examples/harvest/src/handlers/oauth-callback.ts)): the tool the bouncer dispatches with `{ code, state, redirectUri, environment, installId }`. The scaffolded version verifies the state's `csrf` against the stored `oauth_csrf` (returning `{ ok: false, error: 'expired_or_unknown_csrf' }` on mismatch, which the bouncer renders as a real error page instead of a false success), then exchanges and persists. Add your post-connect setup after the exchange: resolve the provider account, cache reference data for the settings UI, mint a webhook secret (only if none exists: a reconnect must not rotate a secret the provider still sends), register webhooks. Audit failures somewhere queryable.
+**4. `src/handlers/oauth-callback.ts`** ([harvest](../examples/harvest/src/handlers/oauth-callback.ts)): the tool the bouncer dispatches with `{ code, state, redirectUri, environment, installId, providerParams }`. The scaffolded version verifies the state's `csrf` against the stored `oauth_csrf` (returning `{ ok: false, error: 'expired_or_unknown_csrf' }` on mismatch, which the bouncer renders as a real error page instead of a false success), then exchanges and persists. Add your post-connect setup after the exchange: resolve the provider account, cache reference data for the settings UI, mint a webhook secret (only if none exists: a reconnect must not rotate a secret the provider still sends), register webhooks. Audit failures somewhere queryable.
 
 Rule: when exchanging the code, use the **bouncer's** `redirectUri` from the dispatch args, not the install's own URL. Providers validate that it matches the authorize step.
+
+**`providerParams`: identifiers that only exist on the redirect.** Some providers hand you a required identifier as a query param on the callback redirect rather than in the token response. The bouncer forwards every extra callback query param (everything except `code` and `state`, which are already top-level) as `providerParams`, an object that is always present and empty `{}` when the provider added nothing:
+
+```ts
+const businessId = args.providerParams?.businessId;   // MYOB: the company file to scope every call to
+const realmId = args.providerParams?.realmId;         // QuickBooks Online: the company
+```
+
+Read it in the callback and persist what you need; it is not available later. MYOB is the sharp case: every MYOB API call is scoped to one company file, and for API keys issued after 2025-03-12 the API no longer enumerates company files, so the `businessId` on the redirect is the *only* way an install learns which file it may talk to. Providers that echo the granted `scope` on the redirect also surface it here, which is how you record partial-consent.
+
+Two things to get right: the provider usually only sends these when consent is actually shown (MYOB needs `prompt=consent` on the authorize URL, or `businessId` is omitted on a silent re-authorize), and you should still write a fallback — a provider that skips the param leaves you with a connected install and no identifier, so surface a "pick one" state in your settings UI rather than failing the connect.
 
 ### 6d. Runtime token access, refresh, disconnect
 
