@@ -19,6 +19,23 @@ export {
 export type { FetchFileResult } from './file';
 export { resolvePlatformWebhookBase, buildMarketplaceWebhookUrl } from './platform-host';
 export type { PlatformHostEnv } from './platform-host';
+export {
+  emitMarketplaceEvent,
+  withSprigrEmitFallback,
+  resolveInstallBridge,
+  describeMissingBridge,
+  installTokenPost,
+  overlaySprigr,
+  DEFAULT_EMIT_TIMEOUT_MS,
+} from './wfp-bridge';
+export type {
+  EmitResult,
+  EmitTransport,
+  EmitMarketplaceEventOptions,
+  InstallBridge,
+  WfpBridgeEnv,
+  WfpEmitReply,
+} from './wfp-bridge';
 export { parseActor, actorKey } from './actor';
 export type { Actor } from './actor';
 export {
