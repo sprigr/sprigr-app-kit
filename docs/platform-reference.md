@@ -317,7 +317,38 @@ Object.defineProperty(out, 'SPRIGR', { value: patched, enumerable: false, config
 return out;
 ```
 
+Or use the SDK's `overlaySprigr(env, patched)`, which is exactly this.
+
 This works for both env shapes: the dispatch-path wrapper env AND the plain object inline routes get from `getCloudflareContext`. History: the microsoft-365 app's fallback wrappers used `{ ...env, SPRIGR: {...} }`; on the scheduled path this produced an env whose `DB` was undefined, killing every `ms_index_files` run (and its error-path audit) silently for 24h on staging. Fixed in microsoft-365 v0.14.2 (#758).
+
+### Emitting from an inline route (`env.SPRIGR` is absent there)
+
+Inline Next.js route handlers never get the injected `env.SPRIGR` (see above). An app whose provider webhook lands on an inline route — which is the norm when the provider doesn't HMAC bodies, so the marketplace dispatcher can't verify the delivery — therefore has **no working `env.SPRIGR.emit` on the one path that matters most**.
+
+A receiver that only tries the binding emits nothing at all, silently, while still acking the provider 200. Nothing looks broken: no workflow trigger fires, no subscriber runs, no error surfaces. This has shipped four separate times (shopify #478, procore, starshipit, cin7-core), so use the SDK helper instead of hand-rolling it:
+
+```ts
+import { emitMarketplaceEvent } from '@sprigr/apps-app-sdk';
+
+const r = await emitMarketplaceEvent(env, 'acme.job.updated', payload, {
+  sourceIntegration: { integrationId: env.INSTALL_ID, integrationType: 'acme' },
+});
+// r = { emitted, via: 'binding' | 'http' | 'none', eventId?, error? }
+await audit(env, 'emit', JSON.stringify(r));
+```
+
+It picks the transport for you: the injected binding on `/__sprigr/*` dispatch, the install-token bridge (`POST ${SPRIGR_PLATFORM_BASE}/internal/wfp/emit`) from an inline route. It **never throws**, so the provider ack is never at risk, and it times out after 5s.
+
+Record `via` in your audit row. It is the cheapest way to notice the binding silently disappearing again.
+
+Two failure modes it handles that hand-rolled versions miss:
+
+- A **200 with `{queued: false}`** means the platform accepted the call but the enqueue failed. Treating that as success is how an event disappears without a trace (the shopify silent-drop, 2026-05-28). The helper reports `emitted: false`.
+- `sourceIntegration` is **omitted entirely** when you pass `undefined`, because the platform validates the shape strictly and 400s on a partial one.
+
+If your app emits from many places, `withSprigrEmitFallback(env)` repairs `env.SPRIGR.emit` once and leaves existing call sites untouched; it matches the host object's contract (resolves `{ ok, eventId, queued }`, throws on non-2xx).
+
+Both need `SPRIGR_PLATFORM_BASE` + `SPRIGR_INSTALL_TOKEN`, which unlike `SPRIGR` are plain script vars stamped on every per-install upload and so ARE readable from an inline route. When either is missing the helper returns `via: 'none'` and names which one, rather than guessing a default: an app that assumed `https://webhooks.sprigr.com` would have a *staging* install firing events into *prod*.
 
 ### `env.SPRIGR`: platform callbacks (no API key)
 
@@ -417,7 +448,7 @@ interface SprigrEnv {
 
 Field / key / filter semantics match the agent-facing collection tools; the deep reference is the platform seed doc `guide-marketplace-collections-datastore` (plus `guide-collections-define` / `guide-collections-query`). **Do you still need D1?** For records you query / facet / report on, no: the collection replaces a hand-rolled table plus its dedup and query code. Keep D1 for operational bookkeeping (run logs, cursors, outbox rows).
 
-> Inline Next.js route handlers (e.g. `app/api/webhook/*/route.ts`) do **not** get the injected `env.SPRIGR`. From there, call `/internal/wfp/collections/<op>` directly with `SPRIGR_INSTALL_TOKEN` + `SPRIGR_PLATFORM_BASE` (same fallback you use for `emit`).
+> Inline Next.js route handlers (e.g. `app/api/webhook/*/route.ts`) do **not** get the injected `env.SPRIGR`. From there, call `/internal/wfp/collections/<op>` directly with `SPRIGR_INSTALL_TOKEN` + `SPRIGR_PLATFORM_BASE` — the SDK's `resolveInstallBridge` + `installTokenPost` do the auth and error handling, and `emitMarketplaceEvent` is the ready-made version for `emit`.
 
 **Agent roster (`/internal/wfp/agents/list`).** Apps whose connections are per-actor (one OAuth row per user or agent, e.g. microsoft-365 / google-workspace) can fetch the agents applicable to their install to power a "connect for this agent" selector on their landing page. `GET ${SPRIGR_PLATFORM_BASE}/internal/wfp/agents/list` with the `SPRIGR_INSTALL_TOKEN` bearer returns `{ agents: [{ id, name, slug, agent_type }] }` — active agents of the install's company, filtered to the install's `agent_ids` scoping, platform agents excluded. Fail-soft in the page (treat any error as an empty roster) so the app renders fine on environments where the endpoint isn't deployed yet. See `apps/microsoft-365/src/lib/agents.ts` + the "Connect for an agent" form in its `page.tsx` for the reference implementation, including the signed-viewer gating (`lib/viewer.ts`) that keeps the roster off anonymous hits.
 
