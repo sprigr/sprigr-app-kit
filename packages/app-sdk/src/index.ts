@@ -21,6 +21,8 @@ export { resolvePlatformWebhookBase, buildMarketplaceWebhookUrl } from './platfo
 export type { PlatformHostEnv } from './platform-host';
 export {
   emitMarketplaceEvent,
+  createMarketplaceEmitter,
+  canEmit,
   withSprigrEmitFallback,
   resolveInstallBridge,
   describeMissingBridge,

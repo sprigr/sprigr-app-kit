@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   emitMarketplaceEvent,
+  createMarketplaceEmitter,
+  canEmit,
   withSprigrEmitFallback,
   resolveInstallBridge,
   overlaySprigr,
@@ -250,6 +252,50 @@ describe('withSprigrEmitFallback', () => {
     const sprigr = env.SPRIGR as { data: unknown; emit: unknown };
     expect(sprigr.data).toBe(data);
     expect(typeof sprigr.emit).toBe('function');
+  });
+});
+
+describe('canEmit', () => {
+  it('is true when the binding is present', () => {
+    expect(canEmit(inlineEnv({ SPRIGR: { emit: () => {} }, SPRIGR_INSTALL_TOKEN: undefined }))).toBe(true);
+  });
+
+  it('is true on an inline route, where only the bridge exists', () => {
+    // Gating on env.SPRIGR?.emit here would skip the work in exactly the
+    // context the HTTP bridge was built to cover.
+    expect(canEmit(inlineEnv())).toBe(true);
+  });
+
+  it('is false when neither transport is available', () => {
+    expect(canEmit(inlineEnv({ SPRIGR_INSTALL_TOKEN: undefined }))).toBe(false);
+  });
+});
+
+describe('createMarketplaceEmitter', () => {
+  it('stamps sourceIntegration from INSTALL_ID on every call', async () => {
+    const emit = createMarketplaceEmitter('procore');
+    const r = await emit(inlineEnv(), 'procore.rfi.updated', { rfi_id: 7 });
+
+    expect(r.emitted).toBe(true);
+    expect((calls[0]!.body as { sourceIntegration: unknown }).sourceIntegration).toEqual({
+      integrationId: 'inst_abc',
+      integrationType: 'procore',
+    });
+  });
+
+  it('omits sourceIntegration entirely when INSTALL_ID is unbound', async () => {
+    const emit = createMarketplaceEmitter('procore');
+    await emit(inlineEnv({ INSTALL_ID: undefined }), 'a.b.c', {});
+    expect(calls[0]!.body).not.toHaveProperty('sourceIntegration');
+  });
+
+  it('applies a default timeout to every call', async () => {
+    globalThis.fetch = ((_i: unknown, init?: RequestInit) =>
+      new Promise((_res, rej) => {
+        init?.signal?.addEventListener('abort', () => rej(new Error('aborted')));
+      })) as typeof globalThis.fetch;
+    const emit = createMarketplaceEmitter('procore', { timeoutMs: 10 });
+    await expect(emit(inlineEnv(), 'a.b.c', {})).resolves.toMatchObject({ emitted: false });
   });
 });
 
