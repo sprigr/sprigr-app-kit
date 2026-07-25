@@ -42,6 +42,8 @@ A marketplace app is a **Next.js app** running on Cloudflare Workers-for-Platfor
 
 The platform provides per-install bindings at build time: `DB` (D1), every manifest `secrets[]` entry, `INSTALL_ID`, `COMPANY_ID`, `APP_SLUG`, `SPRIGR_INSTALL_TOKEN`, `SPRIGR_PLATFORM_BASE`, and (inside dispatched handlers only) the `env.SPRIGR` host object for platform callbacks (events, collections, search index, file storage, cross-app calls). Full table: reference §4.
 
+> **When you need feature X, see the [capability cookbook](capability-cookbook.md).** This guide covers the common OAuth-integration path (tools, migrations, OAuth, one schedule). For every other manifest field family — webhooks (hmac / install-token / shared), channels, durable jobs, events + subscriptions, cross-tenant tools, integration dependencies, fulfillment services, workflow templates, decision points, data index, collections, browser, files, store — the cookbook has a coverage matrix that maps each to a runnable sample in [`examples/showcase`](../examples/showcase) and tells you what runs locally vs on staging.
+
 ### OAuth in one diagram
 
 You cannot register every install's URL as a redirect URI with your provider. One stable redirect URI per environment points at the Sprigr **OAuth bouncer**, which decodes the `state` parameter to find the install and dispatches the callback into it:

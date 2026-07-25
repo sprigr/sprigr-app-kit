@@ -1,0 +1,16 @@
+[
+  {
+    "objectID": "showcase-overview",
+    "title": "showcase tool - Acme CRM dispatcher (reference app)",
+    "content": "The `showcase` tool talks to the tenant's connected Acme CRM (a fictional provider used by the Sprigr app-kit reference app). One dispatcher tool: pass `action` plus that action's arguments. Actions: `list_contacts` (faceted, optionally by `stage`/`owner`), `get_contact` (by `contact_id`), `search_cached_contacts` (`query`, optional `stage`, over the per-company data index), `cache_contact` (`contact_id` + fields, upserts into the data index), `connection_status`. If a call reports 'No Acme account linked', open the app settings page and click Connect Acme; check with `{\"action\":\"connection_status\"}` first when unsure.",
+    "category": "guide",
+    "keywords": "showcase, acme, crm, dispatcher, contacts, deals, connection_status, list_contacts, get_contact, search_cached_contacts, cache_contact, data index, reference app, every feature"
+  },
+  {
+    "objectID": "showcase-cache-and-search",
+    "title": "cache_contact + search_cached_contacts - the per-company data index",
+    "content": "The showcase app caches Acme contacts into its per-company data index (searchable by name/email/company; faceted by stage/owner/source per the manifest data_index config). Write one with `{\"action\":\"cache_contact\",\"contact_id\":\"c_1\",\"name\":\"...\",\"stage\":\"won\",\"owner\":\"alex\"}`. Read them back with `{\"action\":\"search_cached_contacts\",\"query\":\"acme\",\"stage\":\"won\"}` - returns hits plus facet counts for stage/owner/source. Caching also fires the `showcase.contact.cached` marketplace event. These paths call env.SPRIGR.data.* and only run on the platform, not the local `sprigr app dev` harness.",
+    "category": "reference",
+    "keywords": "cache_contact, search_cached_contacts, data index, faceted search, facets, stage, owner, source, semantic search, env.SPRIGR.data, per-company index, upsert, objectID"
+  }
+]

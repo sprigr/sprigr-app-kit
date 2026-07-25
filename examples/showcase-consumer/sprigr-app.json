@@ -1,0 +1,96 @@
+{
+  "sprigr_app": {
+    "version": "1"
+  },
+  "metadata": {
+    "name": "Showcase Consumer",
+    "slug": "showcase-consumer",
+    "version": "0.0.1",
+    "description": "Minimal companion to the showcase app. Demonstrates the CONSUMER side of cross-app wiring: calling another app's cross-tenant tool via env.SPRIGR.invoke, subscribing to its cross-tenant event, and the app_installations.config override pattern.",
+    "author": {
+      "name": "Sprigr Company",
+      "email": "platform@sprigr.com"
+    },
+    "category": "productivity",
+    "tags": ["reference", "consumer", "cross-tenant"]
+  },
+  "kind": "tool",
+  "runtime": {
+    "entry": "src/app/page.tsx",
+    "tier": "ssr",
+    "framework": "next"
+  },
+  "permissions": {
+    "scopes": ["tools:register"]
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "high_value_threshold": {
+        "type": "number",
+        "title": "High-value deal threshold",
+        "description": "Deals at or above this amount are flagged when showcase.deal.won fires.",
+        "default": 10000
+      }
+    }
+  },
+  "migrations": [
+    {
+      "file": "migrations/0001_init.sql",
+      "version": 1,
+      "description": "Settings + install_config tables."
+    }
+  ],
+  "app_dependencies": [
+    {
+      "app": "showcase",
+      "tools": ["showcase_lookup_contact"],
+      "required": true,
+      "reason": "The consumer enriches won-deal signals by looking up the contact from the showcase app's cross-tenant tool."
+    }
+  ],
+  "tools": [
+    {
+      "name": "consumer_enrich_deal",
+      "description": "Given a won-deal signal, look up the contact from the showcase app (cross-tenant) and return an enriched record. Reads the tenant-configured high-value threshold from install config.",
+      "handler": "src/handlers/enrich.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "deal_id": { "type": "string" },
+          "contact_id": { "type": "string" },
+          "amount": { "type": "number" }
+        },
+        "required": ["contact_id"]
+      }
+    },
+    {
+      "name": "consumer_on_deal_won",
+      "description": "Event subscription handler: reacts to the showcase app's cross-tenant showcase.deal.won event and enriches it.",
+      "handler": "src/handlers/enrich.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "consumer_set_config",
+      "description": "Mirror the portal-set install config (app_installations.config) into the app's own D1 row so handlers can read it without a platform round-trip.",
+      "handler": "src/handlers/enrich.ts",
+      "internal": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "high_value_threshold": { "type": "number" }
+        }
+      }
+    }
+  ],
+  "events": {
+    "subscribes": [
+      {
+        "event": "showcase.deal.won",
+        "handler_tool": "consumer_on_deal_won",
+        "filter": "$.amount >= 0"
+      }
+    ]
+  }
+}

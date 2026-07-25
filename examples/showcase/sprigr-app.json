@@ -1,0 +1,643 @@
+{
+  "sprigr_app": {
+    "version": "1"
+  },
+  "metadata": {
+    "name": "Showcase",
+    "slug": "showcase",
+    "version": "0.0.1",
+    "description": "Synthetic every-feature reference app for the Sprigr app kit: exercises every manifest field family and every env.SPRIGR.* runtime call so authors can copy one capability at a time. Provider persona is the fictional Acme CRM.",
+    "author": {
+      "name": "Sprigr Company",
+      "email": "platform@sprigr.com"
+    },
+    "icon": "https://api.acme.example/static/showcase-icon-512.png",
+    "category": "productivity",
+    "tags": [
+      "reference",
+      "crm",
+      "data-sync",
+      "automation",
+      "analytics"
+    ]
+  },
+  "kind": "integration",
+  "runtime": {
+    "entry": "src/app/page.tsx",
+    "tier": "ssr",
+    "framework": "next"
+  },
+  "permissions": {
+    "scopes": [
+      "tools:register",
+      "knowledge:read",
+      "knowledge:write",
+      "inbox:write",
+      "sprigr.browser:fetch",
+      "sprigr.jobs"
+    ],
+    "network_domains": [
+      "api.acme.example",
+      "auth.acme.example"
+    ]
+  },
+  "config_schema": {
+    "type": "object",
+    "properties": {
+      "sync_window_days": {
+        "type": "number",
+        "title": "Backfill window (days)",
+        "description": "How many days of Acme CRM history the durable backfill job walks on first connect.",
+        "default": 30
+      },
+      "notify_on_high_value": {
+        "type": "boolean",
+        "title": "Notify on high-value deals",
+        "description": "Append an inbox message when a webhook reports a deal over the threshold.",
+        "default": true
+      },
+      "decision_route_workflow_id": {
+        "type": "string",
+        "title": "Routing workflow id",
+        "description": "Optional workflow the route_decision decision-point calls. Leave blank to use the built-in default routing.",
+        "ui:widget": "workflow-picker"
+      }
+    }
+  },
+  "data_index": {
+    "searchable_attributes": [
+      "name",
+      "email",
+      "company"
+    ],
+    "attributes_for_faceting": [
+      "stage",
+      "owner",
+      "source"
+    ],
+    "description": "Per-company cache of Acme CRM contacts, faceted by pipeline stage / owner / lead source for agent search."
+  },
+  "secrets": [
+    {
+      "key": "ACME_WEBHOOK_SECRET",
+      "label": "Acme CRM webhook signing secret",
+      "type": "secret",
+      "required": true,
+      "description": "Brand-supplied HMAC signing secret from the Acme CRM webhook settings page. Verifies inbound per-install webhooks."
+    },
+    {
+      "key": "ACME_CLIENT_ID",
+      "label": "Acme CRM OAuth client id",
+      "type": "secret",
+      "required": true,
+      "publisher_provides": true,
+      "description": "Publisher-owned OAuth client id for the shared Acme CRM developer app. Seeded once with `sprigr app set-publisher-secrets`."
+    },
+    {
+      "key": "ACME_CLIENT_SECRET",
+      "label": "Acme CRM OAuth client secret",
+      "type": "secret",
+      "required": true,
+      "publisher_provides": true,
+      "description": "Publisher-owned OAuth client secret for the shared Acme CRM developer app."
+    },
+    {
+      "key": "ACME_SHARED_WEBHOOK_SECRET",
+      "label": "Acme CRM shared (app-level) webhook secret",
+      "type": "secret",
+      "required": true,
+      "publisher_provides": true,
+      "description": "Publisher-owned secret the platform uses to verify + re-sign the single app-level Acme CRM webhook before per-tenant fan-out."
+    },
+    {
+      "key": "SHOWCASE_STATE_HMAC_KEY",
+      "label": "OAuth state signing key",
+      "type": "secret",
+      "required": false,
+      "auto_generate": true,
+      "description": "Per-install random key used to sign the OAuth `state` blob. Server-minted; never seen by the brand or publisher."
+    }
+  ],
+  "migrations": [
+    {
+      "file": "migrations/0001_init.sql",
+      "version": 1,
+      "description": "Initial schema: settings + secrets key-value tables, webhook dedup + sync-cursor tables."
+    },
+    {
+      "file": "migrations/0002_install_config.sql",
+      "version": 2,
+      "description": "Adds the install_config table for the app_installations.config override pattern."
+    }
+  ],
+  "docs": [
+    {
+      "file": "docs/tools.json"
+    }
+  ],
+  "oauth": {
+    "provider": "acme",
+    "scopes": [
+      "contacts.read",
+      "deals.read"
+    ],
+    "inbound_install": {
+      "signature_scheme": "none",
+      "authorize_url_template": "https://auth.acme.example/oauth/authorize",
+      "token_url_template": "https://auth.acme.example/oauth/token",
+      "token_style": "oauth2_authorization_code",
+      "scope_delimiter": " ",
+      "entry_params": [
+        "workspace"
+      ],
+      "external_id_param": "workspace",
+      "import_tool": "showcase_inbound_import",
+      "client_id_secret": "ACME_CLIENT_ID",
+      "client_secret_secret": "ACME_CLIENT_SECRET"
+    }
+  },
+  "lifecycle": {
+    "on_connect": ["sync", "subscribe"],
+    "on_disconnect": ["unsubscribe"]
+  },
+  "tool_access": {
+    "allowed_channels": ["chat", "team_room"],
+    "default_agent_scope": "shared"
+  },
+  "content_restrictions": {
+    "summary": "3 content rules",
+    "rules": [
+      {
+        "id": "allowed-use",
+        "category": "allowed_use",
+        "text": "Use Acme CRM contact data to answer questions and draft outreach the user asks for."
+      },
+      {
+        "id": "no-bulk-export",
+        "category": "prohibited_content",
+        "text": "Never paste more than 25 contact records into a single reply; summarise instead."
+      },
+      {
+        "id": "pii-handling",
+        "category": "data_handling",
+        "text": "Do not repeat a contact's phone number or email address into a public team room; use the private chat channel."
+      }
+    ]
+  },
+  "tools": [
+    {
+      "name": "showcase",
+      "description": "Acme CRM dispatcher. Actions: list_contacts (faceted, optionally by stage), get_contact (by id), search_cached_contacts (queries the per-company data index), cache_contact (writes one contact to the data index), connection_status.",
+      "handler": "src/handlers/dispatcher.ts",
+      "confirmation_required": false,
+      "idempotency": {
+        "mode": "content",
+        "actionField": "action",
+        "actions": ["cache_contact"]
+      },
+      "dispatch": {
+        "actionField": "action",
+        "actions": [
+          "list_contacts",
+          "get_contact",
+          "search_cached_contacts",
+          "cache_contact",
+          "connection_status"
+        ],
+        "actionInputs": {
+          "get_contact": {
+            "accepts": ["contact_id"],
+            "required": ["contact_id"]
+          },
+          "list_contacts": {
+            "accepts": ["stage", "owner", "page", "per_page"]
+          },
+          "search_cached_contacts": {
+            "accepts": ["query", "stage", "hits_per_page"]
+          },
+          "cache_contact": {
+            "accepts": ["contact_id", "name", "email", "company", "stage", "owner", "source"],
+            "required": ["contact_id"]
+          }
+        }
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "list_contacts",
+              "get_contact",
+              "search_cached_contacts",
+              "cache_contact",
+              "connection_status"
+            ],
+            "description": "Which Acme CRM operation to run."
+          },
+          "contact_id": { "type": "string", "description": "Acme contact id. Required for get_contact / cache_contact." },
+          "stage": { "type": "string", "description": "Pipeline stage filter / facet." },
+          "owner": { "type": "string", "description": "Owner filter / facet." },
+          "source": { "type": "string", "description": "Lead source (cache_contact only)." },
+          "name": { "type": "string" },
+          "email": { "type": "string" },
+          "company": { "type": "string" },
+          "query": { "type": "string", "description": "Full-text query for search_cached_contacts." },
+          "hits_per_page": { "type": "number" },
+          "page": { "type": "number" },
+          "per_page": { "type": "number" }
+        },
+        "required": ["action"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": { "type": "boolean" },
+          "result": { "type": "object" },
+          "reason": { "type": "string" }
+        },
+        "required": ["ok"]
+      }
+    },
+    {
+      "name": "showcase_oauth_callback",
+      "description": "Dispatched by the publisher-shared OAuth bouncer after Acme redirects with a code. Verifies csrf, exchanges the code, persists tokens to per-install D1.",
+      "handler": "src/handlers/config.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" },
+          "redirectUri": { "type": "string" },
+          "state": { "type": "string" }
+        },
+        "required": ["code", "redirectUri"]
+      }
+    },
+    {
+      "name": "showcase_inbound_import",
+      "description": "Provider-initiated (inbound) install target. The platform dispatches the exchanged Acme token here after a workspace-initiated connect; the app persists it and kicks off backfill.",
+      "handler": "src/handlers/config.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "access_token": { "type": "string" },
+          "refresh_token": { "type": "string" },
+          "external_id": { "type": "string" }
+        },
+        "required": ["access_token"]
+      }
+    },
+    {
+      "name": "refresh_showcase_tokens",
+      "description": "Scheduled keep-warm refresh of the stored Acme OAuth tokens. Not for direct agent use.",
+      "handler": "src/handlers/config.ts",
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_webhook_contact",
+      "description": "Per-install webhook receiver for Acme contact.updated events (hmac hex). Dedups, then caches the contact to the data index.",
+      "handler": "src/handlers/webhooks.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_webhook_deal",
+      "description": "Per-install webhook receiver for Acme deal.won events (hmac base64). Emits a marketplace event and optionally appends an inbox message.",
+      "handler": "src/handlers/webhooks.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_webhook_bookmarklet",
+      "description": "Operator-driven webhook (install_token bearer scheme) — e.g. a browser bookmarklet posts a contact id to cache.",
+      "handler": "src/handlers/webhooks.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_webhook_shared",
+      "description": "App-level SHARED webhook (one URL for the whole app, fanned out per tenant). Registers each tenant via env.SPRIGR.registerWebhookTenant at connect.",
+      "handler": "src/handlers/webhooks.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_channel_receive",
+      "description": "Inbound channel receiver: verifies the Acme Chat signature and decodes a provider event into a normalized InboundMessage (or a URL-verification challenge / ignore).",
+      "handler": "src/handlers/channel.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_channel_send",
+      "description": "Outbound channel sender: encodes + sends a normalized OutboundMessage via the Acme Chat API using the app's stored token.",
+      "handler": "src/handlers/channel.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_channel_identity",
+      "description": "Maps an Acme Chat user id to a stable sender identity for companion routing / notify defaults.",
+      "handler": "src/handlers/channel.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_daily_digest",
+      "description": "per_install schedule handler: builds a daily digest of new Acme contacts and reports usage.",
+      "handler": "src/handlers/platform.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_tenant_rollup",
+      "description": "per_tenant schedule handler: rolls up counts across every install of this app in the tenant.",
+      "handler": "src/handlers/platform.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_backfill_step",
+      "description": "Durable job STEP FUNCTION for the contact backfill. Walks Acme pages one at a time, driving continue/sleep/wait/complete/fail directives from job state. Internal — never agent-callable.",
+      "handler": "src/handlers/jobs.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_on_deal_won",
+      "description": "Event subscription handler: reacts to showcase.deal.won emissions (self-subscription) by caching the winning contact.",
+      "handler": "src/handlers/events.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    },
+    {
+      "name": "showcase_route_decision",
+      "description": "Decision-point extension: reads a tenant-configured routing workflow from install config and calls env.SPRIGR.run_workflow; falls back to built-in routing.",
+      "handler": "src/handlers/platform.ts",
+      "internal": true,
+      "input_schema": { "type": "object", "properties": {} }
+    }
+  ],
+  "cross_tenant_tools": [
+    {
+      "tool_name": "showcase_lookup_contact",
+      "resource_type": "contacts",
+      "action": "read",
+      "description": "Look up one cached Acme CRM contact by id. Granted to a consumer app so it can read this brand's contacts.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "contact_id": { "type": "string" } },
+        "required": ["contact_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": { "type": "boolean" },
+          "contact": { "type": "object" }
+        },
+        "required": ["found"]
+      }
+    }
+  ],
+  "app_dependencies": [
+    {
+      "app": "hello-marketplace",
+      "tools": ["hello_ping_tool"],
+      "required": false,
+      "reason": "Optional smoke-test ping to the hello-marketplace fixture, demonstrating an app-to-app dependency grant."
+    }
+  ],
+  "integration_dependencies": [
+    {
+      "integration_type": "shopify",
+      "tools": ["shopify_list_orders"],
+      "required": false,
+      "reason": "When the brand also runs Shopify, the showcase app can correlate an Acme deal with a Shopify order. Optional — degrades gracefully when no Shopify integration is connected."
+    }
+  ],
+  "fulfillment_services": [
+    {
+      "platform": "shopify",
+      "multi_location": true,
+      "service_name_template": "Acme 3PL {location_name}",
+      "inventory_management": true,
+      "tracking_support": true,
+      "requires_shipping_method": false,
+      "reason": "Demonstrates registering a Shopify fulfillment location per warehouse via env.SPRIGR.fulfillment_services.register."
+    }
+  ],
+  "webhooks": [
+    {
+      "path": "/acme/contact",
+      "signature": {
+        "type": "hmac",
+        "header": "X-Acme-Signature-256",
+        "algorithm": "sha256",
+        "secret_ref": "ACME_WEBHOOK_SECRET",
+        "encoding": "hex"
+      },
+      "handler_tool": "showcase_webhook_contact",
+      "forward_headers": ["X-Acme-Topic", "X-Acme-Delivery"]
+    },
+    {
+      "path": "/acme/deal",
+      "signature": {
+        "type": "hmac",
+        "header": "X-Acme-Signature",
+        "algorithm": "sha256",
+        "secret_ref": "ACME_WEBHOOK_SECRET",
+        "encoding": "base64"
+      },
+      "handler_tool": "showcase_webhook_deal",
+      "forward_headers": ["X-Acme-Topic"]
+    },
+    {
+      "path": "/acme/bookmarklet",
+      "signature": {
+        "type": "install_token",
+        "header": "Authorization"
+      },
+      "handler_tool": "showcase_webhook_bookmarklet"
+    },
+    {
+      "path": "/acme/shared",
+      "signature": {
+        "type": "hmac",
+        "header": "X-Acme-Signature-256",
+        "algorithm": "sha256",
+        "secret_ref": "ACME_SHARED_WEBHOOK_SECRET",
+        "encoding": "hex"
+      },
+      "handler_tool": "showcase_webhook_shared",
+      "shared": {
+        "events_path": "events",
+        "tenant_key": "workspaceId"
+      }
+    }
+  ],
+  "channels": [
+    {
+      "type": "acme_chat",
+      "display_name": "Acme Chat",
+      "inbound": {
+        "receive_tool": "showcase_channel_receive"
+      },
+      "outbound": {
+        "send_tool": "showcase_channel_send"
+      },
+      "identity_tool": "showcase_channel_identity",
+      "supports": {
+        "notify": true,
+        "interactive": true,
+        "threads": true
+      }
+    }
+  ],
+  "schedules": [
+    {
+      "name": "showcase_daily_digest",
+      "cron": "0 7 * * *",
+      "timezone": "Australia/Brisbane",
+      "tool": "showcase_daily_digest",
+      "scope": "per_install"
+    },
+    {
+      "name": "showcase_tenant_rollup",
+      "cron": "0 8 * * 1",
+      "tool": "showcase_tenant_rollup",
+      "scope": "per_tenant"
+    }
+  ],
+  "jobs": [
+    {
+      "name": "showcase_backfill",
+      "tool": "showcase_backfill_step",
+      "description": "Durable contact backfill: pages through Acme CRM history, sleeps between pages to respect rate limits, and can wait for an operator signal before finishing.",
+      "timeout_minutes": 120,
+      "step_timeout_seconds": 60,
+      "max_steps": 300,
+      "retries": {
+        "limit": 5,
+        "delay_seconds": 15,
+        "backoff": "exponential"
+      }
+    }
+  ],
+  "agent_schedules": [
+    {
+      "name": "showcase_engagement_sync",
+      "cron": "0 6 * * *",
+      "prompt": "Search the Acme CRM cache for contacts that reached the 'won' stage yesterday and write a one-line knowledge note summarizing each.",
+      "taskType": "message",
+      "timezone": "Australia/Brisbane",
+      "enabled": true
+    }
+  ],
+  "events": {
+    "emits": [
+      {
+        "name": "showcase.deal.won",
+        "description": "Fires when Acme reports a deal moved to the won stage.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "deal_id": { "type": "string" },
+            "contact_id": { "type": "string" },
+            "amount": { "type": "number" }
+          },
+          "required": ["deal_id"]
+        }
+      },
+      {
+        "name": "showcase.contact.cached",
+        "description": "Fires when a contact is written to the per-company data index.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "contact_id": { "type": "string" }
+          },
+          "required": ["contact_id"]
+        }
+      }
+    ],
+    "subscribes": [
+      {
+        "event": "showcase.deal.won",
+        "handler_tool": "showcase_on_deal_won",
+        "filter": "$.amount > 0"
+      }
+    ],
+    "cross_tenant_emits": [
+      {
+        "event": "showcase.deal.won",
+        "description": "Share won-deal signals across tenant boundaries with a granting brand's consent (e.g. a partner analytics tenant)."
+      }
+    ]
+  },
+  "workflow_templates": [
+    {
+      "slug": "deal_won_intake",
+      "name": "Deal-won intake",
+      "description": "Event-triggered template: when showcase.deal.won fires, branch on deal amount.",
+      "trigger_type": "event",
+      "trigger_config": {
+        "event": "showcase.deal.won"
+      },
+      "start_step_id": "check_amount",
+      "steps": [
+        {
+          "id": "check_amount",
+          "type": "condition",
+          "name": "High value?",
+          "condition": "input.amount >= 10000",
+          "on_true": "notify_high_value",
+          "on_false": "log_deal"
+        },
+        {
+          "id": "notify_high_value",
+          "type": "action",
+          "name": "Notify high value",
+          "action": "notify",
+          "next": null
+        },
+        {
+          "id": "log_deal",
+          "type": "action",
+          "name": "Log deal",
+          "action": "log",
+          "next": null
+        }
+      ],
+      "tags": ["crm", "deals"]
+    }
+  ],
+  "decision_points": [
+    {
+      "id": "route_decision",
+      "description": "Fires inside showcase_route_decision when a new contact needs routing to an owner. The configured workflow returns { owner }; the handler assigns it. Falls back to round-robin when unconfigured.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "contact_id": { "type": "string" },
+          "stage": { "type": "string" }
+        },
+        "required": ["contact_id"]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "owner": { "type": "string" }
+        },
+        "required": ["owner"]
+      },
+      "default_behavior": "Round-robin assignment across the tenant's active owners."
+    }
+  ],
+  "dependencies": {
+    "optional": [
+      { "slug": "hello-marketplace", "reason": "Used only for the optional smoke-test ping." }
+    ]
+  }
+}
