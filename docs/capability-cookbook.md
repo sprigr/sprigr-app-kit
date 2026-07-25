@@ -8,6 +8,7 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 
 - **[`examples/showcase`](../examples/showcase)** — a synthetic every-feature app (provider persona: the fictional "Acme CRM"). Its [`sprigr-app.json`](../examples/showcase/sprigr-app.json) declares every manifest field family, and its handlers under [`src/handlers/`](../examples/showcase/src/handlers) exercise every `env.SPRIGR.*` call. Grouped by capability so you can read one file per concern.
 - **[`examples/showcase-consumer`](../examples/showcase-consumer)** — the CONSUMER side: calling another app's cross-tenant tool, subscribing to its cross-tenant event, and the install-config override pattern.
+- **[`examples/agent-template`](../examples/agent-template)** — the OTHER app shape: `kind: 'agent'`. Ships no Worker and no tools; installing it provisions a configured agent (persona, model tier, role, channel defaults, recommended apps, training index).
 - **[`examples/static-badge`](../examples/static-badge)** — the simplest valid app: `runtime.tier: 'static'`, no Worker, no build.
 - **[`examples/harvest`](../examples/harvest)** — the realistic single-integration starter (real OAuth, real provider API). The scaffolder (`pnpm create:app`) generates this shape.
 
@@ -65,17 +66,26 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 | Lifecycle hooks | `lifecycle.on_connect/on_disconnect` | [`sprigr-app.json`](../examples/showcase/sprigr-app.json) | n/a | — (no app declares `lifecycle` yet) |
 | Tool access policy | `tool_access` | [`sprigr-app.json`](../examples/showcase/sprigr-app.json) | n/a | — (no app declares `tool_access` yet) |
 | Content restrictions (prompt rules) | `content_restrictions.rules[]` | [`sprigr-app.json`](../examples/showcase/sprigr-app.json) | n/a (injected into agent prompts) | — (no app declares `content_restrictions` yet) |
+| Agent template app | `kind: 'agent'` + `agent_config` (persona/model_tier/role/settings/channels/recommended_apps) | [`examples/agent-template`](../examples/agent-template) | n/a (provisions an agent at install) | `intabot` |
+| Agent training index | `training_index` | [`agent-template/sprigr-app.json`](../examples/agent-template/sprigr-app.json) | n/a (index provisioned at publish) | — (no app declares `training_index` yet) |
+| Job lifecycle (start/get/list/cancel/signal) | `jobs[]` + `jobs.*` | [`handlers/jobs.ts`](../examples/showcase/src/handlers/jobs.ts) | staging | — (no app declares `jobs[]` yet) |
+| Fulfillment service update / delete | `fulfillment_services[]` + `fulfillment_services.update/delete` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) | staging | — (no app declares `fulfillment_services` yet) |
 | Static tier (no Worker) | `runtime.tier: 'static'`, `framework: 'static'` | [`examples/static-badge`](../examples/static-badge) | n/a (served from R2) | — (no public static-tier app yet) |
 
 ### Reading the exemplar column
 
 A dash means **no app in [sprigr-apps](https://github.com/sprigr/sprigr-apps) uses that capability yet** — the platform supports it, the manifest validator accepts it, but nobody has shipped it in the public marketplace. Roughly half the surface is in that state today. For those rows the kit sample is your only worked reference, so read it closely and expect to be the first to exercise the path on staging. Rows naming an app have been verified against that app's live manifest.
 
-## Not covered by a runnable sample (and why)
+## Completeness
 
-- **`env.SPRIGR.browser.session.*`** is declared and typed ([`handlers/browser.ts`](../examples/showcase/src/handlers/browser.ts) `driveLoginPortal`) but is **publisher-owner-only**: only the single install where `company_id === publisher_company_id` may open a publisher-scoped session; every other install gets `403 not_publisher_owner`. It can't be exercised from a normal tenant install even on staging — you must run it from the publisher's own install. The sample shows the exact call sequence; the constraint is the platform's, not the kit's.
-- **`kind: 'agent'` apps** (`agent_config`, `training_index`) are a different app shape (a shared agent template, not a tool/integration app) with their own required fields. Mixing an `agent_config` block into this tool/integration reference app would misrepresent the shape, so it is intentionally out of scope here — see the `intabot` app in sprigr-apps for the agent-template pattern.
-- **`files.edit` / `files.create` / `files.extract`** (the document-engine twins) are **not** part of the marketplace `env.SPRIGR` wrapper — it exposes only `files.putStream` + `files.url`. Binary text extraction inside a workflow goes through the agent's `files.extract`, not `env.SPRIGR`.
+Every method the marketplace `env.SPRIGR` host object implements — **37** across 13 groups — is called by a sample under `examples/`, and every field the platform's `AppManifest` accepts is declared by one of the four example manifests. If the platform grows a method or a field and the kit doesn't follow, that is a real gap rather than a judgement call.
+
+Two things remain that no sample can fully exercise, for platform reasons:
+
+- **`env.SPRIGR.browser.session.*`** is called and typed ([`handlers/browser.ts`](../examples/showcase/src/handlers/browser.ts) `driveLoginPortal`), but it is **publisher-owner-only**: only the install where `company_id === publisher_company_id` may open a publisher-scoped session, and every other install gets `403 not_publisher_owner`. The sample shows the exact call sequence — you just have to run it from the publisher's own install, even on staging.
+- **`files.edit` / `files.create` / `files.extract`** (the document-engine twins) are **not** in the marketplace wrapper at all: `env.SPRIGR.files` exposes only `putStream` and `url`. Binary text extraction inside a workflow goes through the agent's `files.extract`, not `env.SPRIGR`. There is nothing here to sample.
+
+One manifest field is deliberately absent. **`auth`** (the pre-2026 `{ type: 'api_key', fields: [...] }` block) still exists in the platform's TypeScript types but has **no server-side consumer** — nothing reads `manifest.auth` at publish or install time. Collect credentials with `secrets[]`, and use `oauth` plus the shared bouncer for OAuth providers.
 
 ## Shared packages used
 

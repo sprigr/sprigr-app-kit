@@ -178,7 +178,15 @@ export interface SprigrHost {
       requiresShippingMethod?: boolean;
     }): Promise<{ mfsId: string; shopifyServiceId: string; shopifyLocationId: string; callbackUrl: string; created: boolean }>;
     list(req?: { platform?: string; integrationId?: string }): Promise<{ services: Array<Record<string, unknown>> }>;
-    update(req: Record<string, unknown>): Promise<{ mfsId: string; serviceName: string; status: string }>;
+    update(req: {
+      platform: string;
+      integrationId: string;
+      serviceKey: string;
+      serviceName?: string;
+      inventoryManagement?: boolean;
+      trackingSupport?: boolean;
+      requiresShippingMethod?: boolean;
+    }): Promise<{ mfsId: string; serviceName: string; status: string }>;
     delete(req: { platform: string; integrationId: string; serviceKey: string }): Promise<{ deleted: boolean; mfsId: string }>;
   };
 
