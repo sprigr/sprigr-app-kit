@@ -1,0 +1,9 @@
+node_modules/
+.next/
+.open-next/
+out/
+*.log
+.DS_Store
+.env*
+.sprigr/
+*.tsbuildinfo

@@ -1,0 +1,27 @@
+{
+  "sprigr_app": {
+    "version": "1"
+  },
+  "metadata": {
+    "name": "Static Badge",
+    "slug": "static-badge",
+    "version": "0.0.1",
+    "description": "The simplest valid marketplace app: a static-tier bundle served straight from R2 with no Worker. Proves runtime.tier='static' + framework='static'.",
+    "author": {
+      "name": "Sprigr Company",
+      "email": "platform@sprigr.com"
+    },
+    "category": "productivity",
+    "tags": ["reference", "static"]
+  },
+  "kind": "tool",
+  "runtime": {
+    "entry": "public/index.html",
+    "tier": "static",
+    "framework": "static"
+  },
+  "permissions": {
+    "scopes": []
+  },
+  "tools": []
+}

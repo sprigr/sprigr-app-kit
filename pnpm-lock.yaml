@@ -61,6 +61,116 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
 
+  examples/showcase:
+    dependencies:
+      '@opennextjs/cloudflare':
+        specifier: ^1.0.0
+        version: 1.20.2(next@15.5.21(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(wrangler@4.114.0(@cloudflare/workers-types@5.20260724.1))
+      '@sprigr/apps-app-sdk':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sprigr/apps-d1-kv':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sprigr/apps-dedup-latch':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sprigr/apps-oauth-utils':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sprigr/apps-sync-cursor':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sprigr/apps-webhook-registry':
+        specifier: 0.1.0
+        version: 0.1.0
+      next:
+        specifier: 15.5.21
+        version: 15.5.21(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
+      react:
+        specifier: 19.0.0
+        version: 19.0.0
+      react-dom:
+        specifier: 19.0.0
+        version: 19.0.0(react@19.0.0)
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260722.1
+        version: 5.20260724.1
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.17
+      '@vitest/coverage-v8':
+        specifier: 2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9))
+      esbuild:
+        specifier: ^0.24.0
+        version: 0.24.2
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
+
+  examples/showcase-consumer:
+    dependencies:
+      '@opennextjs/cloudflare':
+        specifier: ^1.0.0
+        version: 1.20.2(next@15.5.21(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(wrangler@4.114.0(@cloudflare/workers-types@5.20260724.1))
+      '@sprigr/apps-app-sdk':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sprigr/apps-d1-kv':
+        specifier: 0.1.0
+        version: 0.1.0
+      next:
+        specifier: 15.5.21
+        version: 15.5.21(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
+      react:
+        specifier: 19.0.0
+        version: 19.0.0
+      react-dom:
+        specifier: 19.0.0
+        version: 19.0.0(react@19.0.0)
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260722.1
+        version: 5.20260724.1
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.17
+      '@vitest/coverage-v8':
+        specifier: 2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9))
+      esbuild:
+        specifier: ^0.24.0
+        version: 0.24.2
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
+
+  examples/static-badge:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
+
   packages/app-sdk:
     devDependencies:
       '@cloudflare/workers-types':
@@ -2011,8 +2121,17 @@ packages:
   '@sprigr/apps-d1-kv@0.1.0':
     resolution: {integrity: sha512-nwSqSl/y4JA7aQR4isg3IPuiDOruWbQ1Jr44S7xcJ+8pyPQWL2NrUWvH9IH05ovHvj38DIzdUyf9lzjrdEgrWA==}
 
+  '@sprigr/apps-dedup-latch@0.1.0':
+    resolution: {integrity: sha512-7hAbyVK+T69f31gVdF6noUhZl38AeYevuqw9a5GgHOxutqTONoiw+WjYe1BiTvpR+AkYEPHdWJC9ogX5dIpDDg==}
+
   '@sprigr/apps-oauth-utils@0.1.0':
     resolution: {integrity: sha512-wR7HZ2L/cuMvL7tLssXI+83qnENH1FXogVU+eie3G7yYgcBHQI2A9ky86BJt8oTo7bepX5YHCYnMPxk2qxj0bQ==}
+
+  '@sprigr/apps-sync-cursor@0.1.0':
+    resolution: {integrity: sha512-CgjA4s8TS3zj1J3CXYIGzSB5z6c7Px3AVBwxrAb1b+/Xo6qVwX/iq3YsNtprHVzzmotLHczhYfUz2rIfnogpXQ==}
+
+  '@sprigr/apps-webhook-registry@0.1.0':
+    resolution: {integrity: sha512-w8YZYu5eUj96nGQ6rCmdshbPc0Z/4AO435bvEG1ajATKoy4wKy4aEBvnalgPDmV2ycpnlwjNVeotTzCHiCXsUg==}
 
   '@swc/helpers@0.5.15':
     resolution: {integrity: sha512-JQ5TuMi45Owi4/BIMAJBoSQoOJu12oOk/gADqlcUL9JEdHB8vyjUSsxqeNXnmXHjYKMi2WcYtezGEEhqUI/E2g==}
@@ -5137,7 +5256,13 @@ snapshots:
 
   '@sprigr/apps-d1-kv@0.1.0': {}
 
+  '@sprigr/apps-dedup-latch@0.1.0': {}
+
   '@sprigr/apps-oauth-utils@0.1.0': {}
+
+  '@sprigr/apps-sync-cursor@0.1.0': {}
+
+  '@sprigr/apps-webhook-registry@0.1.0': {}
 
   '@swc/helpers@0.5.15':
     dependencies:
