@@ -155,3 +155,45 @@ export async function listWarehouses(env: ShowcaseEnv, integrationId: string): P
     'listWarehouses calls env.SPRIGR.fulfillment_services.list — publish to staging.',
   );
 }
+
+/**
+ * Rename a warehouse or change its capability flags, keyed by the same
+ * serviceKey you registered with. This is how you correct a service in
+ * place; delete-and-re-register would orphan the Shopify Location and any
+ * fulfillment orders already routed to it.
+ */
+export async function renameWarehouse(
+  env: ShowcaseEnv,
+  integrationId: string,
+  warehouse: { key: string; newName: string; trackingSupport?: boolean },
+): Promise<HandlerOk | HandlerStagingOnly> {
+  return stagingOnly(
+    () =>
+      env.SPRIGR.fulfillment_services.update({
+        platform: 'shopify',
+        integrationId,
+        serviceKey: warehouse.key,
+        serviceName: warehouse.newName,
+        ...(warehouse.trackingSupport === undefined
+          ? {}
+          : { trackingSupport: warehouse.trackingSupport }),
+      }),
+    'renameWarehouse calls env.SPRIGR.fulfillment_services.update — publish to staging.',
+  );
+}
+
+/**
+ * Deregister a warehouse. Destructive on the provider side — the Shopify
+ * FulfillmentService and its Location go away — so only call it once the
+ * location has no open fulfillment orders.
+ */
+export async function deregisterWarehouse(
+  env: ShowcaseEnv,
+  integrationId: string,
+  serviceKey: string,
+): Promise<HandlerOk | HandlerStagingOnly> {
+  return stagingOnly(
+    () => env.SPRIGR.fulfillment_services.delete({ platform: 'shopify', integrationId, serviceKey }),
+    'deregisterWarehouse calls env.SPRIGR.fulfillment_services.delete — publish to staging.',
+  );
+}

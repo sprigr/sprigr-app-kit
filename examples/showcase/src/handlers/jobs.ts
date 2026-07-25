@@ -24,7 +24,8 @@
  */
 
 import { makeSyncState, runResumablePage } from '@sprigr/apps-sync-cursor';
-import type { ShowcaseEnv } from '../lib/env';
+import { stagingOnly } from '../lib/env';
+import type { ShowcaseEnv, HandlerOk, HandlerStagingOnly } from '../lib/env';
 
 interface JobState {
   phase?: 'backfill' | 'await_approval' | 'done';
@@ -126,6 +127,79 @@ export async function runBackfillStep(env: ShowcaseEnv, dispatch: JobDispatch): 
     // convert to an explicit retryable fail so the reason is legible.
     return { op: 'fail', error: err instanceof Error ? err.message : String(err), retryable: true };
   }
+}
+
+/* ── Driving a job from outside the step function ──────────────────────────
+ *
+ * The step function above IS the job. These four calls are how the rest of
+ * your app — a tool an agent calls, a settings page, another handler —
+ * starts one and follows it. Note there is no polling loop here: a job's
+ * terminal transition emits `sprigr.job.completed` / `.failed` / `.cancelled`
+ * pinned to your install, so subscribe to those in `events.subscribes[]`
+ * rather than spinning on jobs.get.
+ */
+
+/** Kick off a backfill. idempotencyKey makes a double-click a no-op:
+ *  the second call returns { existing: true } with the original job. */
+export async function startBackfill(
+  env: ShowcaseEnv,
+  sinceIso: string,
+): Promise<HandlerOk | HandlerStagingOnly> {
+  return stagingOnly(
+    () =>
+      env.SPRIGR.jobs.start({
+        name: 'showcase_backfill',
+        params: { since: sinceIso },
+        idempotencyKey: `backfill:${sinceIso}`,
+      }),
+    'startBackfill calls env.SPRIGR.jobs.start — publish to staging.',
+  );
+}
+
+/** Read one job's current status/state — use for a progress UI, not a poll loop. */
+export async function getBackfill(
+  env: ShowcaseEnv,
+  jobId: string,
+): Promise<HandlerOk | HandlerStagingOnly> {
+  return stagingOnly(
+    () => env.SPRIGR.jobs.get(jobId),
+    'getBackfill calls env.SPRIGR.jobs.get — publish to staging.',
+  );
+}
+
+/** List this install's backfills, newest first, optionally filtered by status. */
+export async function listBackfills(
+  env: ShowcaseEnv,
+  status?: 'queued' | 'running' | 'sleeping' | 'waiting' | 'completed' | 'failed' | 'cancelled',
+): Promise<HandlerOk | HandlerStagingOnly> {
+  return stagingOnly(
+    () => env.SPRIGR.jobs.list({ name: 'showcase_backfill', ...(status ? { status } : {}), limit: 20 }),
+    'listBackfills calls env.SPRIGR.jobs.list — publish to staging.',
+  );
+}
+
+/** Cancel a run. Queued/sleeping/waiting jobs stop immediately; a running
+ *  one stops at its next step boundary, so the current step still finishes. */
+export async function cancelBackfill(
+  env: ShowcaseEnv,
+  jobId: string,
+): Promise<HandlerOk | HandlerStagingOnly> {
+  return stagingOnly(
+    () => env.SPRIGR.jobs.cancel(jobId),
+    'cancelBackfill calls env.SPRIGR.jobs.cancel — publish to staging.',
+  );
+}
+
+/** Release a step parked on { op: 'wait' } (the approval phase above). */
+export async function approveBackfill(
+  env: ShowcaseEnv,
+  jobId: string,
+  approver: string,
+): Promise<HandlerOk | HandlerStagingOnly> {
+  return stagingOnly(
+    () => env.SPRIGR.jobs.signal(jobId, { approved: true, approver }),
+    'approveBackfill calls env.SPRIGR.jobs.signal — publish to staging.',
+  );
 }
 
 export default {

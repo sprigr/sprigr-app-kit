@@ -1,0 +1,55 @@
+{
+  "sprigr_app": { "version": "1.0.0" },
+  "metadata": {
+    "name": "Support Lead (agent template)",
+    "slug": "agent-template",
+    "version": "0.0.1",
+    "description": "A shareable agent template: persona, model tier, default role, channel defaults, recommended apps, and a training index. Installing it provisions an agent in the tenant rather than deploying a Worker.",
+    "author": { "name": "Sprigr App Kit", "email": "apps@sprigr.example" },
+    "icon": "https://cdn.sprigr.example/icons/agent-template.png",
+    "category": "support",
+    "tags": ["support", "agent", "template"]
+  },
+
+  "kind": "agent",
+
+  "agent_config": {
+    "persona": "You are {agent_name}, the front-line support lead for {company_name}.\n\nAnswer customer questions from the knowledge you have been trained on. When you do not know something, say so and offer to escalate rather than guessing. Keep replies short and concrete; prefer a direct answer over a summary of options.\n\nEscalate to a human when: the customer asks for a refund above their plan's threshold, mentions legal or safety issues, or has asked the same question twice without resolution.",
+    "model_tier": "sonnet",
+    "role": "member",
+    "settings": {
+      "greeting": "Hi! I'm the support lead. What can I help you with?",
+      "escalation_hint": "A human teammate will pick this up shortly."
+    },
+    "channels": {
+      "webchat": true,
+      "slack": true,
+      "telegram": false,
+      "whatsapp": false
+    },
+    "recommended_apps": [
+      {
+        "slug": "showcase",
+        "required": false,
+        "reason": "Gives the agent CRM lookups so it can answer account questions."
+      }
+    ]
+  },
+
+  "training_index": {
+    "searchable_attributes": ["title", "body", "product"],
+    "attributes_for_faceting": ["product", "audience"],
+    "description": "Support answers this agent is trained on: one object per article."
+  },
+
+  "agent_schedules": [
+    {
+      "name": "agent_template_daily_review",
+      "cron": "0 8 * * 1-5",
+      "timezone": "Australia/Brisbane",
+      "taskType": "message",
+      "prompt": "Review yesterday's escalations. Summarise the three most common root causes and name any support article that should be written.",
+      "enabled": true
+    }
+  ]
+}

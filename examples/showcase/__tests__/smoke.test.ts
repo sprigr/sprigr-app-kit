@@ -30,7 +30,16 @@ import {
   defineDealsCollection,
   reconcileDeals,
   registerWarehouse,
+  renameWarehouse,
+  deregisterWarehouse,
 } from '../src/handlers/data-and-collections';
+import {
+  startBackfill,
+  getBackfill,
+  listBackfills,
+  cancelBackfill,
+  approveBackfill,
+} from '../src/handlers/jobs';
 import { putReportCsv, reportUrl } from '../src/handlers/files';
 import { pingHelloMarketplace, correlateShopifyOrder, registerChatWorkspace } from '../src/handlers/cross-tenant';
 import { encodeState } from '@sprigr/apps-app-sdk';
@@ -330,5 +339,60 @@ describe('env.SPRIGR reference modules (call-shape assertions)', () => {
     expect(calls[1]!.method).toBe('integrations.invoke');
     expect((calls[1]!.args[0] as { tool: string }).tool).toBe('shopify_list_orders');
     expect(calls[2]).toEqual({ method: 'registerChannel', args: ['acme_chat', 'team_1'] });
+  });
+});
+
+describe('job lifecycle (driving a durable job from outside the step fn)', () => {
+  it('start/get/list/cancel/signal call shapes', async () => {
+    const { host, calls } = fakeSprigr();
+    const env = makeEnv({ SPRIGR: host });
+    await startBackfill(env, '2026-01-01T00:00:00Z');
+    await getBackfill(env, 'job_1');
+    await listBackfills(env, 'running');
+    await cancelBackfill(env, 'job_1');
+    await approveBackfill(env, 'job_1', 'ops@acme.example');
+    expect(calls.map((c) => c.method)).toEqual([
+      'jobs.start',
+      'jobs.get',
+      'jobs.list',
+      'jobs.cancel',
+      'jobs.signal',
+    ]);
+    // idempotencyKey is what makes a double-click safe.
+    const started = calls[0]!.args[0] as { name: string; idempotencyKey: string };
+    expect(started.name).toBe('showcase_backfill');
+    expect(started.idempotencyKey).toBe('backfill:2026-01-01T00:00:00Z');
+    // list filters to this job name so other jobs don't leak into the UI.
+    expect(calls[2]!.args[0]).toMatchObject({ name: 'showcase_backfill', status: 'running' });
+    // the signal payload is what the parked step reads back.
+    expect(calls[4]!.args[1]).toMatchObject({ approved: true });
+  });
+});
+
+describe('fulfillment service mutation', () => {
+  it('update keys off serviceKey and omits untouched flags', async () => {
+    const { host, calls } = fakeSprigr();
+    const env = makeEnv({ SPRIGR: host });
+    await renameWarehouse(env, 'int_1', { key: 'wh-a', newName: 'Warehouse A (East)' });
+    const req = calls[0]!.args[0] as Record<string, unknown>;
+    expect(calls[0]!.method).toBe('fulfillment_services.update');
+    expect(req).toMatchObject({ serviceKey: 'wh-a', serviceName: 'Warehouse A (East)' });
+    // Not passed => not sent, so the platform keeps the current value.
+    expect('trackingSupport' in req).toBe(false);
+  });
+
+  it('update forwards an explicit flag change', async () => {
+    const { host, calls } = fakeSprigr();
+    const env = makeEnv({ SPRIGR: host });
+    await renameWarehouse(env, 'int_1', { key: 'wh-a', newName: 'A', trackingSupport: false });
+    expect(calls[0]!.args[0]).toMatchObject({ trackingSupport: false });
+  });
+
+  it('delete passes the full three-part key', async () => {
+    const { host, calls } = fakeSprigr();
+    const env = makeEnv({ SPRIGR: host });
+    await deregisterWarehouse(env, 'int_1', 'wh-a');
+    expect(calls[0]!.method).toBe('fulfillment_services.delete');
+    expect(calls[0]!.args[0]).toEqual({ platform: 'shopify', integrationId: 'int_1', serviceKey: 'wh-a' });
   });
 });
