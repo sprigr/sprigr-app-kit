@@ -1,19 +1,41 @@
 name: release
 
 # Publishes the core packages to npm under the @sprigr scope.
-# Manual trigger only: bump the package versions in a PR first, merge,
-# then run this workflow. Already-published versions are skipped, so the
-# workflow is safe to re-run.
+#
+# Trigger:
+#   - push to main (touching packages/**)  →  publish any package whose
+#     version is not yet on npm
+#   - workflow_dispatch                    →  re-run against the current tip
+#
+# The version bump IS the release signal, exactly like the marketplace-app
+# publish flow in sprigr-apps: bump the package version in your PR, and
+# merging it publishes. Merges that don't change a version publish nothing,
+# because every already-published version is skipped — which also makes the
+# workflow safe to re-run.
+#
+# Feature branches never publish; only merges into main do, so two open PRs
+# can't race the registry.
 #
 # Required repo secret: NPM_TOKEN (automation token with publish rights
 # on the @sprigr npm scope).
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/**'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
   contents: read
   id-token: write # npm provenance
+
+# Serialise releases: a second merge landing mid-publish would otherwise race
+# the registry read that decides what to skip.
+concurrency:
+  group: release-npm
+  cancel-in-progress: false
 
 jobs:
   release:
