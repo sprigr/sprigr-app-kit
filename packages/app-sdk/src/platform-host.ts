@@ -94,3 +94,105 @@ export function buildMarketplaceWebhookUrl(
   const base = resolvePlatformWebhookBase(env, override);
   return `${base}/webhook/marketplace/${installId}/${topicPath}`;
 }
+
+/* ------------------------------------------------------------------ *
+ * OAuth bouncer host resolution
+ * ------------------------------------------------------------------ */
+
+const OAUTH_BOUNCER_PROD = 'https://oauth-bouncer.sprigr.com';
+const OAUTH_BOUNCER_STAGING = 'https://staging-oauth-bouncer.sprigr.com';
+
+/**
+ * Is this URL (or bare hostname) served by a STAGING host?
+ *
+ * Every Sprigr staging host is `staging-<something>.sprigr.com`:
+ * `staging-apps` (per-install app sites), `staging-sites` (the
+ * preview-token host from `get_website_preview`), `staging-team` (the
+ * portal), `staging-webhooks` (the platform base). No prod host carries
+ * a `staging-` label.
+ *
+ * Tests the HOSTNAME, not a substring of the whole URL. Eight apps
+ * previously hand-rolled
+ *
+ *     reqUrl.includes('staging-apps.sprigr.com') ||
+ *     reqUrl.includes('staging-team.sprigr.com')
+ *
+ * which was wrong in BOTH directions. It missed `staging-sites`, so a
+ * staging install served from the preview host built an authorize URL
+ * pointing at the PRODUCTION bouncer — which cannot resolve a staging
+ * install id, so the connect died at the bouncer with a confusing error
+ * (observed live 2026-07-25 by reading the Location header off a
+ * deployed /oauth/start). And because it matched the whole URL, a PROD
+ * install hit with `?return_to=https://staging-team.sprigr.com/x` was
+ * classified as staging. Parsing the hostname closes both.
+ *
+ * Unparseable input resolves to `false` (prod), so a caller can never
+ * accidentally point production traffic at staging.
+ */
+export function isStagingHost(urlOrHostname: string | null | undefined): boolean {
+  const raw = (urlOrHostname ?? '').trim();
+  if (!raw) return false;
+  let hostname: string;
+  try {
+    hostname = new URL(raw).hostname;
+  } catch {
+    // Not a full URL. Accept a bare hostname (`staging-team.sprigr.com`),
+    // but never a fragment that merely contains host-ish characters.
+    hostname = /^[a-z0-9.-]+$/i.test(raw) ? raw : '';
+  }
+  return /(^|\.)staging-/.test(hostname);
+}
+
+/**
+ * Signals an app can offer to decide which bouncer to use. Pass whatever
+ * the call site actually has:
+ *
+ *   - `reqUrl`       an inbound browser request URL (the /oauth/start route).
+ *   - `platformBase` the platform-stamped `SPRIGR_PLATFORM_BASE`, for tool
+ *                    handlers dispatched on /__sprigr/tool/* where there is
+ *                    no browser origin. Staging value is
+ *                    `https://staging-webhooks.sprigr.com`.
+ *   - `override`     an explicit per-install redirect URI / bouncer base.
+ *                    Always wins; used for local dev and canaries.
+ *
+ * Staging wins if ANY supplied signal says staging.
+ */
+export interface OAuthBouncerSignals {
+  reqUrl?: string | null;
+  platformBase?: string | null;
+  override?: string | null;
+}
+
+/**
+ * The bouncer ORIGIN for the environment serving this request, e.g.
+ * `https://staging-oauth-bouncer.sprigr.com`. Never has a trailing slash.
+ *
+ * `override` short-circuits everything (trailing slash stripped).
+ */
+export function resolveOAuthBouncerBase(signals: OAuthBouncerSignals = {}): string {
+  const override = (signals.override ?? '').trim();
+  if (override) return override.replace(/\/$/, '');
+  const isStaging =
+    isStagingHost(signals.reqUrl) || isStagingHost(signals.platformBase);
+  return isStaging ? OAUTH_BOUNCER_STAGING : OAUTH_BOUNCER_PROD;
+}
+
+/**
+ * The full bouncer CALLBACK URL for a provider, which is the value that
+ * goes in an authorize URL's `redirect_uri` and must be registered as a
+ * redirect URI on the provider's developer app:
+ *
+ *   resolveOAuthBouncerCallbackUrl('simpro', { reqUrl: req.url })
+ *   // -> "https://staging-oauth-bouncer.sprigr.com/simpro/oauth/callback"
+ *
+ * `override` is returned verbatim (no provider path appended) — an app
+ * pointing at a local bouncer supplies the complete callback URL.
+ */
+export function resolveOAuthBouncerCallbackUrl(
+  provider: string,
+  signals: OAuthBouncerSignals = {},
+): string {
+  const override = (signals.override ?? '').trim();
+  if (override) return override;
+  return `${resolveOAuthBouncerBase(signals)}/${provider}/oauth/callback`;
+}
