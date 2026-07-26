@@ -17,8 +17,14 @@ export {
   DEFAULT_MAX_FILE_BYTES,
 } from './file';
 export type { FetchFileResult } from './file';
-export { resolvePlatformWebhookBase, buildMarketplaceWebhookUrl } from './platform-host';
-export type { PlatformHostEnv } from './platform-host';
+export {
+  resolvePlatformWebhookBase,
+  buildMarketplaceWebhookUrl,
+  isStagingHost,
+  resolveOAuthBouncerBase,
+  resolveOAuthBouncerCallbackUrl,
+} from './platform-host';
+export type { PlatformHostEnv, OAuthBouncerSignals } from './platform-host';
 export {
   emitMarketplaceEvent,
   createMarketplaceEmitter,
