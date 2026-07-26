@@ -257,6 +257,39 @@ export async function emitMarketplaceEvent(
 }
 
 /**
+ * Whether an emit could reach the platform at all, by either transport.
+ *
+ * Use it to skip work whose only purpose is to feed an emit. Gate on this
+ * rather than on `env.SPRIGR?.emit`: the binding is absent on every inline
+ * route, so the narrower check skips the work in exactly the context where the
+ * HTTP bridge would have carried it.
+ */
+export function canEmit(env: WfpBridgeEnv): boolean {
+  return bindingEmit(env) !== null || resolveInstallBridge(env) !== null;
+}
+
+/**
+ * Pre-bind an app's `integrationType` so call sites pass only what varies.
+ * `sourceIntegration` is built per call from `env.INSTALL_ID`, and omitted
+ * entirely when that is unbound (the platform 400s on a partial one).
+ *
+ *   const emit = createMarketplaceEmitter('procore');
+ *   const r = await emit(env, 'procore.rfi.updated', payload);
+ */
+export function createMarketplaceEmitter<E extends WfpBridgeEnv = WfpBridgeEnv>(
+  integrationType: string,
+  defaults: { timeoutMs?: number } = {},
+): (env: E, eventName: string, payload: unknown) => Promise<EmitResult> {
+  return (env, eventName, payload) => {
+    const installId = typeof env.INSTALL_ID === 'string' ? env.INSTALL_ID : '';
+    return emitMarketplaceEvent(env, eventName, payload, {
+      ...defaults,
+      ...(installId ? { sourceIntegration: { integrationId: installId, integrationType } } : {}),
+    });
+  };
+}
+
+/**
  * Return an env whose `SPRIGR.emit` works even on an inline route, leaving
  * existing `env.SPRIGR.emit(...)` call sites untouched. Use this when an app
  * emits from many places; use `emitMarketplaceEvent` for a single call site.
