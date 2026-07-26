@@ -56,7 +56,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          for pkg in app-sdk oauth-utils d1-kv sync-cursor dedup-latch webhook-registry faceted-search; do
+          for pkg in app-sdk oauth-utils d1-kv sync-cursor dedup-latch webhook-registry faceted-search timezone-picker; do
             dir="packages/$pkg"
             name=$(node -p "require('./$dir/package.json').name")
             version=$(node -p "require('./$dir/package.json').version")

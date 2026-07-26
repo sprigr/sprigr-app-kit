@@ -7,12 +7,12 @@
  * collects a schedule timezone should import from here rather than
  * re-implementing the list.
  *
- * Workspace import path: `@sprigr/apps-timezone-picker`
- * Vendored path inside apps: `src/lib/vendor/timezone-picker`
- * (`pnpm sync:vendor` in the repo root mirrors the package source into
- * every consuming app's vendor dir — required because the marketplace
- * build sandbox cannot resolve `workspace:*` deps. See
- * docs/marketplace-app-development.md.)
+ * Published to npm as `@sprigr/apps-timezone-picker`; apps depend on it
+ * like any other package. It used to be mirrored into each app's
+ * `src/lib/vendor/timezone-picker` by `pnpm sync:vendor`, because the
+ * marketplace build sandbox runs `npm install` with no workspace context
+ * and so cannot resolve `workspace:*`. Publishing removes that need: the
+ * sandbox resolves a registry dependency fine.
  */
 export { TimezoneSelect } from "./TimezoneSelect";
 export type { TimezoneSelectProps } from "./TimezoneSelect";
