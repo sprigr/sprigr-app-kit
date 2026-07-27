@@ -188,8 +188,8 @@ const packageJson = {
   },
   dependencies: {
     ...Object.fromEntries(KIT_DEPS.map((p) => [`@sprigr/apps-${p}`, KIT_DEP_VERSION])),
-    "@opennextjs/cloudflare": "^1.0.0",
-    next: "15.5.21",
+    "@opennextjs/cloudflare": "1.20.2",
+    next: "15.5.22",
     react: "19.0.0",
     "react-dom": "19.0.0",
   },
