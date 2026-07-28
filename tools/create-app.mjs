@@ -204,6 +204,13 @@ const packageJson = {
     esbuild: "^0.24.0",
     typescript: "^5.6.0",
     vitest: "^2.0.0",
+    // Declared explicitly so the marketplace build-runner's no-lockfile npm
+    // install never has to auto-pick wrangler as OpenNext's peer: the
+    // auto-pick is engine-filtered by the BUILDER's node version and has
+    // resolved to wrangler 4.86.0 (workers-types peer ^4, conflicting with
+    // the ^5 above) on older builders. Keep the wrangler major-pairing rule:
+    // wrangler <=4.107.1 peers workers-types ^4; >=4.108.0 peers ^5.
+    wrangler: "^4.110.0",
   },
 };
 
