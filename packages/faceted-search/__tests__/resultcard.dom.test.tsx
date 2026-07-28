@@ -223,6 +223,38 @@ describe('ResultCard actions', () => {
     host.remove();
   });
 
+  it('keeps the error message distinguishable from an err-toned button', { timeout: 15000 }, async () => {
+    // Button tones are .fb-act-tone-*, the inline failure message is
+    // .fb-act-err. If a tone ever reused the bare .fb-act-err name, this card
+    // (which has BOTH an err-toned button and a rendered error) would make
+    // `.fb-act-err` ambiguous, and any host styling or test selecting on it
+    // would silently pick up the button.
+    const host = await renderCard(
+      {
+        title: 'address',
+        actions: [
+          { value: 'reject', label: 'Reject', tone: 'err' },
+          { value: 'approve', label: 'Approve', tone: 'ok' },
+        ],
+      },
+      HIT,
+      async () => {
+        throw new Error('boom');
+      },
+    );
+
+    [...host.querySelectorAll<HTMLButtonElement>('.fb-actions button')][1].click();
+    await waitFor(() => host.querySelector('.fb-act-err'), '.fb-act-err');
+
+    const matches = [...host.querySelectorAll('.fb-act-err')];
+    expect(matches).toHaveLength(1);
+    expect(matches[0].tagName).toBe('DIV');
+    expect(matches[0].textContent).toContain('boom');
+    // The err-toned button is still tone-classed, just under its own namespace.
+    expect(host.querySelectorAll('button.fb-act-tone-err')).toHaveLength(1);
+    host.remove();
+  });
+
   it('disables the buttons when actions are configured but no onCardAction is supplied', { timeout: 15000 }, async () => {
     const host = await renderCard({ title: 'address', actions: ACTIONS });
 

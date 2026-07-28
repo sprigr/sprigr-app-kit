@@ -152,7 +152,7 @@ export function ResultCard({
             key={i}
             type="button"
             className={
-              `fb-act fb-act-${a.tone ?? 'neutral'}` +
+              `fb-act fb-act-tone-${a.tone ?? 'neutral'}` +
               (pending === a.value ? ' fb-act-pending' : '')
             }
             disabled={!onCardAction || pending != null}
