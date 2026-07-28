@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-faceted-search",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Reusable, parameterized faceted-catalog search UI for Sprigr marketplace app dashboards and agent-built static websites. Dark facet rail with live counts, chips, sub-search, range filters, pagination, skeletons. Three data sources (gateway tool, search key, custom). Ships raw TS source for the sprigrVendor pattern, plus a standalone IIFE embed build with a global mount()/unmount() API.",
   "main": "./dist/src/index.js",
