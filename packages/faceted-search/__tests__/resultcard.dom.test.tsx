@@ -73,13 +73,42 @@ describe('ResultCard image block', () => {
       badges: BADGES,
     });
 
-    // The 4:3 block and glyph stay; badges overlay the thumb (no inline row).
+    // The 4:3 block and glyph stay; badges overlay the thumb.
     expect(host.querySelector('.fb-thumb')).not.toBeNull();
     expect(host.querySelector('.fb-ph')).not.toBeNull();
     expect(host.querySelector('img')).toBeNull(); // no value resolved, no img tag
     expect(host.querySelector('.fb-card-noimg')).toBeNull();
-    expect(host.querySelector('.fb-pill-row')).toBeNull();
+    // Overlaid badges still live in a .fb-pill-row (see the two-badge test
+    // below for why that row is not optional).
+    expect(host.querySelector('.fb-thumb > .fb-pill-row')).not.toBeNull();
     expect(host.querySelector('.fb-thumb .fb-pill')?.textContent).toBe('Qualified');
+    host.remove();
+  });
+
+  it('lays two overlay badges out in a row instead of stacking them', { timeout: 15000 }, async () => {
+    const host = await renderCard(
+      {
+        image: 'photos.0.url',
+        title: 'address',
+        badges: [
+          { attr: 'qualification', map: { qualified: { label: 'Qualified', tone: 'ok' } } },
+          { attr: 'review', map: { unreviewed: { label: 'Unreviewed', tone: 'neutral' } } },
+        ],
+      },
+      { ...HIT, review: 'unreviewed' },
+    );
+
+    // A bare .fb-pill is position:absolute at top:10px/left:10px, so any pill
+    // that is a DIRECT child of .fb-thumb stacks on that one corner and only
+    // the tail of whichever sits underneath stays visible. Both pills must go
+    // inside the flex row, which resets them to position:static.
+    expect(host.querySelectorAll('.fb-thumb > .fb-pill')).toHaveLength(0);
+
+    const row = host.querySelector('.fb-thumb > .fb-pill-row');
+    expect(row).not.toBeNull();
+    const pills = row!.querySelectorAll('.fb-pill');
+    expect(pills).toHaveLength(2);
+    expect([...pills].map((p) => p.textContent)).toEqual(['Qualified', 'Unreviewed']);
     host.remove();
   });
 
