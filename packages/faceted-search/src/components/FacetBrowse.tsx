@@ -163,7 +163,12 @@ export function FacetBrowse({ config, renderCard }: FacetBrowseProps): JSX.Eleme
                   renderCard ? (
                     <div key={cardKey(h, i)}>{renderCard(h)}</div>
                   ) : (
-                    <ResultCard key={cardKey(h, i)} hit={h} card={config.card} />
+                    <ResultCard
+                      key={cardKey(h, i)}
+                      hit={h}
+                      card={config.card}
+                      onCardAction={config.onCardAction}
+                    />
                   ),
                 )}
               </div>

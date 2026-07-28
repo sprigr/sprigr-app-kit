@@ -119,6 +119,22 @@ export const CSS = `
 .fb .fb-csubtitle{font-size:12.5px;color:var(--fb-muted)}
 .fb .fb-specs{display:flex;gap:12px;flex-wrap:wrap;margin-top:auto;padding-top:10px;border-top:1px solid var(--fb-line);font-size:13px}
 .fb .fb-specs .fb-s.fb-muted{color:var(--fb-muted)}
+/* Card action buttons (card.actions). The card element stops being the link and
+   becomes a plain wrapper, so .fb-card-main has to take over the flex column the
+   thumb and body were sizing against, otherwise .fb-cbody{flex:1} has nothing to
+   grow inside and the meta row loses its margin-top:auto push. */
+.fb .fb-card-main{display:flex;flex-direction:column;flex:1;min-height:0}
+.fb .fb-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:11px 14px 12px;border-top:1px solid var(--fb-line)}
+.fb .fb-actions button{background:var(--fb-surface);border:1px solid var(--fb-line);border-radius:8px;padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer}
+.fb .fb-actions button:disabled{opacity:.4;cursor:default}
+.fb .fb-actions button.fb-act-ok{border-color:var(--fb-ok);color:var(--fb-ok)}
+.fb .fb-actions button.fb-act-warn{border-color:var(--fb-warn);color:var(--fb-warn)}
+.fb .fb-actions button.fb-act-err{border-color:var(--fb-err);color:var(--fb-err)}
+.fb .fb-actions button.fb-act-neutral{border-color:var(--fb-line);color:var(--fb-neutral)}
+.fb .fb-actions button.fb-act-pending{opacity:.6}
+/* The error message shares the fb-act-err class name with the err tone, so the
+   two rules are separated by element type: buttons above, this div here. */
+.fb .fb-actions div.fb-act-err{flex-basis:100%;color:var(--fb-err);font-size:12.5px}
 .fb .fb-empty{text-align:center;padding:70px 20px;color:var(--fb-muted)}
 .fb .fb-empty h3{color:var(--fb-ink);font-size:18px;margin:0 0 6px}
 .fb .fb-empty button{margin-top:14px;background:var(--fb-ink);color:var(--fb-ground);border:0;border-radius:8px;padding:9px 16px}

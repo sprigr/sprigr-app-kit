@@ -74,6 +74,41 @@ badges inline above the primary line. (When `card.image` IS configured but a
 given hit lacks the value, the placeholder block stays so the grid keeps a
 uniform rhythm.)
 
+### Per-card action buttons
+
+Set `card.actions` and a top-level `onCardAction` to put buttons on each tile:
+
+```tsx
+const config: FacetBrowseConfig = {
+  // ...
+  card: {
+    title: 'address.raw',
+    href: 'source_url',
+    actions: [
+      { value: 'approve', label: 'Approve', tone: 'ok' },
+      { value: 'reject', label: 'Reject', tone: 'warn' },
+    ],
+  },
+  onCardAction: async (hit, value) => {
+    await fetch('/api/review', { method: 'POST', body: JSON.stringify({ id: hit.objectID, value }) });
+  },
+};
+```
+
+While a click is in flight the card disables all of its buttons and marks the
+clicked one `aria-busy="true"` with a `.fb-act-pending` class. If the handler
+rejects, the message renders in a `.fb-act-err` element inside `.fb-actions`
+(`role="status"`) and the buttons go back to clickable, so the operator can
+retry. Nothing is thrown and the hit is never mutated: the host decides whether
+to re-run the search. Configuring `actions` without `onCardAction` renders the
+buttons disabled, so the misconfiguration is visible rather than silent.
+
+Structural note: with `actions` configured the card is no longer a single `<a>`.
+It becomes `.fb-card.fb-card-actionable` wrapping an `.fb-card-main` link plus a
+sibling `.fb-actions` row, because a `<button>` inside an `<a>` is invalid HTML
+and the click would navigate instead of firing the handler. Without `actions`
+the markup is unchanged, so existing consumers and their CSS are unaffected.
+
 ## Data sources
 
 Every source normalizes to the same `SearchResult`

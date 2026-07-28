@@ -122,6 +122,13 @@ export type CardConfig = {
   badges?: CardBadge[];
   meta?: CardMeta[];
   href?: string;
+  /** Optional action buttons rendered at the foot of each card. */
+  actions?: Array<{
+    /** Value passed to onCardAction. */
+    value: string;
+    label: string;
+    tone?: 'ok' | 'warn' | 'err' | 'neutral';
+  }>;
 };
 
 /** Full configuration for a <FacetBrowse> instance. */
@@ -153,4 +160,10 @@ export type FacetBrowseConfig = {
   baseFilter?: string;
   /** CSS custom property overrides, e.g. { '--fb-accent': '#B9D94B' }. */
   theme?: Record<string, string>;
+  /**
+   * Invoked when a card action button is clicked. Receives the full hit and
+   * the action's `value`. May be async; the card shows a pending state while
+   * it settles and surfaces a failure inline.
+   */
+  onCardAction?: (hit: Record<string, unknown>, value: string) => void | Promise<void>;
 };
