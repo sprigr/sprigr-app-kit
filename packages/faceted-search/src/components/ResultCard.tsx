@@ -63,7 +63,9 @@ export function ResultCard({
           {img && imgOk && (
             <img src={img} loading="lazy" alt="" onError={() => setImgOk(false)} />
           )}
-          {badgePills}
+          {visibleBadges.length > 0 && (
+            <div className="fb-pill-row">{badgePills}</div>
+          )}
         </div>
       )}
       <div className="fb-cbody">

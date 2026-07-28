@@ -106,6 +106,12 @@ export const CSS = `
 .fb .fb-pill.fb-tone-neutral{background:var(--fb-neutral)}
 .fb .fb-pill-row{display:flex;gap:6px;flex-wrap:wrap}
 .fb .fb-pill-row .fb-pill{position:static}
+/* Badges overlaid on a card image. The ROW is positioned, not each pill: a bare
+   .fb-pill defaults to absolute top/left so a lone pill can sit on a thumbnail
+   (realestate's SearchApp still does that), but two of them then stack on the
+   same 10/10 corner and all you see is the tail of the one underneath.
+   right:10px lets a long pair wrap inside the image instead of running off it. */
+.fb .fb-thumb .fb-pill-row{position:absolute;top:10px;left:10px;right:10px}
 .fb .fb-cbody{padding:13px 14px 15px;display:flex;flex-direction:column;gap:7px;flex:1}
 .fb .fb-primary{font-size:21px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
 .fb .fb-primary.fb-na{font-size:15px;color:var(--fb-muted)}
