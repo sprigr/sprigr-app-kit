@@ -26,5 +26,5 @@ export { ResultPanel, type ToolResult } from './kit/ResultPanel';
 export { StatTile, type StatTileProps } from './kit/StatTile';
 export { ToastProvider, useToast } from './kit/toast';
 export { TONE_C, type Tone } from './kit/tones';
-export { relTime, relFromMs, ageLabel } from './kit/time';
+export { relTime, relFromMs, ageLabel, toEpochMs } from './kit/time';
 export { money } from './kit/money';

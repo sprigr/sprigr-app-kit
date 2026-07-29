@@ -6,11 +6,12 @@
  * them, or drop a lucide component in directly where a one-off is simpler.
  */
 import {
-  Activity, ArrowRight, ArrowUp, Bell, Box, Boxes, Building2, Check, CheckCheck,
-  ChevronDown, ChevronRight, CircleCheck, CircleX, Code2, Copy, Database,
-  ExternalLink, FastForward, Gauge, History, Inbox, KeyRound, Lock, Minus, Moon,
-  Pause, Pencil, Play, Plus, RefreshCw, Route, Search, Settings, ShieldCheck,
-  SlidersHorizontal, Sparkles, Sun, TriangleAlert, Undo2, User, Wind, Workflow, X,
+  Activity, ArrowRight, ArrowUp, Bell, Box, Boxes, Building2, ChartColumn, Check, CheckCheck,
+  ChevronDown, ChevronRight, CircleCheck, CircleX, Clock, Code2, Copy, Database, DollarSign,
+  ExternalLink, FastForward, Gauge, History, Inbox, Info, KeyRound, Lock, Minus, Moon,
+  PackageCheck, Pause, Pencil, Phone, Play, Plus, RefreshCw, RotateCw, Route, Search,
+  Settings, ShieldCheck, SlidersHorizontal, Sparkles, Sun, TrendingDown, TrendingUp, Truck,
+  TriangleAlert, Undo2, User, Wind, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
 import type { CSSProperties } from 'react';
@@ -27,6 +28,17 @@ const ICONS: Record<string, LucideIcon> = {
   broom: Wind,
   flow: Workflow,
   database: Database,
+  // logistics / metrics
+  'package-check': PackageCheck,
+  truck: Truck,
+  chart: ChartColumn,
+  'trending-up': TrendingUp,
+  'trending-down': TrendingDown,
+  'dollar-sign': DollarSign,
+  phone: Phone,
+  info: Info,
+  clock: Clock,
+  rotate: RotateCw,
   // actions / status
   undo: Undo2,
   refresh: RefreshCw,
