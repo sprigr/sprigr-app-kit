@@ -10,6 +10,7 @@ Sprigr marketplace apps are Next.js apps that run isolated per install on the Sp
 |---|---|
 | [docs/getting-started.md](docs/getting-started.md) | **New to Sprigr? Start here.** Zero-to-published setup: machine prereqs, account signup, CLI login, scaffold, provider OAuth registration, local testing, first publish. |
 | [docs/build-guide.md](docs/build-guide.md) | Step-by-step app walkthrough: scaffold, manifest, OAuth, tools, publish. Written so an AI agent can follow it end to end. |
+| [docs/marketplace-app-development.md](docs/marketplace-app-development.md) | End-to-end conceptual guide to the platform surface: manifest, runtime bindings, publish pipeline, OAuth bouncer, durable jobs + scoped store, vendoring vs npm. |
 | [docs/platform-reference.md](docs/platform-reference.md) | Deep reference: manifest schema, runtime bindings (`env.SPRIGR.*`), publish pipeline, bouncer contract. |
 | [docs/capability-cookbook.md](docs/capability-cookbook.md) | **The coverage index.** One row per capability family: manifest field → sample file → local-vs-staging → best production exemplar. When you need feature X, start here. |
 | [examples/harvest](examples/harvest) | A complete reference app: OAuth against Harvest (time tracking), token refresh, agent tools, AI-facing docs, tests. |

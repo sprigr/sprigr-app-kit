@@ -7,8 +7,8 @@ Deep reference for building, publishing, and shipping a marketplace app on the S
 ## TL;DR
 
 - A marketplace app is a **Next.js app** (also Astro or Remix) that runs on the Sprigr platform via Cloudflare **Workers-for-Platforms** (WFP), one isolated script per install.
-- The publisher repo (`sprigr-apps`) is a Turborepo monorepo. Each app lives in `apps/<slug>/` with a `sprigr-app.json` manifest, a Next.js source tree, and migrations.
-- You publish via `sprigr app publish --dir apps/<slug>` (CLI in `sprigr-team/apps/cli`). The platform compiles the source files into a per-install WFP script in a container build job.
+- You build apps in this kit (`sprigr-app-kit`), a Turborepo monorepo. Each app lives in `apps/<slug>/` with a `sprigr-app.json` manifest, a Next.js source tree, and migrations.
+- You publish via `sprigr app publish --dir apps/<slug>` (the `@sprigr/cli` package on npm). The platform compiles the source files into a per-install WFP script in a container build job.
 - Per-install state lives in a per-install **D1 database** (`env.DB`) bound at upload time. The manifest declares migrations; the platform runs them after every successful build.
 - The publisher ships **secrets** (declared in the manifest) and `env.SPRIGR.*` runtime bindings. After [sprigr-team #851], every install also gets `INSTALL_ID`, `COMPANY_ID`, `APP_SLUG`, `SPRIGR_INSTALL_TOKEN`, `SPRIGR_PLATFORM_BASE` bindings.
 - OAuth flows through the **publisher-shared bouncer** at `oauth-bouncer.sprigr.com` (prod) / `staging-oauth-bouncer.sprigr.com` (staging). One redirect URI per environment; the bouncer dispatches the callback back to the correct install via the WFP `DISPATCHER` namespace.

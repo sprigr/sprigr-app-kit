@@ -4,7 +4,7 @@ A self-contained walkthrough for a developer or AI agent building a complete Spr
 
 The worked example throughout is [examples/harvest](../examples/harvest), a complete OAuth integration against Harvest (time tracking): manifest, migrations, OAuth via the Sprigr bouncer, token refresh, agent tools, AI-facing docs, tests. Every pattern in this guide exists in that app; when in doubt, read the corresponding file there.
 
-The deep reference for the manifest schema, runtime bindings (`env.SPRIGR.*`), and the publish pipeline is [platform-reference.md](platform-reference.md); "reference §N" below points into it.
+The deep reference for the manifest schema, runtime bindings (`env.SPRIGR.*`), and the publish pipeline is [platform-reference.md](platform-reference.md); "reference §N" below points into it. For the wider conceptual tour (durable jobs, the scoped store, vendoring-vs-npm, the OAuth bouncer end to end), see [marketplace-app-development.md](marketplace-app-development.md).
 
 ---
 
