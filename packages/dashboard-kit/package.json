@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-dashboard-kit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Dashboard design system for Sprigr marketplace apps: a CSS token layer (warm-neutral + indigo, light/dark, density) with a Tailwind v4 theme mapping, plus a React component kit (tables, badges, drawers, confirm dialogs, audit timelines, states, filters, toasts).",
   "main": "./dist/index.js",
