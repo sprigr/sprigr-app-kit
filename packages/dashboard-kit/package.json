@@ -1,35 +1,51 @@
 {
   "name": "@sprigr/apps-dashboard-kit",
-  "version": "0.0.1",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
-  "description": "Shared Sprigr operator/brand dashboard design system: CSS token layer (warm-neutral + indigo, light/dark, density) + Tailwind v4 theme mapping + React component kit (tables, badges, drawers, confirm dialogs, audit timelines, states, filters, toasts). Vendored into marketplace-app dashboards via the sprigrVendor pattern.",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "description": "Dashboard design system for Sprigr marketplace apps: a CSS token layer (warm-neutral + indigo, light/dark, density) with a Tailwind v4 theme mapping, plus a React component kit (tables, badges, drawers, confirm dialogs, audit timelines, states, filters, toasts).",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./styles": "./src/styles/index.css",
-    "./styles/tokens.css": "./src/styles/tokens.css",
-    "./styles/components.css": "./src/styles/components.css"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./styles": "./dist/styles/index.css",
+    "./styles/tokens.css": "./dist/styles/tokens.css",
+    "./styles/components.css": "./dist/styles/components.css"
   },
+  "sideEffects": [
+    "**/*.css"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "build": "tsup src/index.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json && node scripts/copy-styles.mjs",
+    "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
+    "lucide-react": ">=0.400.0",
     "react": ">=18",
-    "react-dom": ">=18",
-    "lucide-react": ">=0.400.0"
-  },
-  "peerDependenciesMeta": {
-    "lucide-react": { "optional": false }
+    "react-dom": ">=18"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "lucide-react": "^0.460.0",
     "react": "19.0.0",
     "react-dom": "19.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
-  }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/dashboard-kit"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
 }

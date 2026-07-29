@@ -15,7 +15,7 @@ Sprigr marketplace apps are Next.js apps that run isolated per install on the Sp
 | [docs/capability-cookbook.md](docs/capability-cookbook.md) | **The coverage index.** One row per capability family: manifest field → sample file → local-vs-staging → best production exemplar. When you need feature X, start here. |
 | [examples/harvest](examples/harvest) | A complete reference app: OAuth against Harvest (time tracking), token refresh, agent tools, AI-facing docs, tests. |
 | [examples/showcase](examples/showcase) + [examples/showcase-consumer](examples/showcase-consumer) + [examples/static-badge](examples/static-badge) | Synthetic every-feature reference apps: `showcase` declares every manifest field and exercises every `env.SPRIGR.*` call; `showcase-consumer` shows the cross-app consumer side; `static-badge` is the minimal static-tier app. Indexed by the [capability cookbook](docs/capability-cookbook.md). |
-| [packages/](packages) | The shared packages, published to npm as `@sprigr/apps-*` (exact-pin them): `oauth-utils` (code exchange, race-safe refresh), `app-sdk` (state codec, crypto, retrying fetch, platform types), `d1-kv` (token/settings stores), `sync-cursor`, `dedup-latch`, `webhook-registry`, `faceted-search` (catalog search UI, [guide](docs/faceted-search.md)). Unpublished, vendor-only: `dashboard-kit`, `timezone-picker`. |
+| [packages/](packages) | The shared packages. All of them publish to npm as `@sprigr/apps-*`; exact-pin them. `app-sdk` (state codec, crypto, retrying fetch, platform types), `oauth-utils` (code exchange, race-safe refresh), `d1-kv` (token/settings stores), `sync-cursor`, `dedup-latch`, `webhook-registry`, `faceted-search` (catalog search UI, [guide](docs/faceted-search.md)), `dashboard-kit` (admin dashboard design system), `timezone-picker` (IANA data + SSR `<TimezoneSelect>`). |
 | [tools/](tools) | `create-app.mjs` (scaffolder), `sync-vendor.mjs` (vendoring + drift check), `bump-version.mjs`, `check-migrations-immutable.mjs`. |
 
 ## Quick start
@@ -44,6 +44,6 @@ Full setup walkthrough: [docs/getting-started.md](docs/getting-started.md). In s
 ## The two rules that save you days
 
 1. **Never edit a published migration file.** The platform ledgers each migration's hash per install; a one-byte change silently blocks every install from upgrading. New schema = new numbered migration file.
-2. **Never `workspace:*`-import shared code into an app.** The platform build runs plain `npm install` with no monorepo context. Depend on the published `@sprigr/apps-*` packages at exact versions (the scaffolder does this); vendor only the unpublished UI packages.
+2. **Never `workspace:*`-import shared code into an app.** The platform build runs plain `npm install` with no monorepo context. Depend on the published `@sprigr/apps-*` packages at exact versions (the scaffolder does this). Every package in `packages/` is published, so the `sprigrVendor` source mirror is only a fallback for a package that cannot be.
 
 Both are enforced by `pnpm verify:local`.

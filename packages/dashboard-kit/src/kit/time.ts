@@ -1,7 +1,7 @@
 /**
  * Relative-time helpers. Default to the real wall clock (Date.now()); pass an
- * explicit `now` (epoch ms) to render against a fixed dataset clock (e.g. demo
- * seed data with an `as_of` timestamp).
+ * explicit `now` (epoch ms) to render against a fixed dataset clock, which is
+ * what you want for seeded fixtures and deterministic snapshot tests.
  */
 
 export function relTime(iso: string | null | undefined, now: number = Date.now()): string {

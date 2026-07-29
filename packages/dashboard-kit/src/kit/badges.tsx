@@ -1,4 +1,10 @@
-/** Status / severity / freshness / health badges. Visual parity with the prototype. */
+/**
+ * Status / severity / freshness / health badges.
+ *
+ * The exported tone maps (`ROUTING_TONES`, `SEV`, `EXC_STATUS`, `FRESH`) are
+ * plain objects: spread one and add your own keys if your app's vocabulary
+ * differs from the defaults.
+ */
 import type { ReactNode } from 'react';
 
 type Tone = { bg: string; fg: string; dot?: string; label: string };

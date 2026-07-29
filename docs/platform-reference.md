@@ -80,14 +80,14 @@ It generates the full skeleton above (manifest, configs, env typing, D1 settings
 // GOOD (preferred) — published npm package, exact-pinned in package.json
 import { encodeState } from '@sprigr/apps-app-sdk';   // "@sprigr/apps-app-sdk": "0.1.0"
 
-// GOOD (unpublished packages only) — vendored copy under src/lib/vendor/
+// OK (fallback, only for a package that is not on npm): vendored copy
 import { TimezoneSelect } from '../../lib/vendor/timezone-picker';
 
 // BAD — workspace resolution, breaks in the build-runner sandbox
 // "@sprigr/apps-app-sdk": "workspace:*"
 ```
 
-Pin npm deps to an **exact** version: the build-runner reinstalls on every install build, so a range rolls new helper code into production installs without an app release. Vendoring (below) remains for packages not yet on npm.
+Pin npm deps to an **exact** version: the build-runner reinstalls on every install build, so a range rolls new helper code into production installs without an app release. Every package under `packages/` is on npm, so vendoring (below) is the fallback for a package that cannot be published, plus the maintenance path for apps that predate a package's first publish.
 
 **Use the script — don't hand-copy:**
 
