@@ -65,9 +65,9 @@ import { encodeState } from '@sprigr/apps-app-sdk';   // via workspace:*
 
 There are two supported ways to get shared code into a published app:
 
-**1. Depend on the published npm packages (preferred).** The kit's core packages publish to npm as `@sprigr/apps-*`, so `npm install` in the build sandbox resolves them cleanly. The scaffolder wires these in for you. **Pin them exactly** (`"@sprigr/apps-oauth-utils": "0.1.0"`, no caret): the build-runner reinstalls on every install build, and a version range would roll new helper code into production installs with no app change and no review. Upgrading a helper is a deliberate app release: bump the pin, bump the app version, publish. See [publishing.md](publishing.md) for the full rationale.
+**1. Depend on the published npm packages (preferred, and what you want).** Every kit package publishes to npm as `@sprigr/apps-*`, so `npm install` in the build sandbox resolves them cleanly. The scaffolder wires these in for you. **Pin them exactly** (`"@sprigr/apps-oauth-utils": "0.1.0"`, no caret): the build-runner reinstalls on every install build, and a version range would roll new helper code into production installs with no app change and no review. Upgrading a helper is a deliberate app release: bump the pin, bump the app version, publish. See [publishing.md](publishing.md) for the full rationale.
 
-**2. Vendor the source (fallback, for unpublished packages only).** A few UI packages are not published to npm (`dashboard-kit`, `timezone-picker`). For those, use the **vendor mirror**: declare which packages you want in your app's `package.json`, then run the sync script to copy their source into `src/lib/vendor/`.
+**2. Vendor the source (fallback, for a package that is not on npm).** No package in `packages/` is in that position today, so you should not need this. It stays documented because a future package might not be publishable, and because apps that predate a package's first publish still carry a mirror. The mechanism: declare which packages you want in your app's `package.json`, then run the sync script to copy their source into `src/lib/vendor/`.
 
 ```jsonc
 {

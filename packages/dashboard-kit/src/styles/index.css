@@ -4,9 +4,10 @@
  *
  *   @import "tailwindcss";
  *   @import "@sprigr/apps-dashboard-kit/styles";
+ *   @source "../../node_modules/@sprigr/apps-dashboard-kit/dist";
  *
- * (Vendored apps import the relative mirror, e.g.
- *   @import "../lib/vendor/dashboard-kit/styles/index.css";)
+ * The @source line is required: Tailwind v4 does not scan node_modules by
+ * default, so without it the kit's utility classes are never generated.
  */
 @import "./tokens.css";
 @import "./components.css";

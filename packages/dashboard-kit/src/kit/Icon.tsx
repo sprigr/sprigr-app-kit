@@ -1,8 +1,9 @@
 /**
- * Icon resolver. The prototype used inline SVG glyph sets resolved by name;
- * this maps those same names onto lucide-react (the glyphs were Lucide-style).
- * Unknown names fall back to a small dot so a missing mapping is visible, not
- * a crash. Add new names to ICONS as screens need them.
+ * Icon resolver: a short, stable name (`gauge`, `alert-triangle`, `copy`) maps
+ * onto a lucide-react glyph, so screens refer to icons by name and never import
+ * lucide directly. Unknown names fall back to a small dot, making a missing
+ * mapping visible rather than a crash. Add new names to ICONS as screens need
+ * them, or drop a lucide component in directly where a one-off is simpler.
  */
 import {
   Activity, ArrowRight, ArrowUp, Bell, Box, Boxes, Building2, Check, CheckCheck,

@@ -3,9 +3,8 @@
  *
  * Shared IANA timezone data + a server-rendered `<TimezoneSelect>`
  * component for marketplace apps that need a "pick your timezone" form
- * input. Cross-app reusable — intabot, linkedin, and any future app that
- * collects a schedule timezone should import from here rather than
- * re-implementing the list.
+ * input. Any app that collects a schedule timezone should import from here
+ * rather than re-implementing the list.
  *
  * Published to npm as `@sprigr/apps-timezone-picker`; apps depend on it
  * like any other package. It used to be mirrored into each app's

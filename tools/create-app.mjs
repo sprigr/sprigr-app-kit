@@ -77,9 +77,12 @@ const NAME =
 // Templates
 // ---------------------------------------------------------------------------
 
-// Published kit packages, consumed as exact-pinned npm deps. (Vendoring via
-// sprigrVendor + pnpm sync:vendor remains available for the unpublished UI
-// packages: dashboard-kit, timezone-picker.)
+// The kit packages a fresh app starts with, consumed as exact-pinned npm deps.
+// Every package under packages/ is on npm, so the rest (dashboard-kit,
+// timezone-picker, faceted-search, sync-cursor, dedup-latch, webhook-registry)
+// are a plain `npm install` away when an app needs them. Vendoring via
+// sprigrVendor + pnpm sync:vendor is only a fallback for a package that cannot
+// be published.
 const KIT_DEPS = NO_OAUTH ? ["app-sdk", "d1-kv"] : ["app-sdk", "oauth-utils", "d1-kv"];
 const KIT_DEP_VERSION = "0.1.0";
 

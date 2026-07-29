@@ -1,4 +1,4 @@
-/** Loading shimmer, empty state, and error (transient-502) state. */
+/** Loading shimmer, empty state, and retryable error state. */
 import type { ReactNode } from 'react';
 import { Icon } from './Icon';
 
@@ -32,7 +32,7 @@ export function ErrorState({ onRetry, detail }: { onRetry?: () => void; detail?:
         <Icon name="alert-triangle" size={22} style={{ color: 'var(--err)' }} />
       </div>
       <p className="text-[14px] font-semibold text-ink">Couldn&rsquo;t load this view</p>
-      <p className="text-[12.5px] text-ink-3 mt-1 max-w-xs">{detail || 'The read path returned a transient 502. This is usually momentary.'}</p>
+      <p className="text-[12.5px] text-ink-3 mt-1 max-w-xs">{detail || 'Something went wrong fetching this data. It is usually momentary, so try again.'}</p>
       {onRetry && <button type="button" onClick={onRetry} className="btn btn-outline mt-4"><Icon name="refresh" size={13} /> Retry</button>}
     </div>
   );

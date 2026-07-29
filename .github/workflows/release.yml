@@ -1,6 +1,13 @@
 name: release
 
-# Publishes the core packages to npm under the @sprigr scope.
+# Publishes the kit packages to npm under the @sprigr scope.
+#
+# The publish set is DERIVED from the filesystem, not hardcoded: every
+# directory under packages/ whose package.json is not `"private": true`. A new
+# package therefore starts publishing the moment it lands, and the way to hold
+# one back is `"private": true` in that package's own package.json. The
+# previous hardcoded list silently dropped any package nobody remembered to
+# add to it.
 #
 # Trigger:
 #   - push to main (touching packages/**)  →  publish any package whose
@@ -56,8 +63,15 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          for pkg in app-sdk oauth-utils d1-kv sync-cursor dedup-latch webhook-registry faceted-search timezone-picker; do
-            dir="packages/$pkg"
+          # Every non-private package under packages/. Opt a package out with
+          # `"private": true` in its package.json; there is no list to edit.
+          for dir in packages/*/; do
+            dir="${dir%/}"
+            [ -f "$dir/package.json" ] || continue
+            if [ "$(node -p "require('./$dir/package.json').private === true")" = "true" ]; then
+              echo "skip: $dir is private"
+              continue
+            fi
             name=$(node -p "require('./$dir/package.json').name")
             version=$(node -p "require('./$dir/package.json').version")
             if npm view "$name@$version" version >/dev/null 2>&1; then
@@ -65,5 +79,5 @@ jobs:
               continue
             fi
             echo "publishing $name@$version"
-            (cd "$dir" && pnpm build && npm publish --access public --provenance)
+            (cd "$dir" && pnpm run --if-present build && npm publish --access public --provenance)
           done
