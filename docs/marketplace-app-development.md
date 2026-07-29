@@ -359,6 +359,45 @@ const shared = await env.SPRIGR.store.get('publisher-session', { scope: 'publish
 
 A `publisher`-scoped call without the `sprigr.jobs:publisher` grant returns `publisher_scope_not_granted` (403).
 
+## 2d. Install lifecycle hooks - `on_install`, `on_upgrade`, `on_uninstall`
+
+The platform dispatches three optional lifecycle hooks through the same `/__sprigr/tool/<name>` path as any other tool. Opt in by declaring a `tools[]` entry with the reserved name; no other wiring. All three are best-effort from the platform's point of view: a failed handler is logged (`marketplace.lifecycle.*` in system logs) but never unwinds the install, build, or uninstall that triggered it.
+
+| Hook | Fires | Firing policy | Body |
+|---|---|---|---|
+| `on_install` | after the install's FIRST successful build | at most once (latched; failed attempts retry on the next build) | `{ install_id, company_id, integrations[] }` |
+| `on_upgrade` | after EVERY later successful build | every build once `on_install` has succeeded - handler MUST be idempotent | `{ trigger: 'upgrade', build_id, version_id }` |
+| `on_uninstall` | during uninstall, BEFORE any teardown | at most once (the install row is deleted moments later); 15s budget | `{ trigger: 'uninstall', install_id, company_id }` |
+
+Use `on_install` for one-shot bootstrap (write `install_config`, seed provider-side resources), `on_upgrade` for reconcile-on-deploy passes (re-register webhook subscriptions, prune stale registrations), and `on_uninstall` to release provider-side resources only the app can see - it runs while the per-install D1, secrets, and env are all still alive, and it is the LAST moment they exist.
+
+`on_uninstall` exists because of a real incident: Xero counts tenant connections against an app-wide cap shared by every install, and the per-install D1 held the only refresh tokens able to revoke them. Uninstall destroyed the D1 without telling the app, permanently leaking a cap slot per connected org. If your provider has any per-app quota, grant registry, or webhook subscription that outlives your tokens, implement `on_uninstall` and revoke/deregister there:
+
+```jsonc
+// sprigr-app.json
+{ "name": "on_uninstall",
+  "description": "Lifecycle hook: revoke provider grants before install teardown.",
+  "handler": "src/handlers/on-uninstall.ts",
+  "input_schema": { "type": "object", "properties": {} } }
+```
+
+```ts
+// src/handlers/on-uninstall.ts - keep it lean; you have ~15s.
+export default {
+  on_uninstall: async (_args, env) => {
+    const rows = await listActorTokenRows(env.DB);      // full tokens, last chance
+    for (const row of rows) {
+      if (!row.refresh_token) continue;
+      // best-effort per row: one dead token must not strand the rest
+      await revokeAtProvider(env, row.refresh_token).catch(() => {});
+    }
+    return { ok: true };
+  },
+};
+```
+
+Don't clean up what the platform already tears down itself: per-install D1/KV, secrets, schedules, channel routes, and shared-webhook tenant registrations are all handled by the uninstall flow. Agent-kind installs (no per-install worker) never receive lifecycle hooks.
+
 ## 3. The SDK (`@sprigr/apps-app-sdk`)
 
 A small npm package (no runtime deps). Provides:
