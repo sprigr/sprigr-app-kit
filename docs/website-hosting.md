@@ -35,7 +35,7 @@ sprigr deploy site_abc123 --dir ./public                            # static
 sprigr deploy site_abc123 --dir ./.open-next --framework next       # Next.js via @opennextjs/cloudflare
 ```
 
-Every deploy is the **complete site, not a diff**: include all files each time. Caps: 500 files, 5 MiB per file. `static` and `next` are the frameworks accepted today (`astro`/`remix` flags exist ahead of platform support). The CLI bundles, uploads, and polls the server-side build to a terminal status; exit code 0 means the build succeeded and the deployment pointer flipped. The serve cache can lag: new or changed pages may keep serving the previous content (or 404 for brand-new paths) for up to about 60 seconds after a deploy. Re-fetch before concluding a deploy failed.
+Every deploy is the **complete site, not a diff**: include all files each time. Caps: 500 files, 5 MiB per file. `static` and `next` are the frameworks accepted today (`astro`/`remix` flags exist ahead of platform support). The CLI bundles, uploads, and polls the server-side build to a terminal status; exit code 0 means the build succeeded, the deployment pointer flipped, and the serve cache was refreshed: your first fetch after the CLI reports success serves the new content, including brand-new paths. Visitors in other regions may see the previous content for up to about 60 seconds while edge caches refresh, so a stale read from a different network is not a failed deploy.
 
 Follow-ups:
 
@@ -56,7 +56,7 @@ sprigr site rollback site_abc123 <deploymentId>   # flip the live pointer back
 sprigr site logs site_abc123            # platform activity: deploys, env/domain changes, serve errors
 ```
 
-Rollback is atomic and takes effect immediately (unlike a fresh deploy, it invalidates the serve cache, so the first fetch already serves the rolled-back content). Roll forward the same way: pick the newer deployment id. Deployment ids come in two shapes for historical reasons (`deploy_...` on the auto-created starter, `dep_...` on everything since); `rollback` accepts both.
+Rollback is atomic and takes effect immediately: like a fresh deploy, it invalidates the serve cache, so the first fetch already serves the rolled-back content. Roll forward the same way: pick the newer deployment id. Deployment ids come in two shapes for historical reasons (`deploy_...` on the auto-created starter, `dep_...` on everything since); `rollback` accepts both.
 
 ## 4. Environment variables and secrets
 
