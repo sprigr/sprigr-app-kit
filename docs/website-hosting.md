@@ -22,7 +22,7 @@ sprigr site create --name "My Docs"
 #   live at https://<workspace>-my-docs.sites.sprigr.com (starter page deployed)
 ```
 
-Creation deploys a starter page immediately, so the printed URL is live before your first deploy. The `site_...` id is what every other command takes.
+Creation deploys a starter page immediately, so the printed URL is live before your first deploy. The `site_...` id is what every other command takes; `sprigr site list` shows every site in the workspace with its id if you lose track of one. Note the starter page counts as deployment v1, so your first real deploy shows up as v2 in `site deployments`.
 
 Options: `--slug` (defaults to a slug of the name; the workspace prefix is stripped so URLs don't stutter), `--description`, `--type website|landing|docs` (dashboard categorization only), `--visibility public|private`, and `--agent <agentId>` to wire the starter page's chat widget to one of your Sprigr agents.
 
@@ -35,7 +35,7 @@ sprigr deploy site_abc123 --dir ./public                            # static
 sprigr deploy site_abc123 --dir ./.open-next --framework next       # Next.js via @opennextjs/cloudflare
 ```
 
-Every deploy is the **complete site, not a diff**: include all files each time. Caps: 500 files, 5 MiB per file. `static` and `next` are the frameworks accepted today (`astro`/`remix` flags exist ahead of platform support). The CLI bundles, uploads, and polls the server-side build to a terminal status; exit code 0 means the new deployment is live.
+Every deploy is the **complete site, not a diff**: include all files each time. Caps: 500 files, 5 MiB per file. `static` and `next` are the frameworks accepted today (`astro`/`remix` flags exist ahead of platform support). The CLI bundles, uploads, and polls the server-side build to a terminal status; exit code 0 means the build succeeded and the deployment pointer flipped. The serve cache can lag: new or changed pages may keep serving the previous content (or 404 for brand-new paths) for up to about 60 seconds after a deploy. Re-fetch before concluding a deploy failed.
 
 Follow-ups:
 
@@ -56,7 +56,7 @@ sprigr site rollback site_abc123 <deploymentId>   # flip the live pointer back
 sprigr site logs site_abc123            # platform activity: deploys, env/domain changes, serve errors
 ```
 
-Rollback is atomic (the deployment pointer flips and the serve cache invalidates). Roll forward the same way: pick the newer deployment id.
+Rollback is atomic and takes effect immediately (unlike a fresh deploy, it invalidates the serve cache, so the first fetch already serves the rolled-back content). Roll forward the same way: pick the newer deployment id. Deployment ids come in two shapes for historical reasons (`deploy_...` on the auto-created starter, `dep_...` on everything since); `rollback` accepts both.
 
 ## 4. Environment variables and secrets
 
@@ -73,7 +73,7 @@ Semantics worth knowing:
 - Setting an existing key **rotates** it.
 - Keys default to secret + runtime. `--build-time` also injects during builds (required for `NEXT_PUBLIC_*` inlining); `--no-runtime` makes a key build-only (npm tokens); `--plain` marks it non-secret.
 - `--env production|staging|preview` scopes the variable (default `production`).
-- On a live SSR site, runtime changes hot-swap into the running worker when possible; the CLI tells you when they will instead apply on the next deploy.
+- On a live SSR site, runtime changes hot-swap into the running worker when possible; the CLI tells you when they will instead apply on the next deploy. On a static site expect `live worker not updated (no_bundle)`: there is no running worker to update, so values simply take effect at the next build.
 
 ## 5. Custom domains
 
@@ -124,7 +124,7 @@ Opening the URL sets a short-lived preview cookie for the rest of the browser se
 sprigr site delete site_abc123 --yes
 ```
 
-Soft-deletes: the site disappears from lists and stops serving, then a 30-day grace period passes before the platform purges files, builds, and custom hostnames permanently.
+Soft-deletes: the site disappears from `sprigr site list` and stops serving, then a 30-day grace period passes before the platform purges files, builds, and custom hostnames permanently.
 
 ## Agent parity
 
