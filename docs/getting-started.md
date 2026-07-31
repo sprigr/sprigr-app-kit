@@ -86,6 +86,10 @@ sprigr app publish --dir apps/<your-slug>
 
 Existing installs pick the new version up via the portal's Upgrade banner or `sprigr app upgrade <your-slug>`.
 
+## Also on the CLI: website hosting
+
+The same CLI hosts plain websites (static or Next.js) for your workspace, separate from marketplace apps: `sprigr site create` puts a starter page live immediately, `sprigr deploy` ships your files, and domains/env/rollback are all first-class commands. Full guide: [website-hosting.md](website-hosting.md).
+
 ## Where to get help
 
 - The [build-guide troubleshooting table](build-guide.md#10-troubleshooting) covers the common failures.
