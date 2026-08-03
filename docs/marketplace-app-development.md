@@ -359,6 +359,76 @@ const shared = await env.SPRIGR.store.get('publisher-session', { scope: 'publish
 
 A `publisher`-scoped call without the `sprigr.jobs:publisher` grant returns `publisher_scope_not_granted` (403).
 
+## 2d. App cards (interactive chat cards)
+
+A tool response may include a reserved top-level **`_artifacts`** array. Entries shaped `{ type: 'panel', panelKind: 'app_card', title, panelData }` render as **native interactive cards** in the portal chat: images, labeled fields, a table, and action buttons that execute your tools directly. Cards are **stripped from what the LLM sees**, so your JSON response must still be the complete answer on its own - the card is a presentation layer for the human, not a channel to the agent.
+
+```ts
+// a tool handler: return your normal response, plus the card
+const response = { ok: true, order };            // what the agent reads
+return {
+  ...response,
+  _artifacts: [{
+    type: 'panel',
+    panelKind: 'app_card',
+    title: `Order ${order.number}`,
+    panelData: {
+      card_id: `order-${order.id}`,              // STABLE per subject - reuse on re-render
+      title: `Order ${order.number}`,
+      subtitle: order.customer_name,
+      images: [{ url: order.photo_url, alt: 'Product photo' }],   // https:// only
+      fields: [
+        { label: 'Status', value: order.status, tone: 'warning' }, // 'default' | 'success' | 'warning' | 'danger'
+        { label: 'Total', value: `$${order.total}`, badge: 'net' },
+      ],
+      table: { columns: ['SKU', 'Qty'], rows: order.lines.map(l => [l.sku, String(l.qty)]) },
+      actions: [{
+        id: 'approve',
+        label: 'Approve',
+        variant: 'primary',                      // 'primary' | 'secondary' | 'danger'
+        tool: 'orders',                          // must name one of YOUR tools[] entries
+        args: { action: 'approve', order_id: order.id },
+        confirm: 'Approve this order?',          // renders a two-click confirmation
+        disable_after: 'all',                    // 'this' | 'all' - which buttons disable on success
+      }],
+      state: 'active',                           // 'active' | 'completed' | 'failed'
+      footer: `myapp · order ${order.id}`,
+    },
+  }],
+};
+```
+
+`card_id` and `title` are required; `subtitle`, `images` (`[{url, alt?}]`), `fields`, `table`, `actions`, `state`, `state_note` (short status line shown with the state), and `footer` are optional. Unknown keys are stripped.
+
+**Caps** (enforced platform-side; a violating entry is dropped, never partially rendered):
+
+| Cap | Limit |
+|---|---|
+| Cards per tool result | 3 |
+| Serialized `panelData` | 32KB |
+| Images | 12, `https://` URLs only |
+| Actions | 6 |
+| Markup | none, ever - see below |
+
+**Security model.** Three properties you can rely on, and must not fight:
+
+- **The platform stamps identity.** `panelData.install_id` and `app_slug` are set by the platform bridge from the invocation context. Omit them - supplied values are discarded. A card cannot claim to be from another app or install.
+- **Data-only: no markup ever renders.** Any string anywhere in the card (including nested `args` values) containing `<` followed by a letter drops the whole entry. Sanitize free text before it goes in - strip tag-like sequences rather than trying to escape them.
+- **Actions execute directly.** Clicking a button invokes the named tool with the given `args` against the emitting install, authenticated as the **clicking user's session**. No agent turn runs; the LLM is not in the loop. After a successful action the card's state persists (`completed`/`failed`, `state_note`, and disabled buttons all survive reloads) and a silent `[app-card] <label>: <title>` system note lands in the conversation history without waking the agent. A failed action never disables buttons - failures are retryable by design.
+
+**Degrade behavior.** On a platform without card support, `_artifacts` is simply ignored and your JSON response works as before, so shipping cards is always safe. Rendering is **portal chat only** for now; mobile is a fast-follow.
+
+**Tell your agent about cards in `docs[]`.** The agent never sees the card, but it does see your JSON response and the `[app-card]` notes. Two lines in your AI-facing docs (§2b) save a lot of noise:
+- The user already sees an interactive card for this result - don't re-list its contents in prose; a one-line pointer to the card is enough.
+- A `[app-card] <label>: <title>` note in the history means the user's action **already ran**. Don't re-execute it; acknowledge and move on.
+
+**Common pitfalls:**
+- **The markup guard is per-entry, not per-string.** One `<b>` in one field value silently drops the entire card. Run every user-sourced or third-party string through a sanitizer.
+- **Unstable `card_id`.** The id keys the persisted state (completed/disabled survive reloads). Derive it from the subject (`order-${id}`), never from `Date.now()` or a random value, or every re-render mints a "new" card and prior state orphans.
+- **Secrets in `args`.** Action args are stored with the conversation and replayed on click. Put an id in `args` and re-resolve tokens server-side in the handler; never a token, key, or password.
+- **Oversized `panelData`.** 32KB serialized is the whole budget, and an over-budget card is dropped. Shed content in a defined order when a card runs large: drop images first, then trim table rows, and omit the card entirely rather than ship a broken one.
+- **A card must never fail the tool.** Build it in a try/catch and omit `_artifacts` on any throw. The JSON response is the product; the card is a bonus.
+
 ## 3. The SDK (`@sprigr/apps-app-sdk`)
 
 A small npm package (no runtime deps). Provides:
