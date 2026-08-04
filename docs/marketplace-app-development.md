@@ -416,7 +416,13 @@ return {
 - **Data-only: no markup ever renders.** Any string anywhere in the card (including nested `args` values) containing `<` followed by a letter drops the whole entry. Sanitize free text before it goes in - strip tag-like sequences rather than trying to escape them.
 - **Actions execute directly.** Clicking a button invokes the named tool with the given `args` against the emitting install, authenticated as the **clicking user's session**. No agent turn runs; the LLM is not in the loop. After a successful action the card's state persists (`completed`/`failed`, `state_note`, and disabled buttons all survive reloads) and a silent `[app-card] <label>: <title>` system note lands in the conversation history without waking the agent. A failed action never disables buttons - failures are retryable by design.
 
-**Degrade behavior.** On a platform without card support, `_artifacts` is simply ignored and your JSON response works as before, so shipping cards is always safe. Rendering is **portal chat only** for now; mobile is a fast-follow.
+**Say what happened: return `message`.** After an action runs, the platform lifts a top-level `message` string from your tool result into the card's `state_note` (fallback: "<label> completed"). Use it for the honest outcome the user needs next - "Approved - queued for import", or the exact reason nothing happened ("child of family 191 - approve the parent"). If your handler returns `ok: false` with `error`, that text becomes the failed note instead.
+
+**Re-emitting = superseding.** Within a conversation, at most ONE card per (`install_id`, `card_id`) is active. When you emit a card whose `card_id` matches an earlier one, the older instance collapses to a "superseded" marker with its actions permanently dead - only the newest renders in full and can act. This is why the stable-per-subject `card_id` matters: re-emit freely after every state change and the transcript stays truthful with no stale live buttons. A card that legitimately repeats (say, a per-run notification) must use a unique id per emission (`run-${runId}`), or each new one will bury the last.
+
+**Deep links.** A field whose `value` is exactly one `https://` URL renders as a clickable external link (new tab). Use it to point at the record in your backend once an action lands - e.g. `{label: 'view in backend', value: 'https://.../edit/id/123/'}`. Partial URLs inside prose stay plain text; `http://` never links.
+
+**Degrade behavior.** On a platform without card support, `_artifacts` is simply ignored and your JSON response works as before, so shipping cards is always safe. Cards render in portal chat and the native mobile app.
 
 **Tell your agent about cards in `docs[]`.** The agent never sees the card, but it does see your JSON response and the `[app-card]` notes. Two lines in your AI-facing docs (§2b) save a lot of noise:
 - The user already sees an interactive card for this result - don't re-list its contents in prose; a one-line pointer to the card is enough.
@@ -424,7 +430,7 @@ return {
 
 **Common pitfalls:**
 - **The markup guard is per-entry, not per-string.** One `<b>` in one field value silently drops the entire card. Run every user-sourced or third-party string through a sanitizer.
-- **Unstable `card_id`.** The id keys the persisted state (completed/disabled survive reloads). Derive it from the subject (`order-${id}`), never from `Date.now()` or a random value, or every re-render mints a "new" card and prior state orphans.
+- **Unstable `card_id`.** The id keys BOTH the persisted state (completed/disabled survive reloads) and supersede identity. Derive it from the subject (`order-${id}`), never from `Date.now()` or a random value - a random id means every re-render mints a "new" card, prior state orphans, and stale cards stay live instead of superseding.
 - **Secrets in `args`.** Action args are stored with the conversation and replayed on click. Put an id in `args` and re-resolve tokens server-side in the handler; never a token, key, or password.
 - **Oversized `panelData`.** 32KB serialized is the whole budget, and an over-budget card is dropped. Shed content in a defined order when a card runs large: drop images first, then trim table rows, and omit the card entirely rather than ship a broken one.
 - **A card must never fail the tool.** Build it in a try/catch and omit `_artifacts` on any throw. The JSON response is the product; the card is a bonus.
