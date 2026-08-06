@@ -369,6 +369,16 @@ Tool / event / webhook handlers also get an injected `env.SPRIGR` host object. E
 | `browser.fetch(url,opts)` / `browser.screenshot(url,opts)` | One-shot headless fetch/screenshot (needs `sprigr.browser:fetch`) |
 | `browser.session.{open,act,snapshot,cookies,close}` | **OWNER-ONLY** stateful, cookie-persistent browser sessions (see below) |
 
+**`inbox.append` / `inbox.folders` owner attribution (mail apps).** Every batch a mail app
+appends must carry `owner` — `{ platformUserId }` for a personal mailbox connection or
+`{ agentId }` for an agent-keyed shared mailbox, exactly one of the two (the `InboxOwner`
+type in `@sprigr/apps-app-sdk`). It names the mailbox owner the batch was synced from, not
+the dispatch caller, and the platform pins the resulting threads' visibility to exactly that
+owner. Batches without it fall back to legacy integration-level resolution, which on a
+multi-user install pins nobody (fail closed) — so a mail app that skips the field has its
+synced mail invisible in the Sprigr inbox the moment a second user joins the install. Hosts
+older than the attribution surface ignore the field; sending it is always safe.
+
 **`browser.session`: stateful browser for a login-walled portal (owner-only).** The one-shot
 `browser.fetch` can't drive a multi-step, logged-in portal that has no API. `browser.session`
 exposes the pool's real session lifecycle, but ONLY to the app's OWNER install (the publisher

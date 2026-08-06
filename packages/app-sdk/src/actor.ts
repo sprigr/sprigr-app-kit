@@ -80,3 +80,63 @@ export function actorKey(actor: Actor | undefined): string | null {
   if (actor.agentId) return `a:${actor.agentId}`;
   return null;
 }
+
+/**
+ * Mailbox-owner attribution for one `env.SPRIGR.inbox.append` /
+ * `env.SPRIGR.inbox.folders` batch.
+ *
+ * Exactly ONE of the two fields must be set:
+ *
+ *   - `platformUserId` — OIDC sub of the user whose mailbox the batch was
+ *     synced from (a personal mailbox connection).
+ *   - `agentId` — agent id for an agent-keyed connection (a shared /
+ *     departmental mailbox connected through a shared agent rather than a
+ *     person).
+ *
+ * Why this exists: a mail app install is shared by the whole company, and
+ * several users can each connect their own mailbox to it. The platform files
+ * every appended message under the ONE integration behind the install, so
+ * without attribution it cannot tell whose mailbox a batch came from and has
+ * historically granted thread visibility to every connected user. Passing
+ * `owner` pins each synced thread's visibility to exactly the mailbox owner:
+ * user connections stay private to that user, agent-keyed connections stay
+ * visible to that agent's audience.
+ *
+ * This is the OWNER OF THE MAILBOX (the connection identity the app keyed
+ * the sync on), NOT the dispatch caller — a scheduled poll has no caller at
+ * all yet must still attribute every batch. Populate it from the per-actor
+ * connection row the sync loop is iterating, e.g.:
+ *
+ *   const owner = row.sprigr_user_id
+ *     ? { platformUserId: row.sprigr_user_id }
+ *     : { agentId: row.sprigr_agent_id };
+ *   await env.SPRIGR.inbox.append({ channel, messages, owner });
+ *
+ * Mail apps must send it on EVERY append/folders call (sync poll, push
+ * delivery, backfill, folder reports). Batches without it fall back to the
+ * platform's legacy integration-level resolution, which on a multi-user
+ * install pins nobody (fail closed) rather than everyone.
+ *
+ * Hosts older than the attribution surface ignore the field entirely, so
+ * sending it is always safe.
+ */
+export interface InboxOwner {
+  /** OIDC sub (platform user id) of the mailbox's owner. */
+  platformUserId?: string;
+  /** Agent id for an agent-keyed (shared-mailbox) connection. */
+  agentId?: string;
+}
+
+/**
+ * Inverse of `actorKey`: turn a stored `u:<platformUserId>` / `a:<agentId>`
+ * key back into an `InboxOwner`. For apps that persist the connection
+ * identity as an actor-key string and need to attribute inbox batches from
+ * it. Returns null for null/empty/unrecognised input — callers should treat
+ * that as "owner unknown" and omit the field rather than guess.
+ */
+export function ownerFromActorKey(key: string | null | undefined): InboxOwner | null {
+  if (!key) return null;
+  if (key.startsWith('u:') && key.length > 2) return { platformUserId: key.slice(2) };
+  if (key.startsWith('a:') && key.length > 2) return { agentId: key.slice(2) };
+  return null;
+}
