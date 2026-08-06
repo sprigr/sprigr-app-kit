@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actorKey, parseActor } from '../src/actor';
+import { actorKey, ownerFromActorKey, parseActor } from '../src/actor';
 
 describe('parseActor', () => {
   it('returns undefined when args lacks an actor (webhook / schedule path)', () => {
@@ -60,5 +60,33 @@ describe('actorKey', () => {
 
   it('returns null when neither id is set', () => {
     expect(actorKey({ role: 'staff' })).toBeNull();
+  });
+});
+
+describe('ownerFromActorKey', () => {
+  it('round-trips a user-keyed actor through actorKey', () => {
+    const key = actorKey({ platformUserId: 'usr_p', agentId: 'agent_a' });
+    expect(ownerFromActorKey(key)).toEqual({ platformUserId: 'usr_p' });
+  });
+
+  it('round-trips an agent-keyed actor through actorKey', () => {
+    const key = actorKey({ agentId: 'agent_orchestrator' });
+    expect(ownerFromActorKey(key)).toEqual({ agentId: 'agent_orchestrator' });
+  });
+
+  it('returns null for null / undefined / empty input', () => {
+    expect(ownerFromActorKey(null)).toBeNull();
+    expect(ownerFromActorKey(undefined)).toBeNull();
+    expect(ownerFromActorKey('')).toBeNull();
+  });
+
+  it('returns null for a bare prefix with no id (never an empty owner)', () => {
+    expect(ownerFromActorKey('u:')).toBeNull();
+    expect(ownerFromActorKey('a:')).toBeNull();
+  });
+
+  it('returns null for unrecognised key shapes rather than guessing', () => {
+    expect(ownerFromActorKey('usr_plain_id')).toBeNull();
+    expect(ownerFromActorKey('x:whatever')).toBeNull();
   });
 });

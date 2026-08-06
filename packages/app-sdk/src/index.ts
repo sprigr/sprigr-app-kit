@@ -44,8 +44,8 @@ export type {
   WfpBridgeEnv,
   WfpEmitReply,
 } from './wfp-bridge';
-export { parseActor, actorKey } from './actor';
-export type { Actor } from './actor';
+export { parseActor, actorKey, ownerFromActorKey } from './actor';
+export type { Actor, InboxOwner } from './actor';
 export {
   putAppFile,
   putAppFileStream,
