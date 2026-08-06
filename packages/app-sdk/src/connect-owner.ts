@@ -13,10 +13,11 @@
  * later and nowhere near the click that caused it. Apps worked around it
  * with a hand-written `?agentId=...` URL, which no customer will ever find.
  *
- * This module gives a settings page the two things it needs to ask the
- * question properly:
+ * This module gives a settings page what it needs to ask the question
+ * properly:
  *
- *   listConnectOwners()  the shared agents that can own a connection
+ *   listConnectOwners()  the agents a connection can belong to: the
+ *                        viewer's own assistant, plus the shared agents
  *   buildConnectUrl()    a start URL carrying EXACTLY ONE owner
  *
  * That second one is not a convenience. `actorKey()` prefers the user id
@@ -24,6 +25,9 @@
  * `agentId` silently binds to the user and the agent choice is discarded
  * with no error. Building the URL by hand is precisely how that happens, so
  * the shape is enforced here once rather than trusted to each app.
+ *
+ * Prefer `buildConnectUrl({ owner })` over passing raw ids: an owner
+ * carries `bindAs`, which already holds the id that works for its kind.
  */
 
 const CONNECT_OWNERS_PATH = '/internal/wfp/connect-owners';
@@ -34,49 +38,77 @@ export interface ConnectOwnerEnv {
   SPRIGR_INSTALL_TOKEN?: string;
 }
 
-/** A shared agent that can own this install's connection. */
+/**
+ * An agent a connection can belong to.
+ *
+ * `bindAs` carries the ONE id to send to /oauth/start, and it is not always
+ * the agent id. A companion agent dispatches as
+ * `{agentId, platformUserId: <its owner>}` and `actorKey()` prefers the
+ * user, so a companion ALWAYS resolves to `u:<owner>`. A token stored under
+ * `a:<companionId>` is unreachable forever: it reads as connected and never
+ * once works.
+ *
+ * So `name` is what the person recognises ("Chris's AI") and `bindAs` is
+ * what actually functions. Pass the whole owner to buildConnectUrl and the
+ * distinction stays impossible to get wrong.
+ */
 export interface ConnectOwner {
+  kind: 'personal' | 'shared';
   agentId: string;
   name: string;
   slug: string;
   role: string;
+  bindAs: { platformUserId: string } | { agentId: string };
 }
 
 /**
- * The shared agents in this install's company, for a "connect as" picker.
+ * The agents a connection can belong to, for a "connect as" picker.
  *
- * Returns `[]` rather than throwing when the platform cannot be reached or
- * has nothing to offer. A settings page must still render: a workspace with
- * only companion agents is perfectly normal, and losing the whole page
- * because a list of extra options failed to load would be a worse outcome
- * than showing just "connect as me".
+ * Pass `viewerUserId` and the list leads with that person's OWN assistant
+ * (kind 'personal'), followed by the company's shared agents. Omit it and
+ * only the shared agents come back.
  *
- * Companion agents are deliberately absent (the platform filters them):
- * a companion belongs to one person, so "connect as Dave's assistant" is
- * "connect as Dave" with the consequence buried one level deeper.
+ * Other people's assistants are never listed. Binding a shared business
+ * integration to a colleague's personal agent is the same trap in a new
+ * costume, and it is the platform that enforces this, not the caller.
+ *
+ * Returns `[]` rather than throwing on any failure. A settings page must
+ * still render: losing the whole page because an extra list of options
+ * failed to load is worse than showing fewer options.
  */
 export async function listConnectOwners(
   env: ConnectOwnerEnv,
-  opts: { timeoutMs?: number } = {},
+  opts: { viewerUserId?: string | null; timeoutMs?: number } = {},
 ): Promise<ConnectOwner[]> {
   const base = (env.SPRIGR_PLATFORM_BASE ?? '').trim().replace(/\/$/, '');
   const token = env.SPRIGR_INSTALL_TOKEN;
   if (!base || !token) return [];
 
+  // Supplying the viewer adds their OWN companion as the "personal" option.
+  // Omit it and only shared agents come back.
+  const query = new URLSearchParams();
+  const viewer = opts.viewerUserId?.trim();
+  if (viewer && viewer !== 'anonymous') query.set('viewerUserId', viewer);
+
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), opts.timeoutMs ?? 5000);
   try {
-    const res = await fetch(`${base}${CONNECT_OWNERS_PATH}`, {
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const res = await fetch(`${base}${CONNECT_OWNERS_PATH}${suffix}`, {
       headers: { Authorization: `Bearer ${token}` },
       signal: abort.signal,
     });
     if (!res.ok) return [];
     const body = (await res.json()) as { owners?: unknown };
     if (!Array.isArray(body.owners)) return [];
-    return body.owners.filter(
-      (o): o is ConnectOwner =>
-        !!o && typeof (o as ConnectOwner).agentId === 'string' && typeof (o as ConnectOwner).name === 'string',
-    );
+    return body.owners.filter((o): o is ConnectOwner => {
+      const c = o as ConnectOwner | null;
+      if (!c || typeof c.agentId !== 'string' || typeof c.name !== 'string') return false;
+      // An owner with no usable bindAs cannot be connected, so rendering it
+      // would offer a button that mints an unreachable token.
+      const b = c.bindAs as Record<string, unknown> | undefined;
+      return !!b && (typeof b.platformUserId === 'string' || typeof b.agentId === 'string');
+    });
   } catch {
     return [];
   } finally {
@@ -95,13 +127,16 @@ export async function listConnectOwners(
 export function buildConnectUrl(args: {
   /** Usually '/oauth/start'. Relative is fine; it stays relative. */
   startPath: string;
+  /** Preferred: pass the owner straight from listConnectOwners(). */
+  owner?: ConnectOwner;
   platformUserId?: string | null;
   agentId?: string | null;
   /** Extra params an app needs to round-trip, e.g. a return path. */
   extra?: Record<string, string>;
 }): string {
-  const user = args.platformUserId?.trim() || null;
-  const agent = args.agentId?.trim() || null;
+  const fromOwner = args.owner?.bindAs as Record<string, string> | undefined;
+  const user = (fromOwner?.platformUserId ?? args.platformUserId)?.trim() || null;
+  const agent = (fromOwner?.agentId ?? args.agentId)?.trim() || null;
 
   if (user && agent) {
     throw new Error(

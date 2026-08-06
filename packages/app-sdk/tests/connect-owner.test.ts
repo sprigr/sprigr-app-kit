@@ -81,7 +81,16 @@ describe('listConnectOwners', () => {
       return {
         ok: true,
         json: async () => ({
-          owners: [{ agentId: 'agt_ops', name: 'Operations', slug: 'operations', role: 'member' }],
+          owners: [
+            {
+              kind: 'shared',
+              agentId: 'agt_ops',
+              name: 'Operations',
+              slug: 'operations',
+              role: 'member',
+              bindAs: { agentId: 'agt_ops' },
+            },
+          ],
         }),
       };
     });
@@ -116,7 +125,22 @@ describe('listConnectOwners', () => {
   it('drops malformed entries rather than surfacing half-built options', async () => {
     stubFetch(() => ({
       ok: true,
-      json: async () => ({ owners: [{ name: 'no id' }, { agentId: 'agt_ok', name: 'Ops', slug: 'o', role: 'member' }] }),
+      json: async () => ({
+        owners: [
+          { name: 'no id' },
+          // Has ids but no usable bindAs: rendering it would offer a button
+          // that mints a token nothing can dispatch under.
+          { kind: 'shared', agentId: 'agt_nobind', name: 'No bind', slug: 'n', role: 'member' },
+          {
+            kind: 'shared',
+            agentId: 'agt_ok',
+            name: 'Ops',
+            slug: 'o',
+            role: 'member',
+            bindAs: { agentId: 'agt_ok' },
+          },
+        ],
+      }),
     }));
     const owners = await listConnectOwners(ENV);
     expect(owners.map((o) => o.agentId)).toEqual(['agt_ok']);
@@ -142,5 +166,58 @@ describe('describeConnectionOwner', () => {
     // Defensive: actorKey prefers the user, so the description must too or
     // the UI would claim a connection is shared when it is not.
     expect(describeConnectionOwner({ platformUserId: 'usr_1', agentId: 'agt_1' }).scope).toBe('personal');
+  });
+
+  it('asks for the personal option only when given a viewer', async () => {
+    const urls: string[] = [];
+    stubFetch((url) => {
+      urls.push(url);
+      return { ok: true, json: async () => ({ owners: [] }) };
+    });
+
+    await listConnectOwners(ENV);
+    await listConnectOwners(ENV, { viewerUserId: 'usr_chris' });
+    await listConnectOwners(ENV, { viewerUserId: 'anonymous' });
+
+    expect(urls[0]).not.toContain('viewerUserId');
+    expect(urls[1]).toContain('viewerUserId=usr_chris');
+    // website-serve stamps the literal string "anonymous" for a signed-out
+    // viewer; sending it would ask the platform to find a user called that.
+    expect(urls[2]).not.toContain('viewerUserId');
+  });
+});
+
+describe('buildConnectUrl from an owner', () => {
+  it('uses the user id for a personal owner, NOT the companion agent id', () => {
+    // The trap this whole API exists to close. A companion dispatches as
+    // u:<owner>, so a token under a:<companionId> is unreachable forever.
+    const url = buildConnectUrl({
+      startPath: '/oauth/start',
+      owner: {
+        kind: 'personal',
+        agentId: 'agt_chris',
+        name: "Chris's AI",
+        slug: 'chris',
+        role: 'member',
+        bindAs: { platformUserId: 'usr_chris' },
+      },
+    });
+    expect(url).toBe('/oauth/start?platformUserId=usr_chris');
+    expect(url).not.toContain('agt_chris');
+  });
+
+  it('uses the agent id for a shared owner', () => {
+    const url = buildConnectUrl({
+      startPath: '/oauth/start',
+      owner: {
+        kind: 'shared',
+        agentId: 'agt_ops',
+        name: 'Operations',
+        slug: 'operations',
+        role: 'member',
+        bindAs: { agentId: 'agt_ops' },
+      },
+    });
+    expect(url).toBe('/oauth/start?agentId=agt_ops');
   });
 });
