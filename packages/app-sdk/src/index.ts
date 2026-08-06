@@ -47,6 +47,12 @@ export type {
 export { parseActor, actorKey, ownerFromActorKey } from './actor';
 export type { Actor, InboxOwner } from './actor';
 export {
+  listConnectOwners,
+  buildConnectUrl,
+  describeConnectionOwner,
+} from './connect-owner';
+export type { ConnectOwner, ConnectOwnerEnv } from './connect-owner';
+export {
   putAppFile,
   putAppFileStream,
   appFileUrl,
