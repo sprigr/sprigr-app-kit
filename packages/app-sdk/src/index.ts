@@ -47,6 +47,14 @@ export type {
 export { parseActor, actorKey, ownerFromActorKey } from './actor';
 export type { Actor, InboxOwner } from './actor';
 export {
+  tool,
+  actorTool,
+  createToolWrappers,
+  NotConnectedError,
+  isNotConnectedError,
+} from './tool-wrappers';
+export type { ToolResult, ToolWrapperOptions } from './tool-wrappers';
+export {
   putAppFile,
   putAppFileStream,
   appFileUrl,
