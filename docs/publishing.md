@@ -9,6 +9,7 @@ Every package under `packages/` publishes to npm, so apps (internal and external
 | `@sprigr/apps-d1-kv` | |
 | `@sprigr/apps-sync-cursor` | |
 | `@sprigr/apps-dedup-latch` | |
+| `@sprigr/apps-undo-journal` | |
 | `@sprigr/apps-webhook-registry` | |
 | `@sprigr/apps-faceted-search` | React; peer deps react/react-dom >= 18. Extra `./embed` entry. |
 | `@sprigr/apps-dashboard-kit` | React; peer deps react/react-dom >= 18 and lucide-react. Ships CSS at `./styles` and needs Tailwind v4 plus an `@source` line in the consuming app. |
