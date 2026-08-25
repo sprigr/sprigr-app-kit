@@ -145,6 +145,59 @@ export interface SprigrDataSearchOpts {
   page?: number;
   /** Results per page. Default 20, platform-clamped to 100. */
   hitsPerPage?: number;
+  /**
+   * LOGICAL index name — a key of the manifest's `data_indexes` map.
+   * Required for apps that declare `data_indexes` (the platform rejects a
+   * call without it, naming the declared indexes); must be OMITTED for
+   * legacy single-`data_index` apps. An undeclared name is rejected with
+   * `unknown_data_index`, never auto-created.
+   */
+  index?: string;
+  /**
+   * Explicit shard subset for a sharded logical index: `['2026']` for
+   * `shard_by: 'year'`, `['2026-05', '2026-06']` for `'month'`. Omit to
+   * search every existing shard (newest first). Narrowing here is also the
+   * escape hatch when merged pagination hits the per-shard page cap.
+   */
+  shards?: string[];
+  /**
+   * Server-side aggregations computed over ALL matching docs (not just the
+   * returned page). On a sharded logical index the platform merges shard
+   * results exactly (sum/count add, min/max take extremes, avg re-derives
+   * count-weighted).
+   */
+  aggregations?: SprigrDataAggregationSpec[];
+}
+
+/** One server-side aggregation. Wire fields are snake_case (platform decision 0013). */
+export interface SprigrDataAggregationSpec {
+  /** Response key for this aggregation's result block. */
+  name: string;
+  /** Fold operation. `count` ignores `field`. */
+  op: 'sum' | 'avg' | 'min' | 'max' | 'count';
+  /** Numeric field to fold. Required for sum/avg/min/max. */
+  field?: string;
+  /** Bucket by this field; omit for one whole-result-set value. */
+  group_by?: string;
+}
+
+/** One aggregation result cell: the op value plus (for non-count ops) the numeric-value count. */
+export interface SprigrDataAggregationCell {
+  sum?: number | null;
+  avg?: number | null;
+  min?: number | null;
+  max?: number | null;
+  count?: number;
+}
+
+export interface SprigrDataAggregationResult {
+  op: 'sum' | 'avg' | 'min' | 'max' | 'count';
+  field: string | null;
+  group_by: string | null;
+  /** Present for ungrouped specs. */
+  value?: SprigrDataAggregationCell;
+  /** Present for grouped specs: bucket value -> cell. */
+  groups?: Record<string, SprigrDataAggregationCell>;
 }
 
 export interface SprigrDataSearchResult {
@@ -153,15 +206,36 @@ export interface SprigrDataSearchResult {
   nbHits: number;
   page: number;
   facetCounts?: Record<string, Record<string, number>>;
-  /** The private index that was queried (informational). */
+  /** Present when the request carried `aggregations`. */
+  aggregations?: Record<string, SprigrDataAggregationResult>;
+  /**
+   * The logical index name for multi-index apps, else the physical index
+   * that was queried (informational).
+   */
   index: string;
+  /** Multi-index apps: the physical index/shard names this read covered. */
+  physical_indexes?: string[];
+}
+
+/** Options shared by data methods that can target a logical index. */
+export interface SprigrDataIndexOpts {
+  /** LOGICAL index name (a `data_indexes` key). See {@link SprigrDataSearchOpts.index}. */
+  index?: string;
 }
 
 /**
- * The marketplace install's PRIVATE per-company datastore: a Sprigr
- * index named `<companyId>-app-<slug>`, reachable only through these
- * methods (agents have no direct index access). Injected on
- * `env.SPRIGR` by the platform wrapper for /__sprigr/* dispatch.
+ * The marketplace install's per-company datastore on Sprigr search,
+ * injected on `env.SPRIGR` by the platform wrapper for /__sprigr/*
+ * dispatch.
+ *
+ * Single-index apps (manifest `data_index`) get the fixed
+ * `<companyId>-app-<slug>` index and never pass `index`. Multi-index apps
+ * (manifest `data_indexes`, a map of logical name -> config) pass
+ * `{ index: '<logical name>' }` on EVERY call; the platform derives the
+ * physical name(s) server-side, including per-year/per-month shards for
+ * logical indexes that declare `shard_by` + an immutable ISO-date
+ * `shard_field`. Every physical index is registered with the company at
+ * creation, so agents can discover it via `sprigr_list_my_indexes`.
  *
  * Intended pattern: the app syncs lean provider objects via `import`,
  * its tool handlers call `search` to resolve a fuzzy human reference
@@ -171,23 +245,53 @@ export interface SprigrDataSearchResult {
  */
 export interface SprigrDataApi {
   /**
-   * Upsert objects into the private index. Each object MUST carry a
-   * unique string `objectID`. The index is auto-created on first
-   * import from the manifest's `data_index` settings; re-imports
-   * upsert by objectID. Max 1000 objects per call.
+   * Upsert objects into the store. Each object MUST carry a unique string
+   * `objectID`. Max 1000 objects per call. Indexes are auto-created on
+   * first import from the manifest settings; re-imports upsert by
+   * objectID.
+   *
+   * Sharded logical indexes route each object by its `shard_field` date;
+   * an object whose value is missing or not an ISO-8601 date string fails
+   * the WHOLE batch (`shard_field_invalid`) — fix the data, don't guess.
+   * The response's `physical_indexes` lists what was written per shard.
    */
   import(
     objects: Array<{ objectID: string; [key: string]: unknown }>,
-  ): Promise<{ ok: boolean; indexed: number; index: string }>;
+    opts?: SprigrDataIndexOpts,
+  ): Promise<{
+    ok: boolean;
+    indexed: number;
+    index: string;
+    physical_indexes?: Array<{ index: string; shard?: string; indexed: number }>;
+  }>;
   /**
-   * Search the private index. A never-imported index yields an empty
-   * hit list, not an error.
+   * Search the store. A never-imported index yields an empty hit list,
+   * not an error. Sharded logical indexes fan out across shards and merge
+   * (nbHits sums, facet counts sum, aggregations merge exactly; without
+   * `sortBy`, merged hits come newest shard first).
    */
   search(opts?: SprigrDataSearchOpts): Promise<SprigrDataSearchResult>;
-  /** Fetch one object by objectID. `object` is null when absent. */
+  /**
+   * Fetch one object by objectID. `object` is null when absent. On a
+   * sharded logical index the platform probes shards newest-first.
+   */
   get(
     objectID: string,
+    opts?: SprigrDataIndexOpts,
   ): Promise<{ ok: boolean; object: Record<string, unknown> | null; index: string }>;
+  /**
+   * Delete objects by objectID (mirror maintenance for source-side
+   * deletions). Idempotent: unknown ids and never-imported indexes are a
+   * no-op success. On a sharded logical index the delete fans out to
+   * every shard. `?`-optional because older platform wrapper builds
+   * predate it — feature-detect and degrade (never delete on
+   * uncertainty), per the mirror-maintenance guidance in
+   * docs/platform-reference.md.
+   */
+  delete?(
+    objectIDs: string[],
+    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
+  ): Promise<{ ok: boolean; deleted: number; index: string }>;
 }
 
 /**

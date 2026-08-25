@@ -403,6 +403,30 @@ The jar + per-session ownership live in a reserved store namespace the app can't
 Best paired with a durable `jobs[]` step function so the run can park on `wait` and resume when an
 operator re-seeds an expired jar. `s.viewerUrl` is a live screencast for in-session 2FA.
 
+**Multiple named data indexes (`data_indexes`) + time-sharding.** An app whose datasets outgrow one index (several entity kinds with different schemas, or unbounded date-keyed data like orders) declares a `data_indexes` map instead of the single `data_index` block (they are mutually exclusive; existing single-index apps need no changes):
+
+```jsonc
+"data_indexes": {
+  "orders": {
+    "searchable_attributes": ["order_number", "customer_name"],
+    "attributes_for_faceting": ["financial_status", "created_month"],
+    "shard_by": "month",            // none (default) | year | month
+    "shard_field": "created_at",    // required when sharded; IMMUTABLE ISO date
+    "description": "One row per order"
+  },
+  "products": { "searchable_attributes": ["title", "sku"] }
+}
+```
+
+Map keys are LOGICAL names (`[a-z][a-z0-9_]{0,31}`, no `acl` prefix). Every `data.*` call then passes `{ index: 'orders' }`; the platform derives physical names `<companyId>-app-<slug>-<logical>[-<YYYY[-MM]>]` server-side and rejects an undeclared name loudly (`unknown_data_index`) instead of auto-creating — a typo'd index writing "successfully" into a store nothing reads is the failure this exists to prevent. Rules that bite:
+
+- **Sharding routes per object by `shard_field`**, which must be an ISO-8601 date STRING and immutable for the object's lifetime (`created_at`, never `updated_at` — publish validation rejects it; a mutable key re-files objects across shards and duplicates objectIDs). One object with a missing/unparseable date fails the whole batch (`shard_field_invalid`).
+- **Pick granularity by settled shard size, target ≤ ~100k docs/shard** (measured 2026-08-25: every query class is sub-600ms at 100k docs and ~3s at 250k). ~25k orders/month → `month`; a source under ~8k docs/month → `year`; entity sets that upsert in place (products, customers) → unsharded.
+- **Reads over a sharded logical index fan out and merge**: `nbHits`/facet counts sum, `aggregations` merge exactly, hits merge-sort under `sortBy` (else newest shard first). Pass `shards: ['2026-05']` to narrow. Merged pagination is capped at `(page+1)*hitsPerPage <= 100`; page deeper by narrowing shards/filters, not by paging.
+- **Aggregations** are available on `data.search`: `aggregations: [{ name: 'rev', op: 'sum', field: 'total', group_by: 'created_month' }]` computes server-side over ALL matching docs (ops: sum/avg/min/max/count; snake_case fields).
+- **Every physical index is registered with the company at creation** (mandatorily — a failed registration fails the import), so agents can discover and search it via `sprigr_list_my_indexes`. Uninstall sweeps the whole `<companyId>-app-<slug>-*` family.
+- `withAcl` cannot be combined with `index`: the ACL file surface stays bound to the legacy single-index layout.
+
 **Mirror maintenance (`data.delete` + `data.listIds`).** An app that mirrors an external store into its index (e.g. OneDrive file indexing) needs more than upserts. `data.delete(objectIDs, opts?)` removes rows whose source items were deleted (idempotent; unknown IDs are a no-op). `data.listIds(prefix, opts?)` -> `{ objectIDs, total, truncated }` enumerates what the index currently holds under a required prefix, so a full re-walk of the source can diff its live set against the index and delete rows the walk did not see - the only way to heal rows whose one-shot deletion signal (a delta `@removed` entry) was consumed before the app could act on it. Both take `{ withAcl: true }` to target the ACL index (`<companyId>-app-<slug>-acl-files`); unlike `search`/`get` they are permitted there, because a delete only reduces what the index holds and an IDs-only listing carries no row content or principals. Both are `?`-optional on older wrapper builds - feature-detect and degrade (skip the reconcile; never delete on uncertainty). Reference implementation: `apps/microsoft-365/src/lib/file-indexing.ts` (`reconcileWalk`).
 
 **Collections: a typed, faceted, queryable store.** Use it when your connector owns structured records it wants to query, facet, sort, and report on (an OMS board, an order ledger, a parts catalogue). It is the richer sibling of `data.*` (which is a raw discovery index): collections add a declared schema, deterministic dedup keys, optional change history, faceted querying, and cross-source reconcile.
