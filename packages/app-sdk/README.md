@@ -56,3 +56,23 @@ export default { list_things: actorTool(async (env, actor, args) => { /* ... */ 
 - `fetchFileBytes` / `fetchFileAsBase64` / `bytesToBase64` / `base64ToBytes` — file byte helpers
 
 Full platform semantics: [`docs/platform-reference.md`](../../docs/platform-reference.md).
+
+## Write protection
+
+Three platform tiers, and they are not substitutes for each other. Full guide: [`docs/write-protection.md`](../../docs/write-protection.md).
+
+| Tier | Where | Who attests | Helper |
+|---|---|---|---|
+| T1 confirmation policy | manifest `tools[].confirmation` | the model (`confirm: true`) | `buildConfirmationPolicy` + `checkConfirmationPolicy`, `sprigr-check-write-protection` |
+| T2 approval | handler returns `_approval` | a human tap | `requireApproval`, `approvalHash` / `set` / `seq` |
+| T3 undo | handler returns `_undo`; manifest `undo.reverse_tool` | platform token | `requireApproval` (capture), `undoEnvelope`, `runUndoApply`, `@sprigr/apps-undo-journal` |
+
+- `requireApproval(handlers, specs, opts)` wraps the named tools so each returns an `_approval` card instead of writing, then on the granted pass captures a before-image through the **pinned** connection and offers `_undo`. It resolves the connection inside itself, before the label lookup, the hash and the capture: a gate that sits outside the app's own pin names the wrong store, hashes the wrong store and captures the wrong store's copy. Register the result after the originals: `Object.assign(registry, requireApproval(registry, SPECS, opts))`.
+- `approvalHash(rawId, connection, ...parts)`, `set(values)`, `seq(values)`: a stable operation identity so a tap survives the model reordering a list or dropping an optional argument on the retry.
+- `undoEnvelope({...})` throws on a blank field. The platform drops the whole envelope on a blank and mints nothing, silently.
+- `refuseWithoutForce(name, handler, opts)` / `archiveOfferRefusal(...)`: a delete refuses once and offers the vendor's native archive unless `force: true`.
+- `buildConfirmationPolicy({ irreversible, always, rules })` declares a dispatcher's policy beside its action registry; `checkConfirmationPolicy({ policy, registry, ungated, requiredInput })` returns every silent failure (dead rule, `(unset)` placeholder, money threshold, unclassified write) for a one-line test.
+- `runUndoApply(args, { env, journal, specs, pin })` is the body of your `internal: true` reverse tool: load, re-pin to the journalled connection, restore, drop.
+- `sprigr-check-write-protection` (bin): every destructive-by-name tool or enumerated dispatcher action must carry a policy, or a reason in `apps/<app>/write-protection.json`; ratchets on `tools/write-protection-baseline.json`.
+
+**Never offer `_undo` for money or messages.** Refunds, captures, cancellations, sent mail: the approval gate is the only control there.
