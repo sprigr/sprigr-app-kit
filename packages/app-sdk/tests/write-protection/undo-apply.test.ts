@@ -109,3 +109,19 @@ describe('restore may disclose per-run detail', () => {
     expect((r as { note: string }).note).toMatch(/Not restored: child rows\./);
   });
 });
+
+describe('0.8.5: note suffix and array guard', () => {
+  it('appends a per-reversal note after the fidelity sentence', async () => {
+    const journal = { loadBefore: vi.fn(async () => ({ entity: 'e', original_id: '1', connection: null, before: { a: 1 } }) as never), dropBefore: vi.fn(async () => {}) };
+    const r = await runUndoApply({ ref: 'cap_1' }, { env: {}, journal, specs: { e: { resource: 'task', fidelity: 'recreated', restore: async () => ({ ok: true, newId: '2', note: 'Sticker "Approved" stays; Asana will not remove it.' }) } }, pin: (e) => e });
+    expect((r as { note: string }).note).toMatch(/replacement, not as an undo\. Sticker "Approved" stays; Asana will not remove it\.$/);
+  });
+
+  it('treats an array before-image as unreadable rather than handing it to restore', async () => {
+    const restore = vi.fn(async () => ({ ok: true }));
+    const journal = { loadBefore: vi.fn(async () => ({ entity: 'e', original_id: '1', connection: null, before: [1, 2] }) as never), dropBefore: vi.fn(async () => {}) };
+    const r = await runUndoApply({ ref: 'cap_1' }, { env: {}, journal, specs: { e: { resource: 'task', fidelity: 'full', restore } }, pin: (e) => e });
+    expect(r).toMatchObject({ ok: false, error: 'before_image_unreadable' });
+    expect(restore).not.toHaveBeenCalled();
+  });
+});
