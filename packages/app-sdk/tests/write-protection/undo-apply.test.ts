@@ -65,3 +65,30 @@ describe('runUndoApply', () => {
     expect((r as { note: string }).note).toMatch(/^Restored contact C1/);
   });
 });
+
+describe('runUndoApply with a pinned type distinct from the env', () => {
+  it('hands restore whatever pin returned, and maps a throwing restore to restore_failed', async () => {
+    type State = { tenantId: string; token: string };
+    const journal = {
+      loadBefore: vi.fn(async () => ({ entity: 'update_contact', original_id: 'c1', connection: 'org-B', before: { Name: 'A' } }) as never),
+      dropBefore: vi.fn(async () => {}),
+    };
+    const restore = vi.fn(async (state: State) => { if (state.tenantId !== 'org-B') throw new Error('wrong org'); });
+    const opts = {
+      env: { DB: {} },
+      journal,
+      specs: { update_contact: { resource: 'contact', fidelity: 'full' as const, restore } },
+      pin: async (_env: { DB: unknown }, connection: string | null): Promise<State | null> => (connection ? { tenantId: connection, token: 't' } : null),
+    };
+    const ok = await runUndoApply({ ref: 'cap_1' }, opts);
+    expect(restore).toHaveBeenCalledWith({ tenantId: 'org-B', token: 't' }, { Name: 'A' }, expect.objectContaining({ connection: 'org-B' }));
+    expect(ok).toMatchObject({ ok: true, fidelity: 'full', connection: 'org-B' });
+
+    const throwing = { ...opts, specs: { update_contact: { resource: 'contact', fidelity: 'full' as const, restore: async () => { throw new Error('422 Validation'); } } } };
+    journal.dropBefore.mockClear();
+    const failed = await runUndoApply({ ref: 'cap_1' }, throwing);
+    expect(failed).toMatchObject({ ok: false, error: 'restore_failed' });
+    expect((failed as { note: string }).note).toMatch(/422 Validation/);
+    expect(journal.dropBefore).not.toHaveBeenCalled();
+  });
+});

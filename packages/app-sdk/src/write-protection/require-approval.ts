@@ -1,5 +1,5 @@
 import { approvalHash } from './approval-hash';
-import { undoEnvelope } from './undo-envelope';
+import { offerUndo, safeCapture } from './undo-capture';
 import { APPROVAL_GRANTED_KEY, type AppApprovalEnvelope, type ToolArgs, type ToolHandler, type UndoFidelity } from './types';
 
 /**
@@ -219,34 +219,22 @@ async function granted<E>(
   // an unpinned capture went looking on the default store, found nothing, and
   // a permanent delete on the other store minted no token.
   const pinned = connection ? opts.pinEnv(env, connection) : env;
-  let before: Record<string, unknown> | null = null;
-  try {
-    const got = await undo.capture(pinned, id, args);
-    before = got && typeof got === 'object' ? (got as Record<string, unknown>) : null;
-  } catch (err) {
-    console.warn(`[${opts.scope}] ${name} ${id}: capture failed, writing without undo: ${String(err)}`);
-  }
+  const before = await safeCapture(opts.scope, name, id, () => undo.capture(pinned, id, args));
 
   const result = await inner(args, env, ctx);
   if (!isOk(result) || !before) return stamp(result);
 
-  const captured = await opts.journal!(env).captureBefore({
+  const envelope = await offerUndo({
+    journal: opts.journal!(env),
     entity: name,
-    originalId: id,
+    id,
     before,
     connection: connection || null,
+    fidelity: undo.fidelity,
+    resource: undo.resource,
+    describe: undo.describe,
+    warning: undo.warning(id, before),
   });
-  if (!captured) return stamp(result);
-
-  const describes = connection ? `${undo.describe(before, id)} on ${connection}` : undo.describe(before, id);
-  return {
-    ...(stamp(result) as Record<string, unknown>),
-    _undo: undoEnvelope({
-      fidelity: undo.fidelity,
-      warning: undo.warning(id, before),
-      describes,
-      resource: undo.resource,
-      ref: captured.ref,
-    }),
-  };
+  if (!envelope) return stamp(result);
+  return { ...(stamp(result) as Record<string, unknown>), _undo: envelope };
 }
