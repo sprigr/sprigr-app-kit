@@ -29,8 +29,9 @@
  *
  *   sprigr-check-write-protection [--apps apps] [--warn] [--baseline f] [--write-baseline]
  */
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /**
  * A tool or action name that destroys, reverses money, or cannot be walked
@@ -182,8 +183,18 @@ export function run(argv, cwd = process.cwd()) {
   return { code: 0, lines };
 }
 
-const invokedDirectly = process.argv[1] && /check-write-protection\.mjs$/.test(process.argv[1]);
-if (invokedDirectly) {
+// npm installs the bin as a SYMLINK named `sprigr-check-write-protection`, so
+// process.argv[1] does not end in `.mjs`; resolve it before comparing, or the
+// CLI silently does nothing when run through npx / pnpm exec (0.8.1 shipped
+// that way and printed nothing at all).
+function invokedDirectly() {
+  try {
+    return !!process.argv[1] && pathToFileURL(realpathSync(process.argv[1])).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+if (invokedDirectly()) {
   const { code, lines } = run(process.argv.slice(2));
   for (const l of lines) (code ? console.error : console.log)(l);
   process.exit(code);
