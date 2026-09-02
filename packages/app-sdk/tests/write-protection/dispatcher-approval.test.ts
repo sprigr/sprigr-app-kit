@@ -31,7 +31,7 @@ function gateWith(journal = { captureBefore: vi.fn(async () => ({ ref: 'cap_1' }
     inputField: 'params',
     resolveConnection: async (_env, params) => (typeof params.workspace === 'string' ? params.workspace : 'ws-default'),
     pinEnv: async (_env, ws) => ({ token: 't', workspace: ws }),
-    describeTarget: async (state, gid) => `"Ship it" (${gid}) via ${state.workspace}`,
+    describeTarget: async (state, gid, action) => `"Ship it" (${gid}) via ${state.workspace} for ${action}`,
     journal: () => journal,
   });
   return { gate, journal };
@@ -54,7 +54,7 @@ describe('dispatcherApproval', () => {
     };
     expect(write).not.toHaveBeenCalled();
     expect(r.ok).toBe(false);
-    expect(r._approval.question).toBe('Delete task "Ship it" (123) via ws-eu in ws-eu?');
+    expect(r._approval.question).toBe('Delete task "Ship it" (123) via ws-eu for delete_task in ws-eu?');
     // Every action shares one tool, so the action name must be part of the
     // identity: a tap on complete_task must not be spendable on delete_task.
     expect(r._approval.hash).toBe(approvalHash('delete_task', '123', 'ws-eu'));
@@ -65,7 +65,7 @@ describe('dispatcherApproval', () => {
   it('falls back to the top-level args when the input field is absent (flat-verb envelope)', async () => {
     const { gate } = gateWith();
     const r = (await gate.run('complete_task', { action: 'complete_task', task_gid: '9' }, { DB: {} }, async () => ({ ok: true }))) as { _approval: { question: string } };
-    expect(r._approval.question).toBe('Complete "Ship it" (9) via ws-default?');
+    expect(r._approval.question).toBe('Complete "Ship it" (9) via ws-default for complete_task?');
   });
 
   it('granted pass: captures through the pinned state before the write, then offers _undo naming the connection', async () => {

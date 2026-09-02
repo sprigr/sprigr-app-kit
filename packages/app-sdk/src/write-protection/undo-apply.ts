@@ -53,6 +53,13 @@ export interface RestoreResult {
   error?: string;
   notRestored?: string;
   extra?: Record<string, unknown>;
+  /**
+   * Free-form detail appended to the runner's note (the new gid, rows it
+   * could not refile, a sticker the vendor will not remove). The runner's own
+   * sentence on fidelity stays first so the model reads "replacement, not an
+   * undo" before the detail.
+   */
+  note?: string;
 }
 
 export interface JournalRowLike<T = unknown> {
@@ -111,7 +118,7 @@ export async function runUndoApply<E, P = E>(args: ToolArgs, opts: UndoApplyOpti
   }
 
   const before = row.before;
-  if (!before || typeof before !== 'object') {
+  if (!before || typeof before !== 'object' || Array.isArray(before)) {
     return { ok: false, error: 'before_image_unreadable', note: 'The saved copy could not be read back. Nothing was changed.' };
   }
 
@@ -156,6 +163,7 @@ export async function runUndoApply<E, P = E>(args: ToolArgs, opts: UndoApplyOpti
 
   const recreated = spec.fidelity === 'recreated';
   const notRestored = result.notRestored ?? spec.notRestored;
+  const suffix = result.note && result.note.trim() ? ` ${result.note.trim()}` : '';
   return {
     ok: true,
     ...(result.extra ?? {}),
@@ -168,8 +176,8 @@ export async function runUndoApply<E, P = E>(args: ToolArgs, opts: UndoApplyOpti
     note: recreated
       ? `Created a NEW ${spec.resource}${result.newId ? ` (${result.newId})` : ''} from the saved copy. ` +
         `The original ${row.original_id} is still gone and its id will never be reissued.` +
-        `${notRestored ? ` Not restored: ${notRestored}.` : ''} Report this as a replacement, not as an undo.`
+        `${notRestored ? ` Not restored: ${notRestored}.` : ''} Report this as a replacement, not as an undo.${suffix}`
       : `Restored ${spec.resource} ${row.original_id} to its saved values.` +
-        `${notRestored ? ` Not restored: ${notRestored}.` : ''} Anything changed since the capture was overwritten.`,
+        `${notRestored ? ` Not restored: ${notRestored}.` : ''} Anything changed since the capture was overwritten.${suffix}`,
   };
 }

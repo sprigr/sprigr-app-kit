@@ -112,9 +112,11 @@ export interface ApprovalGateOptions<E, P = E> {
   /**
    * Human label for a raw id, looked up THROUGH the pinned connection. Fall
    * back to the id on any miss; never guess, a confidently wrong card is worse
-   * than a terse one. Omit to always show the raw id.
+   * than a terse one. Omit to always show the raw id. `name` is the tool, or
+   * for a dispatcher the action, so a lookup can route by resource type when
+   * the id alone does not say what it is (an Asana gid).
    */
-  describeTarget?: (pinned: P, id: string) => Promise<string>;
+  describeTarget?: (pinned: P, id: string, name: string) => Promise<string>;
   /**
    * Where before-images go. Required when any spec declares `undo`. The
    * journal's own capture returns null rather than throwing, and this wrapper
@@ -164,9 +166,9 @@ function isOk(result: unknown): boolean {
   return !!result && typeof result === 'object' && (result as { ok?: unknown }).ok !== false;
 }
 
-async function safeLabel<P>(fn: (pinned: P, id: string) => Promise<string>, pinned: P, id: string): Promise<string> {
+async function safeLabel<P>(fn: (pinned: P, id: string, name: string) => Promise<string>, pinned: P, id: string, name: string): Promise<string> {
   try {
-    const label = await fn(pinned, id);
+    const label = await fn(pinned, id, name);
     return label && label.trim() ? label : id;
   } catch {
     return id;
@@ -186,6 +188,7 @@ async function pin<E, P>(opts: ApprovalGateOptions<E, P>, env: E, connection: st
  * platform mixes in only the TOOL name and every action shares one tool.
  */
 async function askPass<E, P>(
+  name: string,
   spec: ApprovalSpec<P>,
   params: ToolArgs,
   env: E,
@@ -195,7 +198,7 @@ async function askPass<E, P>(
   const connection = await opts.resolveConnection(env, params);
   const rawId = rawIdOf(params, spec.keys);
   const pinned = await pin(opts, env, connection);
-  const target = rawId && opts.describeTarget ? await safeLabel(opts.describeTarget, pinned, rawId) : rawId || '(unknown id)';
+  const target = rawId && opts.describeTarget ? await safeLabel(opts.describeTarget, pinned, rawId, name) : rawId || '(unknown id)';
   const extra = spec.hash ? spec.hash(params) : [];
   return {
     ok: false,
@@ -293,7 +296,7 @@ export function requireApproval<E>(
         const { [APPROVAL_GRANTED_KEY]: _granted, ...rest } = a;
         return grantedPass(name, spec, rest, env, opts, () => inner(rest, env, ctx));
       }
-      return askPass(spec, a, env, opts, []);
+      return askPass(name, spec, a, env, opts, []);
     };
   }
 
@@ -332,7 +335,7 @@ export function dispatcherApproval<E, P = E>(
       if (a[APPROVAL_GRANTED_KEY] === true) {
         return grantedPass(action, spec, params, env, opts, write);
       }
-      return askPass(spec, params, env, opts, [action]);
+      return askPass(action, spec, params, env, opts, [action]);
     },
   };
 }

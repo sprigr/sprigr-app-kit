@@ -125,7 +125,9 @@ const gate = dispatcherApproval<AcmeEnv, AcmeState>(SPECS, {
 return gate.run(action, args, env, () => def.execute(state, parsed));
 ```
 
-`SPECS` is keyed by action name; per-module spec maps compose with an object spread. The action name goes into the grant hash because every action shares one tool and the platform only mixes in the tool name. Keep the `irreversible: true` set of your T1 policy equal to the keys of `SPECS`, and assert it in a test, so the two tiers cannot drift.
+`SPECS` is keyed by action name; per-module spec maps compose with an object spread. The action name goes into the grant hash because every action shares one tool and the platform only mixes in the tool name. `describeTarget(pinned, id, action)` receives the action so a dispatcher can route the label lookup by resource type when the id alone does not say what it is.
+
+Keep the two tiers from drifting with two containment assertions in a test, against pinned lists: every `irreversible: true` action has an approval spec, and every approval-gated action is T1 `always`. They are containments, not an equality: a gated action can still carry a working undo (a recreate, a deletion of the thing that was posted), and `irreversible` there would put "cannot be undone" beside an undo token.
 
 ## T3: the reverse tool
 
