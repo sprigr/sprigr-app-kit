@@ -36,11 +36,23 @@ export interface RestoreSpec<P, T = Record<string, unknown>> {
   /**
    * Rebuild or write back, through the PINNED connection. May return
    * `{ ok: false, error }` or throw; both become `restore_failed` and the
-   * before-image is kept.
+   * before-image is kept. A successful result may carry `notRestored`
+   * (overrides the spec's static one, for a replay that only learns what it
+   * could not write back while writing) and `extra`, spread into the success
+   * payload for app-specific disclosure the model should read (a list of
+   * dropped fields, child rows handed back for deliberate recreation).
    */
-  restore: (pinned: P, before: T, row: JournalRowLike<T>) => Promise<{ ok: boolean; newId?: string; error?: string } | void>;
+  restore: (pinned: P, before: T, row: JournalRowLike<T>) => Promise<RestoreResult | void>;
   /** What the restore does NOT bring back, folded into the note verbatim. */
   notRestored?: string;
+}
+
+export interface RestoreResult {
+  ok: boolean;
+  newId?: string;
+  error?: string;
+  notRestored?: string;
+  extra?: Record<string, unknown>;
 }
 
 export interface JournalRowLike<T = unknown> {
@@ -67,7 +79,7 @@ export interface UndoApplyOptions<E, P = E> {
 }
 
 export type UndoApplyResult =
-  | { ok: true; resource: string; original_id: string; connection: string | null; new_id: string | null; fidelity: UndoFidelity; not_restored?: string; note: string }
+  | { ok: true; resource: string; original_id: string; connection: string | null; new_id: string | null; fidelity: UndoFidelity; not_restored?: string; note: string; [extra: string]: unknown }
   | { ok: false; error: string; note: string };
 
 /** Run the reversal. Every failure names what it was and states that nothing changed. */
@@ -123,7 +135,7 @@ export async function runUndoApply<E, P = E>(args: ToolArgs, opts: UndoApplyOpti
     };
   }
 
-  let result: { ok: boolean; newId?: string; error?: string };
+  let result: RestoreResult;
   try {
     result = (await spec.restore(pinned, before, row)) ?? { ok: true };
   } catch (err) {
@@ -143,19 +155,21 @@ export async function runUndoApply<E, P = E>(args: ToolArgs, opts: UndoApplyOpti
   await opts.journal.dropBefore(ref);
 
   const recreated = spec.fidelity === 'recreated';
+  const notRestored = result.notRestored ?? spec.notRestored;
   return {
     ok: true,
+    ...(result.extra ?? {}),
     resource: spec.resource,
     original_id: row.original_id,
     connection: row.connection,
     new_id: result.newId ?? null,
     fidelity: spec.fidelity,
-    ...(spec.notRestored ? { not_restored: spec.notRestored } : {}),
+    ...(notRestored ? { not_restored: notRestored } : {}),
     note: recreated
       ? `Created a NEW ${spec.resource}${result.newId ? ` (${result.newId})` : ''} from the saved copy. ` +
         `The original ${row.original_id} is still gone and its id will never be reissued.` +
-        `${spec.notRestored ? ` Not restored: ${spec.notRestored}.` : ''} Report this as a replacement, not as an undo.`
+        `${notRestored ? ` Not restored: ${notRestored}.` : ''} Report this as a replacement, not as an undo.`
       : `Restored ${spec.resource} ${row.original_id} to its saved values.` +
-        `${spec.notRestored ? ` Not restored: ${spec.notRestored}.` : ''} Anything changed since the capture was overwritten.`,
+        `${notRestored ? ` Not restored: ${notRestored}.` : ''} Anything changed since the capture was overwritten.`,
   };
 }
