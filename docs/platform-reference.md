@@ -321,6 +321,40 @@ Or use the SDK's `overlaySprigr(env, patched)`, which is exactly this.
 
 This works for both env shapes: the dispatch-path wrapper env AND the plain object inline routes get from `getCloudflareContext`. History: the microsoft-365 app's fallback wrappers used `{ ...env, SPRIGR: {...} }`; on the scheduled path this produced an env whose `DB` was undefined, killing every `ms_index_files` run (and its error-path audit) silently for 24h on staging. Fixed in microsoft-365 v0.14.2 (#758).
 
+### Provider handshakes: `signature.type: handshake_hmac`
+
+Some providers do not sign deliveries with a secret you already hold. Asana is the model: `POST /webhooks` on Asana's side blocks until Asana has POSTed a freshly minted secret to your target URL in `X-Hook-Secret` and received a 200 that echoes that header back, within about ten seconds. Every later delivery carries `X-Hook-Signature`, an HMAC-SHA256 hex digest of the raw body under that secret, and each subscription has its own secret.
+
+Declare the webhook with `signature.type: "handshake_hmac"` and the platform does the whole exchange for you. You never see the secret and you write no receiver route:
+
+```jsonc
+"webhooks": [{
+  "path": "/events",
+  "handler_tool": "handle_asana_webhook",
+  "signature": {
+    "type": "handshake_hmac",
+    "header": "X-Hook-Signature",          // the delivery signature header
+    "algorithm": "sha256",
+    "encoding": "hex",
+    "handshake": {
+      "header": "X-Hook-Secret",            // the header the secret arrives in
+      "key_query": "sub"                    // optional: keys the stored secret by ?sub=<value>
+    }
+  }
+}]
+```
+
+What the platform does at `https://webhooks.sprigr.com/webhook/marketplace/<installId>/events`:
+
+- A request carrying `handshake.header` and **no** signature header is the handshake. The secret is encrypted into the install's secrets store under a reserved slot (`_SPRIGR_HANDSHAKE:<path>` or, with `key_query`, `_SPRIGR_HANDSHAKE:<path>:<key>`), the header is echoed back with a 200 and an empty body, an `accept:handshake` audit row is written, and nothing is dispatched to your app. Slots expire after a year.
+- A request carrying the signature header is a delivery. The platform reads the slot, verifies the HMAC, and dispatches to your `handler_tool` exactly like an `hmac` webhook (same `{ body, signature?, headers? }` args, same 4s ack budget, same workflow trigger fan-out). With `key_query`, the key is forwarded as `headers['x-sprigr-handshake-key']` so you can map the delivery to the subscription you registered.
+- A request carrying both headers is a delivery, never a handshake, so a forged handshake riding on a signed delivery cannot overwrite the stored secret.
+- With `key_query` declared, a handshake or delivery whose URL lacks a well-formed key (`/^[A-Za-z0-9_-]{1,128}$/`) is rejected with 400. Without it, the slot keeps the two most recent secrets, so a re-subscribe on the same path keeps verifying deliveries from the subscription it replaces.
+
+The recipe for many provider subscriptions per install (one Asana webhook per watched project): mint a random nonce per subscription with `randomHex`, store it with the subscription (the `@sprigr/apps-webhook-registry` row is the natural home), and register the provider target as `buildMarketplaceWebhookUrl(...) + '?sub=' + nonce`. Reconcile on a schedule: providers delete or starve subscriptions silently (Asana deletes after 24 hours of failed delivery), so list the provider's subscriptions, re-create any missing or inactive ones with a fresh nonce, and remove ones you no longer want. There is no app-facing call to delete a slot; stale keyed slots age out on the TTL.
+
+`secret_ref` and `shared` are rejected for this type (there is no manifest secret, and the platform cannot re-sign per tenant with a provider-minted key). `handshake.header` must differ from `signature.header`: the platform tells a handshake from a delivery by which of the two is present. Platform decision record: sprigr-team `docs/decisions/implemented/0038-handshake-hmac-marketplace-webhooks.md`.
+
 ### Emitting from an inline route (`env.SPRIGR` is absent there)
 
 Inline Next.js route handlers never get the injected `env.SPRIGR` (see above). An app whose provider webhook lands on an inline route — which is the norm when the provider doesn't HMAC bodies, so the marketplace dispatcher can't verify the delivery — therefore has **no working `env.SPRIGR.emit` on the one path that matters most**.
