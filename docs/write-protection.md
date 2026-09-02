@@ -107,6 +107,26 @@ What the wrapper guarantees:
 
 Autonomous runs fail open by design: a scheduled task or workflow step has no one to ask, so the platform returns the question with a note that nothing was written. Scope what a background agent may do; do not rely on `_approval` there.
 
+### Dispatcher tools
+
+A dispatcher (one tool, many actions) cannot wrap handlers, so it builds the gate once and calls it from the dispatch loop:
+
+```ts
+const gate = dispatcherApproval<AcmeEnv, AcmeState>(SPECS, {
+  scope: 'acme-undo',
+  inputField: 'params',                                   // default 'input'
+  resolveConnection: async (env, params) => resolveAccount(env, params),
+  pinEnv: (env, account) => stateFor(env, account),        // what capture / describeTarget receive
+  describeTarget: (state, id) => labelFor(state, id),
+  journal: (env) => createUndoJournal({ db: env.DB, table: 'acme_undo_journal', scope: 'acme-undo' }),
+});
+
+// in the dispatcher, once the action is resolved and its params parsed:
+return gate.run(action, args, env, () => def.execute(state, parsed));
+```
+
+`SPECS` is keyed by action name; per-module spec maps compose with an object spread. The action name goes into the grant hash because every action shares one tool and the platform only mixes in the tool name. Keep the `irreversible: true` set of your T1 policy equal to the keys of `SPECS`, and assert it in a test, so the two tiers cannot drift.
+
 ## T3: the reverse tool
 
 Declare it in the manifest and keep it off the agent's list:
