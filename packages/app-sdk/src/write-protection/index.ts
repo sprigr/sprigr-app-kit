@@ -24,3 +24,5 @@ export {
   checkConfirmationPolicy,
 } from './confirmation-policy';
 export type { PolicyCheckInput, PolicySource } from './confirmation-policy';
+export { offerUndo, safeCapture } from './undo-capture';
+export type { OfferUndoArgs } from './undo-capture';

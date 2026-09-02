@@ -19,17 +19,26 @@
  * `pin`, a replay lands on the install's CURRENT default and rebuilds the
  * object in the wrong customer account, and nothing errors.
  *
+ * `E` is the env the tool receives; `P` is what `pin` hands to `restore`. For
+ * a store-pinned env they are the same type (Shopify). For an app that
+ * re-authenticates per actor and organisation, `P` is the fresh token state
+ * (Xero), which is why they are separate parameters.
+ *
  * Extracted from the Shopify and Xero `undo-apply.ts` handlers, which were
  * byte-similar apart from their restore call and their pin.
  */
 
 import type { ToolArgs, UndoFidelity } from './types';
 
-export interface RestoreSpec<E, T = Record<string, unknown>> {
+export interface RestoreSpec<P, T = Record<string, unknown>> {
   resource: string;
   fidelity: UndoFidelity;
-  /** Rebuild or write back, through the PINNED env. */
-  restore: (pinnedEnv: E, before: T, row: JournalRowLike<T>) => Promise<{ ok: boolean; newId?: string; error?: string }>;
+  /**
+   * Rebuild or write back, through the PINNED connection. May return
+   * `{ ok: false, error }` or throw; both become `restore_failed` and the
+   * before-image is kept.
+   */
+  restore: (pinned: P, before: T, row: JournalRowLike<T>) => Promise<{ ok: boolean; newId?: string; error?: string } | void>;
   /** What the restore does NOT bring back, folded into the note verbatim. */
   notRestored?: string;
 }
@@ -41,19 +50,20 @@ export interface JournalRowLike<T = unknown> {
   before: T;
 }
 
-export interface UndoApplyOptions<E> {
+export interface UndoApplyOptions<E, P = E> {
   env: E;
   journal: {
     loadBefore<T = unknown>(ref: string): Promise<JournalRowLike<T> | null>;
     dropBefore(ref: string): Promise<void>;
   };
-  specs: Record<string, RestoreSpec<E>>;
+  specs: Record<string, RestoreSpec<P>>;
   /**
-   * Re-pin the env to the journalled connection. May be async (re-auth per
-   * actor, as Xero does) and may throw or return null to REFUSE, e.g. a
-   * session-stateful app whose current business differs from the row's.
+   * Re-pin to the journalled connection. May be async (re-auth per actor, as
+   * Xero does). Throw to report `connection_unavailable`; return null to
+   * REFUSE with `connection_mismatch`, e.g. a session-stateful app whose
+   * current business differs from the row's.
    */
-  pin: (env: E, connection: string | null, args: ToolArgs) => Promise<E | null> | E | null;
+  pin: (env: E, connection: string | null, args: ToolArgs) => Promise<P | null> | P | null;
 }
 
 export type UndoApplyResult =
@@ -61,7 +71,7 @@ export type UndoApplyResult =
   | { ok: false; error: string; note: string };
 
 /** Run the reversal. Every failure names what it was and states that nothing changed. */
-export async function runUndoApply<E>(args: ToolArgs, opts: UndoApplyOptions<E>): Promise<UndoApplyResult> {
+export async function runUndoApply<E, P = E>(args: ToolArgs, opts: UndoApplyOptions<E, P>): Promise<UndoApplyResult> {
   const ref = typeof args.ref === 'string' ? args.ref.trim() : '';
   if (!ref) return { ok: false, error: 'missing_ref', note: 'No before-image reference was supplied. Nothing was changed.' };
 
@@ -93,7 +103,7 @@ export async function runUndoApply<E>(args: ToolArgs, opts: UndoApplyOptions<E>)
     return { ok: false, error: 'before_image_unreadable', note: 'The saved copy could not be read back. Nothing was changed.' };
   }
 
-  let pinned: E | null;
+  let pinned: P | null;
   try {
     pinned = await opts.pin(opts.env, row.connection, args);
   } catch (err) {
@@ -103,7 +113,7 @@ export async function runUndoApply<E>(args: ToolArgs, opts: UndoApplyOptions<E>)
       note: `Could not reach the connection this change was made in${row.connection ? ` (${row.connection})` : ''}: ${String(err)}. Nothing was changed.`,
     };
   }
-  if (!pinned) {
+  if (pinned === null || pinned === undefined) {
     return {
       ok: false,
       error: 'connection_mismatch',
@@ -113,7 +123,12 @@ export async function runUndoApply<E>(args: ToolArgs, opts: UndoApplyOptions<E>)
     };
   }
 
-  const result = await spec.restore(pinned, before, row);
+  let result: { ok: boolean; newId?: string; error?: string };
+  try {
+    result = (await spec.restore(pinned, before, row)) ?? { ok: true };
+  } catch (err) {
+    result = { ok: false, error: String(err) };
+  }
   if (!result.ok) {
     // Leave the before-image in place: the platform has marked its token
     // spent, but a human may still want to see what was held.
