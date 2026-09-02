@@ -34,3 +34,5 @@ export {
 export type { PolicyCheckInput, PolicySource } from './confirmation-policy';
 export { offerUndo, safeCapture } from './undo-capture';
 export type { OfferUndoArgs } from './undo-capture';
+export { applyConfirmationPolicies, manifestIsFresh, serializeManifest } from './manifest';
+export type { ApplyPoliciesOptions, ManifestDispatchBlock, ManifestLike, ManifestToolLike } from './manifest';

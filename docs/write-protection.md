@@ -58,7 +58,37 @@ it('every write is gated or knowingly exempt, and every placeholder resolves', (
 
 Two traps the checker catches, both silent on the platform: a placeholder not dotted through `input.` on a `{ action, input }` tool renders as "(unset)" on the card; a rule keyed on a misspelled action gates nothing.
 
-For flat tools, write the `confirmation` object straight into the manifest. `confirmation_required: true` still works as sugar for `{ always: true }` but carries no `describe`.
+For flat tools (one tool, one job) the policy is a tool-level rule per tool name. Keep those in the same TypeScript module and let the `gen:` script write them with `applyConfirmationPolicies`, which also retires the two mechanisms a policy supersedes: the legacy `confirmation_required: true` flag (sugar for `{ always: true }` with no `describe`) and any app-declared `confirm` input (the platform injects its own top-level `confirm` wherever a policy is present):
+
+```ts
+// scripts/gen-confirmation-manifest.ts
+import { readFileSync, writeFileSync } from 'node:fs';
+import { applyConfirmationPolicies, serializeManifest, type ManifestLike } from '@sprigr/apps-app-sdk';
+import { CONFIRMATION_RULES } from '../src/handlers/confirmation-policy';
+
+const manifest = JSON.parse(readFileSync(MANIFEST_PATH, 'utf8')) as ManifestLike;
+applyConfirmationPolicies(manifest, { policies: CONFIRMATION_RULES });   // throws on a tool name the manifest lacks
+writeFileSync(MANIFEST_PATH, serializeManifest(manifest));
+```
+
+```ts
+// __tests__/confirmation-policy.test.ts
+import { manifestIsFresh, checkConfirmationPolicy } from '@sprigr/apps-app-sdk';
+it('the committed manifest is a fresh generation', () => {
+  expect(manifestIsFresh(manifest, { policies: CONFIRMATION_RULES })).toBe(true);
+});
+it('every rule is live and every placeholder is a required input', () => {
+  expect(checkConfirmationPolicy({
+    policy: { actions: { ...CONFIRMATION_RULES } },   // tool-level rules, checked as if actions on one dispatcher
+    registry: manifest.tools.map((t) => t.name),
+    writePrefixes: [],                                 // or the app's verb list, with `ungated` for the deliberate exemptions
+    nestedUnderInput: false,
+    requiredInput: (name) => requiredOf(name),
+  })).toEqual([]);
+});
+```
+
+Pass `dispatch` alongside `policies` to write a dispatcher's `dispatch` block in the same pass.
 
 ## T2: `requireApproval`
 
