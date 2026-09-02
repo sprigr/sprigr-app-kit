@@ -134,3 +134,50 @@ describe('requireApproval', () => {
     expect(r.ok).toBe(false);
   });
 });
+
+describe('requireApproval: _approval.count (decision 0039)', () => {
+  const handlers = {
+    delete_collection: vi.fn(async () => ({ ok: true })),
+    add_tags: vi.fn(async () => ({ ok: true })),
+    delete_many: vi.fn(async () => ({ ok: true })),
+    delete_unkeyed: vi.fn(async () => ({ ok: true })),
+  };
+  const journal = { captureBefore: vi.fn(async () => ({ ref: 'cap_count' })) };
+  const gated = requireApproval(handlers, {
+    ...specs,
+    delete_many: {
+      keys: ['ids'],
+      describe: (target) => ({ question: `Delete ${target}?`, header: 'Shop' }),
+      count: (a) => (Array.isArray(a.ids) ? a.ids.length : 0),
+    },
+    delete_unkeyed: {
+      keys: ['id'],
+      describe: () => ({ question: 'Delete it?', header: 'Shop' }),
+    },
+  }, opts({ journal: () => journal }));
+  const env: Env = { defaultStore: 'acme.myshopify.com' };
+
+  it('reports 1 for a single-target spec that resolved an id', async () => {
+    const r = (await gated.delete_collection({ collection_id: '9' }, env, {} as never)) as { _approval: { count?: number } };
+    expect(r._approval.count).toBe(1);
+  });
+
+  it('uses the spec\'s own count for a batch action', async () => {
+    const r = (await gated.delete_many({ ids: ['a', 'b', 'c'] }, env, {} as never)) as { _approval: { count?: number } };
+    expect(r._approval.count).toBe(3);
+  });
+
+  it('reports nothing when no id resolved and no count was supplied', async () => {
+    const r = (await gated.delete_unkeyed({}, env, {} as never)) as { _approval: { count?: number } };
+    expect(r._approval.count).toBeUndefined();
+  });
+
+  it('drops a count that is not a finite non-negative number', async () => {
+    const g = requireApproval(handlers, {
+      delete_many: { keys: ['ids'], describe: () => ({ question: 'q', header: 'h' }), count: () => Number.NaN },
+    }, opts());
+    const r = (await g.delete_many({ ids: ['a'] }, env, {} as never)) as { _approval: { count?: number } };
+    expect(r._approval.count).toBeUndefined();
+  });
+});
+

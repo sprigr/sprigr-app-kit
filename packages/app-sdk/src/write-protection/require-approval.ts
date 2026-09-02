@@ -63,6 +63,14 @@ export interface ApprovalSpec<P = unknown> {
    * Use `set()` / `seq()` from `approval-hash`. Never include `confirm`.
    */
   hash?: (args: ToolArgs) => Array<string | number | undefined | null>;
+  /**
+   * How many records this call touches, for `_approval.count`. Omit for a
+   * single-target tool (the wrapper reports 1 when a `keys` id resolved, and
+   * nothing when none did). A batch action (delete these ids, tag these
+   * products) MUST supply it, or it reports nothing and no standing approval
+   * can ever cover it, which is the safe side but not the useful one.
+   */
+  count?: (args: ToolArgs) => number;
   /** Present only for tools whose write can be (partly) reversed. */
   undo?: UndoCaptureSpec<P>;
 }
@@ -162,6 +170,23 @@ function rawIdOf(args: ToolArgs, keys: string[]): string {
   return '';
 }
 
+/**
+ * The count the ask pass reports. A spec's own `count` wins; a single-target
+ * spec that resolved an id is 1; anything else is unknown and stays off the
+ * envelope, because a wrong count widens what an unattended step may write.
+ */
+function countOf(spec: ApprovalSpec<unknown>, params: ToolArgs, rawId: string): number | undefined {
+  if (spec.count) {
+    try {
+      const n = spec.count(params);
+      return Number.isFinite(n) && n >= 0 ? Math.floor(n) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return rawId ? 1 : undefined;
+}
+
 function isOk(result: unknown): boolean {
   return !!result && typeof result === 'object' && (result as { ok?: unknown }).ok !== false;
 }
@@ -200,11 +225,13 @@ async function askPass<E, P>(
   const pinned = await pin(opts, env, connection);
   const target = rawId && opts.describeTarget ? await safeLabel(opts.describeTarget, pinned, rawId, name) : rawId || '(unknown id)';
   const extra = spec.hash ? spec.hash(params) : [];
+  const count = countOf(spec as ApprovalSpec<unknown>, params, rawId);
   return {
     ok: false,
     _approval: {
       ...spec.describe(target, params, connection),
       hash: approvalHash(...hashPrefix, rawId, connection, ...extra),
+      ...(count !== undefined ? { count } : {}),
     },
   };
 }
