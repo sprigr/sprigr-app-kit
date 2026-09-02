@@ -79,6 +79,15 @@ export interface AppApprovalEnvelope {
    * retry silently discards the tap. See `approvalHash`.
    */
   hash?: string;
+  /**
+   * How many records this ONE call touches, as you count them. Required for a
+   * workflow step's standing approval to cover the call on an unattended run
+   * (sprigr-team decision 0039): the platform cannot see inside your write,
+   * so an envelope with no count gets a person or nothing. The wrappers set
+   * it to 1 for a single-target spec; a batch action supplies
+   * `ApprovalSpec.count`.
+   */
+  count?: number;
 }
 
 /**

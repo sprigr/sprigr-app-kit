@@ -5,7 +5,7 @@ A marketplace app tool can mutate anything it has scopes for. The platform gives
 | Tier | Mechanism | Who attests | What it buys |
 | --- | --- | --- | --- |
 | T1 Confirmation policy | manifest `tools[].confirmation` | the model sets `confirm: true` | a reviewable declaration and an audit trail. Measured on staging: the model pre-confirms from the user's own request, so on its own this stops nothing |
-| T2 Approval | handler returns `_approval` instead of writing; re-dispatched with `_approval_granted` after a tap | a human, via the platform's decision card | the only real control. Fails open on autonomous runs (schedules, workflow steps, delegations); grants expire in 15 minutes |
+| T2 Approval | handler returns `_approval` instead of writing; re-dispatched with `_approval_granted` after a tap | a human, via the platform's decision card | the only real control. Autonomous runs (schedules, workflow steps, delegations) get no write and no card, unless a workflow step carries a standing approval and your envelope states a `count` within its cap; grants expire in 15 minutes |
 | T3 Undo | handler returns `_undo` beside a successful write; manifest `undo.reverse_tool` names an `internal: true` tool | platform mints a single-use 7-day token | a reversal after the write landed |
 
 Plus one app-side pattern: **archive-first**. Where the vendor has a real archived state, a `delete_*` refuses without `force: true` and offers the archive. Same id, real restore, no fidelity caveat. Prefer it to a journal.
@@ -148,7 +148,7 @@ What the wrapper guarantees:
 - On the granted pass it **captures before the write, mints only after the write reported `ok`**, and never returns `_undo` when the capture or the journal failed. A failed capture does not fail the write.
 - A spec naming a tool absent from the registry **throws at build time** rather than silently ungating a rename.
 
-Autonomous runs fail open by design: a scheduled task or workflow step has no one to ask, so the platform returns the question with a note that nothing was written. Scope what a background agent may do; do not rely on `_approval` there.
+Autonomous runs get neither the write nor a card: a scheduled task or workflow step has no one to ask, so the platform returns the question with a note that nothing was written. The one exception is a workflow step whose author saved a **standing approval** (sprigr-team decision 0039): the platform honours it only when your envelope's `count` (how many records this one call touches) is within the step's cap, so the wrapper sets `count` to 1 for a single-target spec and a batch action must supply `ApprovalSpec.count`. No count means no standing approval, which is the safe side. Otherwise, scope what a background agent may do; do not rely on `_approval` there.
 
 ### Dispatcher tools
 
