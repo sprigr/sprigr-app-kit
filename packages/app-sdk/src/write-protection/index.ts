@@ -16,7 +16,7 @@ export type { ArchiveOfferOptions, ArchiveOfferRefusal } from './refuse-without-
 export { requireApproval } from './require-approval';
 export type { ApprovalSpec, CaptureJournal, RequireApprovalOptions, UndoCaptureSpec } from './require-approval';
 export { runUndoApply } from './undo-apply';
-export type { JournalRowLike, RestoreSpec, UndoApplyOptions, UndoApplyResult } from './undo-apply';
+export type { JournalRowLike, RestoreResult, RestoreSpec, UndoApplyOptions, UndoApplyResult } from './undo-apply';
 export {
   DEFAULT_MONEY_FIELDS,
   DEFAULT_WRITE_PREFIXES,

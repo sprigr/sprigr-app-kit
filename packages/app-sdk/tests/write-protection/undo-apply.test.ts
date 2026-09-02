@@ -92,3 +92,20 @@ describe('runUndoApply with a pinned type distinct from the env', () => {
     expect(journal.dropBefore).not.toHaveBeenCalled();
   });
 });
+
+describe('restore may disclose per-run detail', () => {
+  it('spreads extra into the success payload and lets the result override notRestored', async () => {
+    const journal = {
+      loadBefore: vi.fn(async () => ({ entity: 'delete_line', original_id: '336', connection: '42', before: { record: {} } }) as never),
+      dropBefore: vi.fn(async () => {}),
+    };
+    const r = await runUndoApply({ ref: 'cap_1' }, {
+      env: {},
+      journal,
+      specs: { delete_line: { resource: 'labour line', fidelity: 'recreated', notRestored: 'static', restore: async () => ({ ok: true, newId: '991', notRestored: 'child rows', extra: { fields_not_restored: ['ID', 'Total'], children_captured: { labor: [] } } }) } },
+      pin: (e) => e,
+    });
+    expect(r).toMatchObject({ ok: true, new_id: '991', not_restored: 'child rows', fields_not_restored: ['ID', 'Total'], children_captured: { labor: [] } });
+    expect((r as { note: string }).note).toMatch(/Not restored: child rows\./);
+  });
+});
