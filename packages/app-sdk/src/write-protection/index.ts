@@ -36,3 +36,5 @@ export { offerUndo, safeCapture } from './undo-capture';
 export type { OfferUndoArgs } from './undo-capture';
 export { applyConfirmationPolicies, manifestIsFresh, serializeManifest } from './manifest';
 export type { ApplyPoliciesOptions, ManifestDispatchBlock, ManifestLike, ManifestToolLike } from './manifest';
+export { commonDestructiveVerbs, deriveConfirmationPolicy } from './derive-policy';
+export type { DerivePolicyOptions, DerivedPolicy, VerbRule } from './derive-policy';
