@@ -90,6 +90,19 @@ it('every rule is live and every placeholder is a required input', () => {
 
 Pass `dispatch` alongside `policies` to write a dispatcher's `dispatch` block in the same pass.
 
+When the registry carries no destructive flag, derive the policy from the verb prefixes instead of keeping a list that drifts:
+
+```ts
+import { deriveConfirmationPolicy, commonDestructiveVerbs } from '@sprigr/apps-app-sdk';
+const { policy, ungated, unmatched } = deriveConfirmationPolicy(ACTIONS.keys(), {
+  rules: commonDestructiveVerbs('in ServiceM8'),      // delete_/void_/refund_/cancel_ irreversible; archive_/remove_/unassign_ plain
+  exempt: ['delete_draft_note'],                       // matched but knowingly ungated; comes back in `ungated`
+  overrides: { void_invoice: { always: true, irreversible: true, describe: 'Void invoice {input.id}' } },
+});
+```
+
+`unmatched` is every action the table did not classify; feed the write-shaped ones to the checker as `ungated` so a new verb cannot slip through unclassified.
+
 ## T2: `requireApproval`
 
 ```ts
