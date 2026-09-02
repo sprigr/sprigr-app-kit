@@ -5,7 +5,7 @@
  * provider's authorize endpoint and is redirected back with a code.
  */
 
-import { OAuthError, classifyOAuthError } from './errors';
+import { OAuthError, classifyOAuthError, describeOAuthFailure } from './errors';
 import type { AuthCodeResponse, ExchangeOptions, ProviderConfig, TokenStore } from './types';
 
 const REFRESH_TOKEN_KEY = 'refresh_token';
@@ -42,13 +42,18 @@ export async function exchangeAuthCode(
 
   if (!response.ok) {
     const errorBody = await response.text();
-    const { terminal, reason } = classifyOAuthError(config.provider, response.status, errorBody);
+    const info = classifyOAuthError(config.provider, response.status, errorBody);
+    // The raw body never reaches the message: it is provider-controlled,
+    // routinely echoes back `code` / `client_secret`, and every consuming
+    // app persists this message into a durable audit column. See
+    // describeOAuthFailure in ./errors for what survives and why
+    // (sprigr/sprigr-apps#560).
     throw new OAuthError(
       config.provider,
-      terminal,
-      reason,
+      info.terminal,
+      info.reason,
       response.status,
-      `${config.provider} code exchange failed (${response.status}): ${errorBody}`,
+      describeOAuthFailure(config.provider, 'code exchange', response.status, info),
     );
   }
 
