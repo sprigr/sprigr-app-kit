@@ -4,7 +4,12 @@ import { APPROVAL_GRANTED_KEY, type AppApprovalEnvelope, type ToolArgs, type Too
 
 /**
  * Human approval for the writes a vendor cannot undo, plus the before-image
- * capture for the ones it can partly undo, in ONE wrapper.
+ * capture for the ones it can partly undo, in ONE wrapper. Two shapes over the
+ * same core:
+ *
+ *   requireApproval(handlers, specs, opts)   flat tools, one handler per tool
+ *   dispatcherApproval(specs, opts)          one tool, many actions; the
+ *                                            dispatcher calls gate.run(...)
  *
  * ## Why this exists when the manifest already declares `confirmation`
  *
@@ -36,8 +41,8 @@ import { APPROVAL_GRANTED_KEY, type AppApprovalEnvelope, type ToolArgs, type Too
  * back.
  */
 
-/** Per-tool spec: how the card reads, and (optionally) how to journal a before-image. */
-export interface ApprovalSpec<E = unknown> {
+/** Per-tool (or per-action) spec: how the card reads, and (optionally) how to journal a before-image. */
+export interface ApprovalSpec<P = unknown> {
   /**
    * Arg names that may carry the target id, most specific first. ONE list, used
    * for both the card label and the grant hash, so the two cannot drift apart
@@ -49,7 +54,7 @@ export interface ApprovalSpec<E = unknown> {
    * `connection` the resolved store / organisation / business, or '' when the
    * app has one. Do not set `hash` here; the wrapper derives it from the raw
    * id and the connection so it cannot move between the ask and the retry.
-   * Override with `hash` below only when the arguments understate the blast
+   * Extend with `hash` below only when the arguments understate the blast
    * radius.
    */
   describe: (target: string, args: ToolArgs, connection: string) => Omit<AppApprovalEnvelope, 'hash'>;
@@ -59,15 +64,15 @@ export interface ApprovalSpec<E = unknown> {
    */
   hash?: (args: ToolArgs) => Array<string | number | undefined | null>;
   /** Present only for tools whose write can be (partly) reversed. */
-  undo?: UndoCaptureSpec<E>;
+  undo?: UndoCaptureSpec<P>;
 }
 
-export interface UndoCaptureSpec<E = unknown> {
+export interface UndoCaptureSpec<P = unknown> {
   /** Coarse type surfaced as `_undo.resource`. */
   resource: string;
   fidelity: UndoFidelity;
-  /** Read the object BEFORE the write, through the PINNED env. Null or throw on miss. */
-  capture: (pinnedEnv: E, id: string, args: ToolArgs) => Promise<unknown>;
+  /** Read the object BEFORE the write, through the PINNED env or state. Null or throw on miss. */
+  capture: (pinned: P, id: string, args: ToolArgs) => Promise<unknown>;
   /** How the change reads in `list_undoable_changes`; the connection is appended by the wrapper. */
   describe: (before: Record<string, unknown>, id: string) => string;
   /** Relayed verbatim; on `'recreated'` it must say the id changes. Never empty. */
@@ -84,7 +89,12 @@ export interface CaptureJournal {
   }): Promise<{ ref: string } | null>;
 }
 
-export interface RequireApprovalOptions<E = unknown> {
+/**
+ * `E` is the env the tool receives; `P` is what the pinned connection looks
+ * like to `capture` and `describeTarget` (the same env re-pinned for Shopify,
+ * a fresh per-actor token state for Xero or Asana).
+ */
+export interface ApprovalGateOptions<E, P = E> {
   /** Log prefix, e.g. `shopify-undo`. */
   scope: string;
   /**
@@ -94,14 +104,17 @@ export interface RequireApprovalOptions<E = unknown> {
    * the arguments alone: on the retry the model usually omits it.
    */
   resolveConnection: (env: E, args: ToolArgs) => Promise<string>;
-  /** Re-pin the env to a resolved connection so lookups and captures hit it. */
-  pinEnv: (env: E, connection: string) => E;
   /**
-   * Human label for a raw id, looked up THROUGH the pinned env. Fall back to
-   * the id on any miss; never guess, a confidently wrong card is worse than a
-   * terse one. Omit to always show the raw id.
+   * Re-pin to a resolved connection so lookups and captures hit it. Omit when
+   * `P` is `E` and the env needs no pin (a single-connection app).
    */
-  describeTarget?: (pinnedEnv: E, id: string) => Promise<string>;
+  pinEnv?: (env: E, connection: string) => P | Promise<P>;
+  /**
+   * Human label for a raw id, looked up THROUGH the pinned connection. Fall
+   * back to the id on any miss; never guess, a confidently wrong card is worse
+   * than a terse one. Omit to always show the raw id.
+   */
+  describeTarget?: (pinned: P, id: string) => Promise<string>;
   /**
    * Where before-images go. Required when any spec declares `undo`. The
    * journal's own capture returns null rather than throwing, and this wrapper
@@ -113,6 +126,30 @@ export interface RequireApprovalOptions<E = unknown> {
    * so an agent reporting "deleted it" can name where. Optional.
    */
   stampConnection?: (result: unknown, connection: string) => unknown;
+}
+
+/** Flat-tool options: the pinned type is the env itself. */
+export type RequireApprovalOptions<E> = ApprovalGateOptions<E, E>;
+
+export interface DispatcherApprovalOptions<E, P = E> extends ApprovalGateOptions<E, P> {
+  /**
+   * Where the per-action params live on the dispatched args (`{ action,
+   * input: {...} }` -> 'input'). When the field is absent the top-level args
+   * are used, which is the flat-verb envelope. Default 'input'.
+   */
+  inputField?: string;
+}
+
+export interface DispatcherApprovalGate<E> {
+  /** True when `action` carries an approval spec. */
+  has(action: string): boolean;
+  /**
+   * Run one dispatched action through the gate. With no spec, `write` just
+   * runs. With a spec, the ask pass returns the `_approval` card and never
+   * calls `write`; the granted pass captures, calls `write`, and offers
+   * `_undo` beside its result.
+   */
+  run(action: string, args: ToolArgs, env: E, write: () => Promise<unknown>): Promise<unknown>;
 }
 
 function rawIdOf(args: ToolArgs, keys: string[]): string {
@@ -127,8 +164,101 @@ function isOk(result: unknown): boolean {
   return !!result && typeof result === 'object' && (result as { ok?: unknown }).ok !== false;
 }
 
+async function safeLabel<P>(fn: (pinned: P, id: string) => Promise<string>, pinned: P, id: string): Promise<string> {
+  try {
+    const label = await fn(pinned, id);
+    return label && label.trim() ? label : id;
+  } catch {
+    return id;
+  }
+}
+
+async function pin<E, P>(opts: ApprovalGateOptions<E, P>, env: E, connection: string): Promise<P> {
+  if (!connection || !opts.pinEnv) return env as unknown as P;
+  return opts.pinEnv(env, connection);
+}
+
 /**
- * Wrap the named tools so each asks a human first, then (if it declares
+ * The ask pass: resolve ONCE and use the same value for the card text and the
+ * hash, so the person is told exactly which connection they are authorising
+ * and the grant cannot be invalidated by the model dropping `store` on the
+ * retry. `hashPrefix` is the action name for a dispatcher, because the
+ * platform mixes in only the TOOL name and every action shares one tool.
+ */
+async function askPass<E, P>(
+  spec: ApprovalSpec<P>,
+  params: ToolArgs,
+  env: E,
+  opts: ApprovalGateOptions<E, P>,
+  hashPrefix: string[],
+): Promise<{ ok: false; _approval: AppApprovalEnvelope }> {
+  const connection = await opts.resolveConnection(env, params);
+  const rawId = rawIdOf(params, spec.keys);
+  const pinned = await pin(opts, env, connection);
+  const target = rawId && opts.describeTarget ? await safeLabel(opts.describeTarget, pinned, rawId) : rawId || '(unknown id)';
+  const extra = spec.hash ? spec.hash(params) : [];
+  return {
+    ok: false,
+    _approval: {
+      ...spec.describe(target, params, connection),
+      hash: approvalHash(...hashPrefix, rawId, connection, ...extra),
+    },
+  };
+}
+
+/**
+ * The granted pass: capture THROUGH the pinned connection BEFORE the write,
+ * mint only after the write reported ok, never on a null capture. Verified
+ * live 2026-08-20: an unpinned capture went looking on the default store,
+ * found nothing, and a permanent delete on the other store minted no token.
+ */
+async function grantedPass<E, P>(
+  name: string,
+  spec: ApprovalSpec<P>,
+  params: ToolArgs,
+  env: E,
+  opts: ApprovalGateOptions<E, P>,
+  write: () => Promise<unknown>,
+): Promise<unknown> {
+  // Even with nothing to journal, name the connection this hit. An agent that
+  // reports "deleted it" without naming the store on a multi-store install is
+  // one the user cannot check.
+  const connection = await opts.resolveConnection(env, params);
+  const stamp = (r: unknown) => (connection && opts.stampConnection ? opts.stampConnection(r, connection) : r);
+
+  const undo = spec.undo;
+  const id = rawIdOf(params, spec.keys);
+  if (!undo || !id) return stamp(await write());
+
+  const pinned = await pin(opts, env, connection);
+  const before = await safeCapture(opts.scope, name, id, () => undo.capture(pinned, id, params));
+
+  const result = await write();
+  if (!isOk(result) || !before) return stamp(result);
+
+  const envelope = await offerUndo({
+    journal: opts.journal!(env),
+    entity: name,
+    id,
+    before,
+    connection: connection || null,
+    fidelity: undo.fidelity,
+    resource: undo.resource,
+    describe: undo.describe,
+    warning: undo.warning(id, before),
+  });
+  if (!envelope) return stamp(result);
+  return { ...(stamp(result) as Record<string, unknown>), _undo: envelope };
+}
+
+function assertJournal<E, P>(name: string, spec: ApprovalSpec<P>, opts: ApprovalGateOptions<E, P>, who: string): void {
+  if (spec.undo && !opts.journal) {
+    throw new Error(`${who}: "${name}" declares undo but no journal was supplied.`);
+  }
+}
+
+/**
+ * Wrap the named flat tools so each asks a human first, then (if it declares
  * `undo`) journals a before-image on the granted pass and offers `_undo`.
  *
  * Returns only the wrapped entries. Register them AFTER the originals
@@ -155,86 +285,54 @@ export function requireApproval<E>(
           'destructive tool ships ungated.',
       );
     }
-    if (spec.undo && !opts.journal) {
-      throw new Error(`requireApproval: "${name}" declares undo but no journal was supplied.`);
-    }
+    assertJournal(name, spec, opts, 'requireApproval');
 
     gated[name] = async (args, env, ctx) => {
       const a = args ?? {};
       if (a[APPROVAL_GRANTED_KEY] === true) {
         const { [APPROVAL_GRANTED_KEY]: _granted, ...rest } = a;
-        return granted(name, spec, rest, env, ctx, inner, opts);
+        return grantedPass(name, spec, rest, env, opts, () => inner(rest, env, ctx));
       }
-      // Resolve ONCE and use the same value for the card text and the hash, so
-      // the person is told exactly which connection they are authorising and
-      // the grant cannot be invalidated by the model dropping `store` on the
-      // retry.
-      const connection = await opts.resolveConnection(env, a);
-      const rawId = rawIdOf(a, spec.keys);
-      const pinned = connection ? opts.pinEnv(env, connection) : env;
-      const target = rawId && opts.describeTarget ? await safeLabel(opts.describeTarget, pinned, rawId) : rawId || '(unknown id)';
-      const extra = spec.hash ? spec.hash(a) : [];
-      return {
-        ok: false,
-        _approval: {
-          ...spec.describe(target, a, connection),
-          hash: approvalHash(rawId, connection, ...extra),
-        },
-      };
+      return askPass(spec, a, env, opts, []);
     };
   }
 
   return gated;
 }
 
-async function safeLabel<E>(fn: (env: E, id: string) => Promise<string>, env: E, id: string): Promise<string> {
-  try {
-    const label = await fn(env, id);
-    return label && label.trim() ? label : id;
-  } catch {
-    return id;
-  }
-}
+/**
+ * The same gate for a dispatcher tool (one tool, many actions selected by an
+ * input field). Build it once beside the action registry and call `run` from
+ * the dispatcher after the action is resolved and its params parsed:
+ *
+ *   const gate = dispatcherApproval(SPECS, { scope, resolveConnection, pinEnv, journal });
+ *   ...
+ *   return gate.run(action, args, env, () => def.execute(state, parsed));
+ *
+ * The platform stamps `_approval_granted` on the TOP-LEVEL args; the per-action
+ * params are read from `opts.inputField` (default `input`), or from the
+ * top-level args when that field is absent (the flat-verb envelope).
+ */
+export function dispatcherApproval<E, P = E>(
+  specs: Record<string, ApprovalSpec<P>>,
+  opts: DispatcherApprovalOptions<E, P>,
+): DispatcherApprovalGate<E> {
+  for (const [name, spec] of Object.entries(specs)) assertJournal(name, spec, opts, 'dispatcherApproval');
+  const field = opts.inputField ?? 'input';
 
-async function granted<E>(
-  name: string,
-  spec: ApprovalSpec<E>,
-  args: ToolArgs,
-  env: E,
-  ctx: unknown,
-  inner: ToolHandler<E>,
-  opts: RequireApprovalOptions<E>,
-): Promise<unknown> {
-  // Even with nothing to journal, name the connection this hit. An agent that
-  // reports "deleted it" without naming the store on a multi-store install is
-  // one the user cannot check.
-  const connection = await opts.resolveConnection(env, args);
-  const stamp = (r: unknown) => (connection && opts.stampConnection ? opts.stampConnection(r, connection) : r);
-
-  const undo = spec.undo;
-  const id = rawIdOf(args, spec.keys);
-  if (!undo || !id) return stamp(await inner(args, env, ctx));
-
-  // Capture THROUGH the pinned env, BEFORE the write. Verified live 2026-08-20:
-  // an unpinned capture went looking on the default store, found nothing, and
-  // a permanent delete on the other store minted no token.
-  const pinned = connection ? opts.pinEnv(env, connection) : env;
-  const before = await safeCapture(opts.scope, name, id, () => undo.capture(pinned, id, args));
-
-  const result = await inner(args, env, ctx);
-  if (!isOk(result) || !before) return stamp(result);
-
-  const envelope = await offerUndo({
-    journal: opts.journal!(env),
-    entity: name,
-    id,
-    before,
-    connection: connection || null,
-    fidelity: undo.fidelity,
-    resource: undo.resource,
-    describe: undo.describe,
-    warning: undo.warning(id, before),
-  });
-  if (!envelope) return stamp(result);
-  return { ...(stamp(result) as Record<string, unknown>), _undo: envelope };
+  return {
+    has: (action) => Object.prototype.hasOwnProperty.call(specs, action),
+    async run(action, args, env, write) {
+      const spec = specs[action];
+      if (!spec) return write();
+      const a = args ?? {};
+      const nested = a[field];
+      const params: ToolArgs =
+        nested && typeof nested === 'object' && !Array.isArray(nested) ? (nested as ToolArgs) : a;
+      if (a[APPROVAL_GRANTED_KEY] === true) {
+        return grantedPass(action, spec, params, env, opts, write);
+      }
+      return askPass(spec, params, env, opts, [action]);
+    },
+  };
 }
