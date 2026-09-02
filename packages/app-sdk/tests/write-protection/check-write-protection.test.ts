@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -104,5 +106,32 @@ describe('run (filesystem)', () => {
     const r3 = run([], root);
     expect(r3.code).toBe(1);
     expect(r3.lines.join('\n')).toMatch(/bank the headroom/);
+  });
+});
+
+describe('the CLI entrypoint', () => {
+  it('runs when invoked through a symlink, which is how npm installs a bin', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wp-bin-'));
+    mkdirSync(join(root, 'apps', 'a'), { recursive: true });
+    writeFileSync(join(root, 'apps', 'a', 'sprigr-app.json'), JSON.stringify({ tools: [tool('acme_delete_thing')] }));
+    const real = fileURLToPath(new URL('../../bin/check-write-protection.mjs', import.meta.url));
+    const link = join(root, 'sprigr-check-write-protection');
+    symlinkSync(real, link);
+    let out = '';
+    let code = 0;
+    try {
+      out = execFileSync(process.execPath, [link, '--warn'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      code = (e as { status: number }).status;
+      out = String((e as { stdout: string }).stdout) + String((e as { stderr: string }).stderr);
+    }
+    expect(code).toBe(0);
+    expect(out).toMatch(/acme_delete_thing is destructive by name/);
+    try {
+      execFileSync(process.execPath, [link], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+      throw new Error('expected a non-zero exit');
+    } catch (e) {
+      expect((e as { status: number }).status).toBe(1);
+    }
   });
 });
