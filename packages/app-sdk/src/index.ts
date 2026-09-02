@@ -471,3 +471,7 @@ export type HandlerFn<TArgs, TResult> = (
   env: Record<string, unknown>,
   ctx?: ExecutionContextLike,
 ) => Promise<TResult>;
+
+// Write protection: the three tiers (confirmation policy, _approval, _undo)
+// and the archive-first refusal. See README "Write protection".
+export * from './write-protection/index';
