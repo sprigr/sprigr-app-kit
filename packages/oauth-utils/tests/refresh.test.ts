@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { refreshAndPersist, getValidAccessToken } from '../src/refresh';
+import { exchangeAuthCode } from '../src/exchange';
 import { OAuthError } from '../src/errors';
 import type { ProviderConfig, TokenStore } from '../src/types';
 
@@ -147,5 +148,73 @@ describe('getValidAccessToken', () => {
 
     const tok = await getValidAccessToken(config, store);
     expect(tok).toBe('fresh-at');
+  });
+});
+
+/**
+ * Regression for sprigr/sprigr-apps#560: the provider's raw token-endpoint body must not
+ * reach `OAuthError.message`, because every consuming app writes that
+ * message into a durable per-install audit column.
+ */
+describe('sprigr/sprigr-apps#560: raw provider body never reaches OAuthError.message', () => {
+  const CREDENTIAL_BODY =
+    'client_secret=SENTINEL_client_secret_1234&code=SENTINEL_auth_code_5678' +
+    '&refresh_token=SENTINEL_refresh_token_9012<html>internal stack trace</html>';
+
+  it('refreshOAuthToken omits it, keeps status + classification', async () => {
+    const store = makeStore({ refresh_token: 'rt-old' });
+    globalThis.fetch = vi.fn(
+      async () => new Response(CREDENTIAL_BODY, { status: 400 }),
+    ) as unknown as typeof fetch;
+
+    const err = await refreshAndPersist(config, store, '', /* isRetry */ true).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(OAuthError);
+    const message = (err as OAuthError).message;
+
+    expect(message).not.toContain('SENTINEL_client_secret_1234');
+    expect(message).not.toContain('SENTINEL_auth_code_5678');
+    expect(message).not.toContain('SENTINEL_refresh_token_9012');
+    expect(message).not.toContain('internal stack trace');
+
+    // Still diagnosable.
+    expect(message).toContain('procore token refresh failed (400)');
+    expect(message).toContain('reason=');
+    expect(message).toContain('provider body withheld');
+    expect((err as OAuthError).status).toBe(400);
+  });
+
+  it('exchangeAuthCode omits it too', async () => {
+    globalThis.fetch = vi.fn(
+      async () => new Response(CREDENTIAL_BODY, { status: 401 }),
+    ) as unknown as typeof fetch;
+
+    const err = await exchangeAuthCode(config, 'the-code', {
+      redirectUri: 'https://example.com/cb',
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(OAuthError);
+    expect((err as OAuthError).message).not.toContain('SENTINEL');
+    expect((err as OAuthError).message).toContain('procore code exchange failed (401)');
+  });
+
+  it('keeps a spec-shaped JSON body error and description', async () => {
+    const store = makeStore({ refresh_token: 'rt-old' });
+    globalThis.fetch = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: 'invalid_grant',
+            error_description: 'Token has been expired or revoked.',
+            client_secret: 'SENTINEL_secret_in_json_1234',
+          }),
+          { status: 400 },
+        ),
+    ) as unknown as typeof fetch;
+
+    const err = (await refreshAndPersist(config, store, '', true).catch((e: unknown) => e)) as OAuthError;
+    expect(err.message).not.toContain('SENTINEL_secret_in_json_1234');
+    expect(err.message).toContain('error=invalid_grant');
+    expect(err.message).toContain('Token has been expired or revoked.');
+    expect(err.terminal).toBe(true);
   });
 });

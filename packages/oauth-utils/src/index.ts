@@ -1,5 +1,5 @@
-export { OAuthError, classifyOAuthError } from './errors';
-export type { OAuthErrorReason } from './errors';
+export { OAuthError, classifyOAuthError, describeOAuthFailure } from './errors';
+export type { OAuthErrorReason, OAuthErrorClassification } from './errors';
 export {
   refreshOAuthToken,
   getValidAccessToken,

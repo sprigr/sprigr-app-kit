@@ -24,7 +24,7 @@
  * coordinator at that point.
  */
 
-import { OAuthError, classifyOAuthError } from './errors';
+import { OAuthError, classifyOAuthError, describeOAuthFailure } from './errors';
 import type { ProviderConfig, TokenStore, TokenResponse } from './types';
 
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -62,16 +62,19 @@ export async function refreshOAuthToken(
 
   if (!response.ok) {
     const errorBody = await response.text();
-    const { terminal, reason } = classifyOAuthError(config.provider, response.status, errorBody);
+    const info = classifyOAuthError(config.provider, response.status, errorBody);
     console.error(
-      `[${config.provider}-auth] refresh failed: status=${response.status} terminal=${terminal} reason=${reason}`,
+      `[${config.provider}-auth] refresh failed: status=${response.status} terminal=${info.terminal} reason=${info.reason}`,
     );
+    // As in exchange.ts: the raw body is NOT interpolated. On a refresh it
+    // can echo the refresh_token itself, and this message is what apps
+    // write to their audit tables (sprigr/sprigr-apps#560).
     throw new OAuthError(
       config.provider,
-      terminal,
-      reason,
+      info.terminal,
+      info.reason,
       response.status,
-      `${config.provider} token refresh failed (${response.status}): ${errorBody}`,
+      describeOAuthFailure(config.provider, 'token refresh', response.status, info),
     );
   }
 
