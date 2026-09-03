@@ -47,6 +47,23 @@ export type {
 export { parseActor, actorKey, ownerFromActorKey } from './actor';
 export type { Actor, InboxOwner } from './actor';
 export {
+  resolveViewerContext,
+  resolveViewerUserId,
+  verifyViewerToken,
+  VIEWER_CONTEXT_HEADER,
+  VIEWER_PLATFORM_USER_ID_HEADER,
+  VIEWER_USER_ID_HEADER,
+  VIEWER_ROLE_HEADER,
+  VIEWER_ANONYMOUS,
+} from './viewer';
+export type {
+  ViewerContext,
+  ViewerEnv,
+  ResolveViewerOptions,
+  ViewerContextFailure,
+  ViewerContextVerification,
+} from './viewer';
+export {
   tool,
   actorTool,
   createToolWrappers,

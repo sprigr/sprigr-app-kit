@@ -520,6 +520,27 @@ Field / key / filter semantics match the agent-facing collection tools; the deep
 
 **Agent roster (`/internal/wfp/agents/list`).** Apps whose connections are per-actor (one OAuth row per user or agent, e.g. microsoft-365 / google-workspace) can fetch the agents applicable to their install to power a "connect for this agent" selector on their landing page. `GET ${SPRIGR_PLATFORM_BASE}/internal/wfp/agents/list` with the `SPRIGR_INSTALL_TOKEN` bearer returns `{ agents: [{ id, name, slug, agent_type }] }` — active agents of the install's company, filtered to the install's `agent_ids` scoping, platform agents excluded. Fail-soft in the page (treat any error as an empty roster) so the app renders fine on environments where the endpoint isn't deployed yet. See `apps/microsoft-365/src/lib/agents.ts` + the "Connect for an agent" form in its `page.tsx` for the reference implementation, including the signed-viewer gating (`lib/viewer.ts`) that keeps the roster off anonymous hits.
 
+**Who is looking at the page (`resolveViewerContext`).** A marketplace app UI is embedded in the portal iframe with only `#install_id=...` in its src, so nothing about the human viewer arrives in the URL. It arrives in headers `website-serve` stamps on every dispatch, and `@sprigr/apps-app-sdk` is the one place that reads them:
+
+```ts
+import { resolveViewerContext } from '@sprigr/apps-app-sdk';
+
+const viewer = await resolveViewerContext(request.headers, env);
+if (!viewer?.platformUserId) return new Response('Sign in to continue', { status: 401 });
+// authorise on viewer.platformUserId; render viewer.displayName
+```
+
+**Never take a viewer identity from a query param, form field, cookie your app set, or `postMessage` payload — not even as a fallback for when the header is missing.** A missing header means "no viewer"; it does not mean "believe the client". Five apps shipped that fallback and each one let any tenant member bind their own provider account to a colleague's actor row (`sprigr-apps` #1487-#1491, and #474 before them).
+
+Two channels reach the app, and `resolveViewerContext` prefers the stronger one:
+
+- **`X-Sprigr-Viewer`** — a signed token (`svc1.<base64url claims>.<hmac>`) carrying `install_id`, `company_id`, `user_id`, `platform_user_id`, `role`, `display_name` and `email`, valid for 120 seconds. It is signed with a **per-install** key the platform derives and binds as `SPRIGR_VIEWER_SECRET`, so a token minted for another install cannot verify on yours, and no app ever holds a credential that could forge one for someone else. Every field is inside the HMAC, so this is the only channel that carries a display name, and the only one where `platform_user_id` is cryptographically attested. Resolves as `trust: 'verified'`.
+- **`x-sprigr-platform-user-id`** (legacy) — the OIDC sub as a plain header. Unsigned; it rests on transport integrity (your Worker is reachable only through WFP dispatch, and the platform overwrites the header on every forward). Used **only** when you pass `allowTransportFallback: true`, and then reports `trust: 'transport'`.
+
+The fallback is opt-in per call site so the weaker path is visible in review rather than being the silent default. Keep it while your install predates its `SPRIGR_VIEWER_SECRET` binding (the platform binds it on the install's next build or rebind); drop it once the install has been rebound. `resolveViewerUserId(headers, env)` is the narrow `string | null` shape the old per-app `src/lib/viewer.ts` copies exposed, with the fallback on by default, for a one-import migration.
+
+`displayName` and `email` are DISPLAY fields. Authorise on `platformUserId` (or `userId`), and only from a context whose `trust` is `'verified'`. Platform side: sprigr-team decision `0048-signed-viewer-context-for-marketplace-app-iframes`.
+
 **Durable file storage (`env.SPRIGR.files`).** Persist bytes into your install's own R2 namespace and mint signed, time-limited download URLs. Reach for it to **re-host an ephemeral third-party asset that expires**: a provider hands you a render / export URL it deletes after a short retention window, and you want the link your app returns to keep resolving. Stream the bytes into durable storage while the source still exists, then hand back a signed URL to the stored copy.
 
 - **`putStream(key, body, opts?)` -> `{ ok, key, bytes, contentType }`** streams bytes into the store under an app-relative `key`. `body` is any fetch body; a `ReadableStream` (e.g. a source `Response.body`) is piped straight through to R2 without buffering whole in the isolate, so it handles multi-MB blobs. `opts`: `{ contentType?, length?, filename? }`. Forward `length` for streamed bodies (they carry no `Content-Length`) so the platform can enforce the size cap up front; `bytes` comes back `null` when you omit it.
