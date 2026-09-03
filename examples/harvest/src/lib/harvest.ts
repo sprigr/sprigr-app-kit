@@ -40,7 +40,7 @@ export class HarvestApiError extends Error {
 
 export async function accessToken(env: HarvestEnv): Promise<string> {
   const config = providerConfig(requireClientId(env), requireClientSecret(env));
-  return getValidAccessToken(config, tokens(env.DB));
+  return getValidAccessToken(config, tokens(env));
 }
 
 /**

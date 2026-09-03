@@ -10,8 +10,8 @@
  */
 
 import { exchangeAndPersist, type ProviderConfig, type AuthCodeResponse } from '@sprigr/apps-oauth-utils';
+import type { HarvestEnv } from './env';
 import { tokens } from './store';
-import type { D1Like } from '@sprigr/apps-app-sdk';
 
 // Harvest ID OAuth2 endpoints.
 // https://help.getharvest.com/api-v2/authentication-api/authentication/authentication/
@@ -43,13 +43,13 @@ export function buildAuthorizeUrl(args: { clientId: string; redirectUri: string;
 
 /** Exchange an authorization code for tokens and persist to D1. */
 export async function completeOAuthCallback(args: {
-  db: D1Like;
+  env: HarvestEnv;
   clientId: string;
   clientSecret: string;
   code: string;
   redirectUri: string;
 }): Promise<AuthCodeResponse> {
-  const store = tokens(args.db);
+  const store = tokens(args.env);
   const config = providerConfig(args.clientId, args.clientSecret);
   return exchangeAndPersist(config, store, args.code, { redirectUri: args.redirectUri });
 }

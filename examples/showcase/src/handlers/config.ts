@@ -44,7 +44,7 @@ export async function runOAuthCallback(env: ShowcaseEnv, args: CallbackArgs): Pr
     // On the platform this exchanges the code at auth.acme.example. Stubbed so
     // local dev completes the whole loop; a real exchange is completeOAuthCallback
     // from @sprigr/apps-oauth-utils (see harvest's src/lib/oauth.ts).
-    await tokens(env.DB).put('access_token', `acme-access-${args.code}`);
+    await tokens(env).put('access_token', `acme-access-${args.code}`);
     await setSetting(env.DB, ACCOUNT_ID_SETTING, 'acct_local');
     await setSetting(env.DB, ACCOUNT_NAME_SETTING, 'Acme Workspace (local)');
     return { ok: true, result: { connected: true, account: 'Acme Workspace (local)' } };
@@ -61,8 +61,8 @@ interface InboundImportArgs {
 }
 export async function runInboundImport(env: ShowcaseEnv, args: InboundImportArgs): Promise<HandlerResult> {
   // Persist the platform-exchanged token in the app's own D1 schema.
-  await tokens(env.DB).put('access_token', args.access_token);
-  if (args.refresh_token) await tokens(env.DB).put('refresh_token', args.refresh_token);
+  await tokens(env).put('access_token', args.access_token);
+  if (args.refresh_token) await tokens(env).put('refresh_token', args.refresh_token);
   if (args.external_id) {
     await setSetting(env.DB, ACCOUNT_ID_SETTING, args.external_id);
     // Record the shared-webhook tenant mapping (local + staging registerWebhookTenant).
@@ -81,10 +81,10 @@ export async function runInboundImport(env: ShowcaseEnv, args: InboundImportArgs
 
 // ── refresh_showcase_tokens (scheduled) ──────────────────────────────────────
 export async function runRefreshTokens(env: ShowcaseEnv): Promise<HandlerResult> {
-  const refresh = await tokens(env.DB).get('refresh_token');
+  const refresh = await tokens(env).get('refresh_token');
   if (!refresh) return { ok: true, result: { refreshed: false, reason: 'no refresh token stored' } };
   // On the platform: exchange refresh_token at auth.acme.example, then re-store.
-  await tokens(env.DB).put('access_token', `acme-access-refreshed-${Date.now()}`);
+  await tokens(env).put('access_token', `acme-access-refreshed-${Date.now()}`);
   return { ok: true, result: { refreshed: true } };
 }
 

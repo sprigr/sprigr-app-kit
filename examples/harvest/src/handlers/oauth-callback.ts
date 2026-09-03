@@ -41,7 +41,7 @@ export async function runOAuthCallback(env: HarvestEnv, args: CallbackArgs): Pro
     }
 
     await completeOAuthCallback({
-      db: env.DB,
+      env,
       clientId: requireClientId(env),
       clientSecret: requireClientSecret(env),
       code: args.code,

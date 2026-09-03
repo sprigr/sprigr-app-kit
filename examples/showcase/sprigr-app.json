@@ -79,6 +79,14 @@
   },
   "secrets": [
     {
+      "key": "SHOWCASE_TOKEN_KEK",
+      "label": "Token encryption key",
+      "type": "secret",
+      "required": true,
+      "auto_generate": true,
+      "description": "AES-GCM key that wraps the OAuth tokens this install stores in showcase_secrets. The platform mints a fresh 32-byte random value per install; neither the publisher nor the brand ever sees it. It is minted once and never regenerated, because regenerating it would make every value already sealed under it unreadable."
+    },
+    {
       "key": "ACME_WEBHOOK_SECRET",
       "label": "Acme CRM webhook signing secret",
       "type": "secret",

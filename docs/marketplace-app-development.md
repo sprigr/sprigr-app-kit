@@ -449,7 +449,7 @@ Plus a companion `@sprigr/apps-oauth-utils` with:
 - `refreshAccessToken(args)` - race-safe refresh rotation
 - `OAuthError` typed errors
 
-And `@sprigr/apps-d1-kv` with `makeD1TokenStore` / `makeSettingsStore` (D1-backed token + settings stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables). The scaffolder exact-pins all of these.
+And `@sprigr/apps-d1-kv` with `makeD1TokenStore` / `makeSettingsStore` (D1-backed token + settings stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables). `makeD1TokenStore` takes a **required** `encryption` option; a scaffolded app gets `{ mode: 'encrypt', kek: env.<SLUG>_TOKEN_KEK }` and the matching `auto_generate` manifest secret, so its tokens are sealed at rest from the first write. See [build-guide.md](build-guide.md) for the modes and for the two-step path an app with existing installs has to take. The scaffolder exact-pins all of these.
 
 ## 4. The runtime env
 
