@@ -95,8 +95,17 @@ export function makeDedupLatch(opts: MakeDedupLatchOpts): DedupLatch {
       return changes > 0;
     },
     async sweep() {
+      // `expires_at` is written by tryClaim as an ISO string
+      // (`2026-09-03T16:25:26.636Z`). SQLite compares TEXT byte-wise, and
+      // `datetime('now')` renders `2026-09-03 16:25:26`: same date prefix,
+      // then 'T' (0x54) sorts AFTER ' ' (0x20), so an expired row never
+      // compared <= "now" until the UTC date rolled over. For webhook dedup
+      // that only meant rows lingered a day; for a tick LEASE it meant a
+      // lease left by a dead invocation blocked every tick until midnight
+      // UTC (microsoft-365 mail sync, two prod tenants, 2026-09-03). Render
+      // "now" in the SAME format the rows carry.
       const raw = await db
-        .prepare(`DELETE FROM ${table} WHERE expires_at <= datetime('now')`)
+        .prepare(`DELETE FROM ${table} WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
         .bind()
         .run();
       return { deleted: (raw as D1RunResult | null)?.meta?.changes ?? 0 };

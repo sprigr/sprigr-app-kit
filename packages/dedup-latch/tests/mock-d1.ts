@@ -44,7 +44,21 @@ function makeStmt(sql: string, args: unknown[], state: MockState): D1PreparedSta
 
 const INSERT_RX =
   /^INSERT INTO (\w+) \(id, claimed_at, expires_at\)\s+VALUES \(\?, datetime\('now'\), \?\)\s+ON CONFLICT\(id\) DO NOTHING$/;
-const DELETE_EXPIRED_RX = /^DELETE FROM (\w+) WHERE expires_at <= datetime\('now'\)$/;
+/**
+ * Either spelling of "now" is accepted, and the mock then compares the way
+ * SQLite does: as TEXT, against "now" rendered in THAT expression's format.
+ * `datetime('now')` is `YYYY-MM-DD HH:MM:SS`; the strftime form is ISO with
+ * milliseconds, identical to what tryClaim writes. A `Date.parse` compare
+ * here would hide the exact bug the ISO form fixes.
+ */
+const DELETE_EXPIRED_RX =
+  /^DELETE FROM (\w+) WHERE expires_at <= (datetime\('now'\)|strftime\('%Y-%m-%dT%H:%M:%fZ', 'now'\))$/;
+
+/** Render "now" the way the given SQLite expression would. */
+export function sqliteNow(expression: string): string {
+  const iso = new Date().toISOString();
+  return expression.startsWith('strftime') ? iso : iso.slice(0, 19).replace('T', ' ');
+}
 
 function execStatement(sql: string, args: unknown[], state: MockState): D1RunResult {
   const normalized = sql.replace(/\s+/g, ' ').trim();
@@ -60,11 +74,13 @@ function execStatement(sql: string, args: unknown[], state: MockState): D1RunRes
     return { meta: { changes: 1 } };
   }
 
-  if (DELETE_EXPIRED_RX.test(normalized)) {
-    const now = Date.now();
+  const del = DELETE_EXPIRED_RX.exec(normalized);
+  if (del) {
+    const now = sqliteNow(del[2]!);
     let deleted = 0;
     for (const [id, row] of state.rows) {
-      if (Date.parse(row.expires_at) <= now) {
+      // TEXT comparison, byte-wise, exactly as SQLite does it.
+      if (row.expires_at <= now) {
         state.rows.delete(id);
         deleted += 1;
       }

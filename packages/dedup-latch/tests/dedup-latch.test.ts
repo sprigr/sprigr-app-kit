@@ -65,6 +65,26 @@ describe('makeDedupLatch', () => {
     expect(state.rows.has('live-1')).toBe(true);
   });
 
+  it('sweep clears a row that expired earlier the SAME UTC day (the datetime(\'now\') format bug)', async () => {
+    // Regression for the microsoft-365 lease outage of 2026-09-03: rows carry
+    // ISO expires_at, and against a space-separated datetime('now') nothing
+    // on the same date ever compared as expired. 60s ago is on today's date
+    // except for a one-minute window after midnight UTC, so also pin a row
+    // one second ago.
+    const aMinuteAgo = new Date(Date.now() - 60_000).toISOString();
+    const aSecondAgo = new Date(Date.now() - 1_000).toISOString();
+    const { db, state } = makeMockD1([
+      ['stale-lease', { expires_at: aMinuteAgo }],
+      ['just-expired', { expires_at: aSecondAgo }],
+    ]);
+    const latch = makeDedupLatch({ db, table: 'webhook_dedup', ttlSec: 150 });
+    expect(await latch.tryClaim('stale-lease')).toBe(false);
+    const result = await latch.sweep();
+    expect(result.deleted).toBe(2);
+    expect(state.rows.size).toBe(0);
+    expect(await latch.tryClaim('stale-lease')).toBe(true);
+  });
+
   it('sweep returns 0 when nothing has expired', async () => {
     const future = new Date(Date.now() + 60_000).toISOString();
     const { db } = makeMockD1([['live-1', { expires_at: future }]]);
