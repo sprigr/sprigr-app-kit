@@ -84,7 +84,18 @@ const NAME =
 // sprigrVendor + pnpm sync:vendor is only a fallback for a package that cannot
 // be published.
 const KIT_DEPS = NO_OAUTH ? ["app-sdk", "d1-kv"] : ["app-sdk", "oauth-utils", "d1-kv"];
-const KIT_DEP_VERSION = "0.1.0";
+// Pinned per package, because they do not move together. d1-kv 0.2.0 is the
+// first version with the required `encryption` option this scaffolder emits;
+// pinning 0.1.0 alongside that code would not compile.
+// NOTE: app-sdk and oauth-utils are left on the version this file has always
+// pinned. Both are behind their published latest (app-sdk 0.8.x, oauth-utils
+// 0.2.0) and that predates this change, so bumping them belongs in its own
+// PR with its own verification rather than riding along here.
+const KIT_DEP_VERSIONS = {
+  "app-sdk": "0.1.0",
+  "oauth-utils": "0.1.0",
+  "d1-kv": "0.2.0",
+};
 
 const manifest = {
   sprigr_app: { version: "1" },
@@ -112,9 +123,20 @@ const manifest = {
       ? []
       : ["TODO-api.example.com", "TODO-login.example.com"],
   },
-  secrets: NO_OAUTH
-    ? []
-    : [
+  secrets: [
+    // Minted per install by the platform, never seen by the publisher. This
+    // is what lets the generated token store encrypt from its first write.
+    {
+      key: `${ENV_PREFIX}_TOKEN_KEK`,
+      label: "Token encryption key",
+      type: "secret",
+      required: true,
+      auto_generate: true,
+      description: `AES-GCM key that wraps the credentials this install stores in ${SLUG_U}_secrets. The platform mints a fresh 32-byte random value per install; neither the publisher nor the brand ever sees it. It is minted once and never regenerated, because regenerating it would make every value already sealed under it unreadable.`,
+    },
+    ...(NO_OAUTH
+      ? []
+      : [
         {
           key: `${ENV_PREFIX}_CLIENT_ID`,
           label: `${NAME} OAuth client id`,
@@ -129,7 +151,8 @@ const manifest = {
           required: true,
           description: `Publisher-provided OAuth client secret for the ${NAME} developer app.`,
         },
-      ],
+      ]),
+  ],
   migrations: [
     {
       file: "migrations/0001_init.sql",
@@ -190,7 +213,7 @@ const packageJson = {
     "test:watch": "vitest",
   },
   dependencies: {
-    ...Object.fromEntries(KIT_DEPS.map((p) => [`@sprigr/apps-${p}`, KIT_DEP_VERSION])),
+    ...Object.fromEntries(KIT_DEPS.map((p) => [`@sprigr/apps-${p}`, KIT_DEP_VERSIONS[p]])),
     "@opennextjs/cloudflare": "1.20.2",
     next: "15.5.22",
     react: "19.0.0",
@@ -381,7 +404,10 @@ const envTs = `/**
 import type { D1Like } from '@sprigr/apps-app-sdk';
 
 export interface ${PASCAL}Env {
-  DB: D1Like;${
+  DB: D1Like;
+  /** \`auto_generate\` manifest secret: the AES-GCM key that wraps this
+   *  install's credentials at rest. The platform mints it per install. */
+  ${ENV_PREFIX}_TOKEN_KEK: string;${
     NO_OAUTH
       ? ""
       : `
@@ -438,9 +464,30 @@ const storeTs = `/**
 
 import { makeSettingsStore, makeD1TokenStore } from '@sprigr/apps-d1-kv';
 import type { D1Like } from '@sprigr/apps-app-sdk';
+import type { ${PASCAL}Env } from './env';
 
 export const settings = (db: D1Like) => makeSettingsStore({ db, table: '${SLUG_U}_settings' });
-export const tokens = (db: D1Like) => makeD1TokenStore({ db, table: '${SLUG_U}_secrets' });
+
+/**
+ * Token store for oauth-utils.
+ *
+ * Encrypts at rest under this install's own key. \`${ENV_PREFIX}_TOKEN_KEK\` is
+ * an \`auto_generate\` manifest secret, so the platform mints 32 random bytes
+ * per install and neither the publisher nor the brand ever sees it. A missing
+ * key throws rather than degrading to cleartext, which is the point: a silent
+ * fallback would look exactly like a working store.
+ *
+ * A NEW app can go straight to \`encrypt\` because a fresh install receives the
+ * secret at install time. An app that ALREADY has installs cannot: the key
+ * only reaches those on their next upgrade, so it ships \`decrypt-only\` first
+ * and flips to \`encrypt\` once every install holds one. See sprigr-apps#1450.
+ */
+export const tokens = (env: ${PASCAL}Env) =>
+  makeD1TokenStore({
+    db: env.DB,
+    table: '${SLUG_U}_secrets',
+    encryption: { mode: 'encrypt', kek: env.${ENV_PREFIX}_TOKEN_KEK },
+  });
 
 export async function getSetting(db: D1Like, key: string): Promise<string | null> {
   return settings(db).get(key);
@@ -467,8 +514,8 @@ const oauthTs = `/**
  */
 
 import { exchangeAndPersist, type ProviderConfig, type AuthCodeResponse } from '@sprigr/apps-oauth-utils';
+import type { ${PASCAL}Env } from './env';
 import { tokens } from './store';
-import type { D1Like } from '@sprigr/apps-app-sdk';
 
 // TODO: replace with the real ${NAME} endpoints.
 export const AUTHORIZE_URL = 'https://TODO.example.com/oauth/authorize';
@@ -497,13 +544,13 @@ export function buildAuthorizeUrl(args: { clientId: string; redirectUri: string;
 
 /** Exchange an authorization code for tokens and persist to D1. */
 export async function completeOAuthCallback(args: {
-  db: D1Like;
+  env: ${PASCAL}Env;
   clientId: string;
   clientSecret: string;
   code: string;
   redirectUri: string;
 }): Promise<AuthCodeResponse> {
-  const store = tokens(args.db);
+  const store = tokens(args.env);
   const config = providerConfig(args.clientId, args.clientSecret);
   return exchangeAndPersist(config, store, args.code, { redirectUri: args.redirectUri });
 }
@@ -656,7 +703,7 @@ export async function runOAuthCallback(env: ${PASCAL}Env, args: CallbackArgs): P
       await deleteSetting(env.DB, 'oauth_csrf');
     }
     await completeOAuthCallback({
-      db: env.DB,
+      env,
       clientId: requireClientId(env),
       clientSecret: requireClientSecret(env),
       code: args.code,
@@ -770,7 +817,7 @@ if (!NO_OAUTH) {
 }
 
 // Mirror the declared vendor packages into the new app.
-console.log(`[create-app] kit deps (exact-pinned): ${KIT_DEPS.map((p) => `@sprigr/apps-${p}@${KIT_DEP_VERSION}`).join(", ")}`);
+console.log(`[create-app] kit deps (exact-pinned): ${KIT_DEPS.map((p) => `@sprigr/apps-${p}@${KIT_DEP_VERSIONS[p]}`).join(", ")}`);
 
 console.log(`
 [create-app] done. apps/${SLUG} scaffolded. Next steps:

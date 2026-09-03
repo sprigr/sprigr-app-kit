@@ -158,11 +158,26 @@ Two facts to know up front:
 - The token store key names are fixed: `refresh_token`, `access_token`, `expires_at`. Your D1 rows hold exactly those keys (`expires_at` is the string `'never'` for non-expiring providers).
 - `exchangeAuthCode` **throws** if the token response has no `refresh_token`, unless you pass `allowNoRefreshToken: true` (the non-expiring-provider pattern above). Providers that only issue a refresh token on first consent need the forcing params on the authorize URL (`access_type=offline`, `prompt=consent` or equivalent).
 
-From `@sprigr/apps-d1-kv` (npm dep, exact-pinned by the scaffolder): `makeD1TokenStore({ db, table })` and `makeSettingsStore({ db, table })`, D1-backed stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables.
+From `@sprigr/apps-d1-kv` (npm dep, exact-pinned by the scaffolder): `makeD1TokenStore({ db, table, encryption })` and `makeSettingsStore({ db, table })`, D1-backed stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables.
+
+`encryption` is **required** and has no default, because the alternative failure is silent: a store that quietly wrote cleartext would be indistinguishable from one that worked. A new app takes the scaffolded default:
+
+```ts
+encryption: { mode: 'encrypt', kek: env.<SLUG>_TOKEN_KEK }
+```
+
+`<SLUG>_TOKEN_KEK` is an `auto_generate` manifest secret the scaffolder declares for you. The platform mints 32 random bytes per install and neither you nor the installing tenant ever sees the value. Values are sealed with AES-GCM under a fresh IV and stored as `sprigr.enc.v1.<iv>.<ciphertext>`; a missing key throws at construction rather than falling back.
+
+Two things that only matter for an app that ALREADY has installs:
+
+- The key reaches an existing install on its **next upgrade**, not at publish. So an app adding encryption after first publish ships `{ mode: 'decrypt-only', kek }` first (reads sealed values, keeps writing cleartext), and flips to `encrypt` in a later version once every install holds a key.
+- Rolling back is only safe in one direction. `decrypt-only` reads what `encrypt` wrote, so `encrypt` back to `decrypt-only` is fine; rolling back to a build with no envelope support at all would send ciphertext to your provider as if it were a token. Worked example and the readiness check: sprigr-apps#1450.
+
+`{ mode: 'cleartext', reason }` exists for a table that holds no credential material, and demands a written reason so it can never happen by omission.
 
 From `@sprigr/apps-app-sdk` (npm dep): `encodeState`/`decodeState` (the bouncer decodes YOUR state, so always build it with `encodeState`), `randomHex`, `hmacSha256Hex` + `constantTimeEqual` (webhook signatures), `fetchWithRetry` (rate-limited provider APIs).
 
-Why tokens live in D1 and not manifest secrets: manifest `secrets[]` are read-only at runtime, and refresh rotation needs writes. Per-install D1 is isolated and encrypted at rest.
+Why tokens live in D1 and not manifest secrets: manifest `secrets[]` are read-only at runtime, and refresh rotation needs writes. Per-install D1 is isolated, and the store seals values under the install's own key on top of that (Cloudflare's storage-layer encryption at rest is not protection against a read primitive inside the app itself, which is what the KEK is for).
 
 ### 6c. The four files you fill in
 
@@ -170,7 +185,7 @@ The scaffolder generates all four with TODOs; the harvest example shows them fil
 
 **1. `src/lib/oauth.ts`** ([harvest](../examples/harvest/src/lib/oauth.ts)): the provider endpoints, `buildAuthorizeUrl` (add provider-required params: scope, audience, ...), and `completeOAuthCallback` which calls `exchangeAndPersist` and records anything refresh needs later (environment, account id).
 
-**2. `src/lib/store.ts`**: pins the d1-kv stores to your app's table names. Generated; rarely needs edits.
+**2. `src/lib/store.ts`**: pins the d1-kv stores to your app's table names and wires the token store to your install's `<SLUG>_TOKEN_KEK`. Generated; rarely needs edits.
 
 **3. `src/app/oauth/start/route.ts`** ([harvest](../examples/harvest/src/app/oauth/start/route.ts)): already complete from the scaffold. What it does and why:
 
@@ -185,7 +200,7 @@ Rule: when exchanging the code, use the **bouncer's** `redirectUri` from the dis
 
 ### 6d. Runtime token access, refresh, disconnect
 
-- One wrapper so handlers just call `getAccessToken(env)`: build the `ProviderConfig`, hand it `getValidAccessToken(config, makeD1TokenStore(env.DB))`. See [harvest's client](../examples/harvest/src/lib/harvest.ts).
+- One wrapper so handlers just call `getAccessToken(env)`: build the `ProviderConfig`, hand it `getValidAccessToken(config, tokens(env))`. The scaffolded `tokens()` takes the whole env rather than `env.DB`, because it needs the install's `<SLUG>_TOKEN_KEK` as well as its database. See [harvest's client](../examples/harvest/src/lib/harvest.ts).
 - For refresh-token providers, declare a refresh cron in the manifest and a handler that calls your `getAccessToken(env)`; it keeps refresh tokens warm (some providers expire unused ones). Worked example: harvest's `refresh_harvest_tokens` schedule + [src/handlers/refresh-tokens.ts](../examples/harvest/src/handlers/refresh-tokens.ts). The manifest entry:
 
   ```jsonc

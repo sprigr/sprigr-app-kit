@@ -201,6 +201,12 @@ export function makeEnv(overrides: Partial<ShowcaseEnv> = {}): ShowcaseEnv {
     ACME_CLIENT_ID: 'test-client-id',
     ACME_CLIENT_SECRET: 'test-client-secret',
     SHOWCASE_STATE_HMAC_KEY: 'test-state-key',
+    // The token store encrypts under this. Omitting it is not a "test env"
+    // shortcut: the store throws rather than degrading to cleartext, and the
+    // suite would fail exactly the way a real install missing the secret does.
+    // 32 bytes base64, the shape the platform mints. Anything shorter than
+    // 16 bytes is refused by the store.
+    SHOWCASE_TOKEN_KEK: 'dGVzdC1zaG93Y2FzZS1rZWstMzItYnl0ZXMtZml4dHVyZQ==',
     INSTALL_ID: 'inst_test',
     COMPANY_ID: 'comp_test',
     APP_SLUG: 'showcase',

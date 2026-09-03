@@ -31,6 +31,9 @@ export interface ShowcaseEnv {
   /** Auto-generated per-install key for signing the OAuth state blob. */
   SHOWCASE_STATE_HMAC_KEY?: string;
   /** Runtime-injected identifiers (present on the platform + under app dev). */
+  /** `auto_generate` manifest secret: the AES-GCM key that wraps this
+   *  install's tokens at rest. The platform mints it per install. */
+  SHOWCASE_TOKEN_KEK: string;
   INSTALL_ID?: string;
   COMPANY_ID?: string;
   APP_SLUG?: string;

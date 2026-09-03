@@ -17,6 +17,9 @@ export interface HarvestEnv {
   HARVEST_CLIENT_ID: string;
   HARVEST_CLIENT_SECRET: string;
   /** Optional - only present when the runtime injects it. */
+  /** `auto_generate` manifest secret: the AES-GCM key that wraps this
+   *  install's tokens at rest. The platform mints it per install. */
+  HARVEST_TOKEN_KEK: string;
   INSTALL_ID?: string;
   /** Optional - only present when the runtime injects it. */
   COMPANY_ID?: string;
