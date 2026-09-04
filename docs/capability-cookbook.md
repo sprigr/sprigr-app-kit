@@ -66,6 +66,7 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 | Inbox append | scope `inbox:write` + `inbox.append` | [`handlers/channel.ts`](../examples/showcase/src/handlers/channel.ts) `identity` | staging | `email-imap-pop` |
 | Files (R2) | `files.putStream` / `files.url` | [`handlers/files.ts`](../examples/showcase/src/handlers/files.ts) | staging | — (no app uses `env.SPRIGR.files` yet) |
 | Usage metering | `usage.report` | [`handlers/platform.ts`](../examples/showcase/src/handlers/platform.ts) `dailyDigest` | staging | — (no app uses `usage.report` yet) |
+| Durable app logs (no D1 audit rows) | `log` (also `logToPlatform` / `withSprigrLogFallback` in the SDK for inline routes) | [`handlers/webhooks.ts`](../examples/showcase/src/handlers/webhooks.ts) `onDeal` | staging (rows land in `system_logs`) | `shopify` (per-webhook outcomes) |
 | Register channel (shared routing) | `registerChannel` | [`handlers/cross-tenant.ts`](../examples/showcase/src/handlers/cross-tenant.ts) `registerChatWorkspace` | staging | — (no app uses `registerChannel` yet) |
 | Lifecycle hooks | `lifecycle.on_connect/on_disconnect` | [`sprigr-app.json`](../examples/showcase/sprigr-app.json) | n/a | — (no app declares `lifecycle` yet) |
 | Tool access policy | `tool_access` | [`sprigr-app.json`](../examples/showcase/sprigr-app.json) | n/a | — (no app declares `tool_access` yet) |

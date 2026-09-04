@@ -24,7 +24,7 @@ import { join, extname } from 'node:path';
 
 /** env.SPRIGR surface: group -> methods. '' is the top level (env.SPRIGR.emit). */
 const SPRIGR_METHODS = {
-  '': ['emit', 'invoke', 'registerChannel', 'registerWebhookTenant', 'run_workflow'],
+  '': ['emit', 'invoke', 'log', 'registerChannel', 'registerWebhookTenant', 'run_workflow'],
   browser: ['fetch', 'screenshot', 'session'],
   collections: ['define', 'describe', 'history', 'ingest', 'ingestFromTable', 'query', 'reconcile'],
   data: ['get', 'import', 'search'],

@@ -186,11 +186,20 @@ export async function installTokenPost(
       parsed = null;
     }
     if (!resp.ok) {
-      const detail =
-        parsed && typeof parsed === 'object' && 'error' in parsed
-          ? String((parsed as { error: unknown }).error)
-          : text.slice(0, 200);
-      throw new Error(`${label} failed: ${resp.status} ${detail}`);
+      const obj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
+      const code = obj && 'error' in obj ? String(obj.error) : text.slice(0, 200);
+      // The message keeps its historical shape (callers match on it); the
+      // structured fields ride alongside so a caller that wants the status
+      // or the platform's error code does not have to parse the message.
+      const err = new Error(`${label} failed: ${resp.status} ${code}`) as Error & {
+        status: number;
+        error: string;
+        detail?: string;
+      };
+      err.status = resp.status;
+      err.error = code;
+      if (obj && typeof obj.detail === 'string') err.detail = obj.detail;
+      throw err;
     }
     return (parsed ?? {}) as Record<string, unknown>;
   } finally {

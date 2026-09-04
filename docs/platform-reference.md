@@ -398,6 +398,7 @@ Tool / event / webhook handlers also get an injected `env.SPRIGR` host object. E
 | `run_workflow(id, opts)` | Synchronously run a tenant workflow (Decision Points) |
 | `inbox.append(args)` / `registerChannel(...)` / `usage.report(...)` | Inbox mirror, shared-channel routing, usage metering |
 | `files.{putStream,url}` | Durable app-scoped file storage in Sprigr R2 + signed download URLs (see below) |
+| `log(entry \| entry[])` | Durable app log rows in the platform's `system_logs` (Analytics Engine, 90 days); replaces per-webhook / per-tick D1 audit rows (see below) |
 | `jobs.{start,get,signal,cancel,list}` | Durable, resumable multi-step jobs (declare in manifest `jobs[]`; needs `sprigr.jobs`) |
 | `store.{get,put,delete,list}` | Company/publisher-scoped KV (needs `sprigr.jobs`; publisher scope needs `sprigr.jobs:publisher`) |
 | `browser.fetch(url,opts)` / `browser.screenshot(url,opts)` | One-shot headless fetch/screenshot (needs `sprigr.browser:fetch`) |
@@ -581,6 +582,26 @@ Type the namespace from the SDK instead of re-declaring it: `import type { Sprig
 **Schedule formats (`xer` / `pmxml` / `mspdi`) are the exception to the cold-start warning below**: Primavera P6 and MS Project XML edits run a pure-TS engine in-worker (no sandbox), so they return inline. Operations use the platform schedule edit vocabulary (`xer_row_patch`, `xer_row_add`, `xer_row_delete`, bulk `xer_row_patch_where`/`xer_row_delete_where`; `pmxml_activity_leaf_set`, `pmxml_*_add`/`_delete`, bulk `pmxml_activity_leaf_set_where`; `mspdi_task_leaf_set`, `mspdi_*_add`/`_delete`, bulk `mspdi_task_leaf_set_where` — see the m365 `onedrive_edit_schedule` tool description for the full list). `operations_applied` entries are `{kind, matched?}` with `matched` counts on the bulk where-clause kinds. The platform refuses to write on referential-integrity violations (predecessor references a missing task, etc.) with a precise issue list; `skip_validation: true` overrides for deliberately incomplete mid-batch writes. XER output is always emitted byte-exact for P6 import (CRLF + ERMHDR header + `%E` terminator) — never hand-serialize XER around the engine. 30 MB cap per file.
 
 **These calls are SLOW when the engine is cold** (a sandbox container boot can take 1-2 minutes), so a tool call driving them can die at the platform dispatch ceiling while the engine finishes server-side. Pass a **`job_token`** (deterministic per logical call: hash the inputs plus a content version like the provider file's cTag, `^[A-Za-z0-9_-]{8,128}$`) and the platform persists the terminal result under it; re-POSTing the SAME token replays the finished result instantly instead of re-running the engine, so an agent retry of the same tool call converges. Error results replay once, then are consumed so a fresh identical attempt re-runs. A re-POST while the first run is still in flight waits on it rather than double-running. `job(jobToken)` (feature-detect: absent on older platform wrappers) reads the record without consuming: `{ status: 'not_found'|'running'|'done'|'error', result? }`; expose it via a read-shaped (`get_`-prefixed) status tool so it gets the longer read dispatch budget. Only write back to your provider AFTER the bridge returns; that ordering is what makes replay safe (no double side effects). Tell your agents in the tool description that a timed-out call should be retried with identical arguments.
+
+### Durable app logs: `env.SPRIGR.log` (no D1 audit table)
+
+`env.SPRIGR.log(entry)` or `env.SPRIGR.log([entry, ...])` writes rows into the platform's `system_logs` Analytics Engine dataset: 90-day retention, scoped to the install's company, `source = 'install'`, category stored as `<app-slug>.<your category>`, metadata stamped with `app_slug` + `install_id` (platform keys win). Use it for every "we saw X" line a webhook, schedule tick, poll or tool call used to write into your own D1 as an audit row. **D1 bills every row written (plus one per index); AE does not.** One Shopify install wrote ~1.7M per-webhook audit + dedup rows a day before this surface existed (sprigr-apps#1519). Keep D1 for state you read back: cursors, dedup claims (shortest TTL that covers the provider's redelivery window, a sweep on every tick, primary key only), real records.
+
+```ts
+await env.SPRIGR.log({
+  level: 'info',                          // 'debug' | 'info' | 'warn' | 'error'
+  category: 'webhook.ok',                 // 1-64 chars of [A-Za-z0-9._:-]; the exact-match filter key
+  summary: 'orders/create 6699 indexed',  // <= 256 chars
+  metadata: { topic: 'orders/create', resource_id: '6699', ms: 41 }, // plain object, JSON <= 3840 chars
+  // detail?: string (<= 4096; reserve for error text), agent_id?, trace_id? (<= 128)
+});
+```
+
+Make `category` a stable outcome name (`webhook.ok`, `webhook.duplicate`, `sync.tick`) and put the varying parts in `metadata`; that is what you filter on when reading rows back (`GET /api/data/system-logs?source=install&metadata_key=app_slug&metadata_value=<slug>`, or exact `category=<slug>.webhook.ok`). Batch a busy handler into one call (up to 50 entries).
+
+**Caps are rejections, not truncation.** An oversize or malformed entry THROWS synchronously, naming the field, its length and the cap, and nothing is sent; the platform applies the same caps and answers 400 (`summary_too_long`, `detail_too_long`, `metadata_too_large`, `too_many_entries`, `invalid_category`) with `max` and `length` in the body, all-or-nothing for a batch. Fix the entry (move the long part into `metadata`, split rows); never slice it yourself. **Fire-and-forget after validation.** The host member registers its fetch with `ctx.waitUntil`, so the row lands even when you do not await it, and the promise never rejects: `{ ok: true, written }` or `{ ok: false, error, status?, detail? }` (also a `console.warn`).
+
+Inline route handlers do not get `env.SPRIGR`, so use the SDK there: `logToPlatform(env, entry, { waitUntil: ctx.waitUntil.bind(ctx) })` picks the injected member when present and otherwise POSTs `{ entries }` to `${SPRIGR_PLATFORM_BASE}/internal/wfp/log` with the `SPRIGR_INSTALL_TOKEN` bearer (5s timeout, never throws after validation); `withSprigrLogFallback(env, { waitUntil })` installs `env.SPRIGR.log` once for many call sites, composable with `withSprigrEmitFallback`. Declare the member on your env type as `log?: SprigrLogFn` (optional: wrapper builds older than sprigr-team#7214 do not carry it; the SDK helpers degrade to the HTTP path). `validateLogEntries` is exported on its own for tests and for hand-rolled transports.
 
 ## 4b. Platform-routed AI (billed per tenant)
 

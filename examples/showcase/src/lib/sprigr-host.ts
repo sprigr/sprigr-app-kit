@@ -14,6 +14,29 @@
  * can treat that as "use the default".
  */
 
+/**
+ * One `env.SPRIGR.log` row. Mirrors `SprigrLogEntry` in @sprigr/apps-app-sdk
+ * 0.10.1+; declared locally because this example pins the SDK from npm, the
+ * way a real app does, and a pin has to exist before it can be imported.
+ */
+export interface SprigrLogEntry {
+  level: 'debug' | 'info' | 'warn' | 'error';
+  /** 1-64 chars of [A-Za-z0-9._:-]; stored as `<slug>.<category>`. */
+  category: string;
+  /** <= 256 chars. */
+  summary: string;
+  /** <= 4096 chars. */
+  detail?: string;
+  /** Plain object, JSON <= 3840 chars. */
+  metadata?: Record<string, unknown>;
+  agent_id?: string;
+  trace_id?: string;
+}
+
+export type SprigrLogResult =
+  | { ok: true; written: number }
+  | { ok: false; error: string; status?: number; detail?: string };
+
 /** A platform error carries a machine-readable code + HTTP status. */
 export interface SprigrHostError extends Error {
   code?: string;
@@ -33,6 +56,17 @@ export interface SprigrHost {
       dedupId?: string;
     },
   ): Promise<unknown>;
+
+  /**
+   * Durable app log rows (Analytics Engine `system_logs`, 90 days, scoped to
+   * the install's company, category stored as `<slug>.<category>`). Use it
+   * instead of a per-webhook / per-tick audit row in D1. Caps (summary 256,
+   * detail 4096, metadata JSON 3840, category 64 of [A-Za-z0-9._:-], 50
+   * entries per call) THROW synchronously; after that the promise never
+   * rejects. Type + inline-route fallback: `SprigrLogFn`, `logToPlatform`
+   * in @sprigr/apps-app-sdk.
+   */
+  log(input: SprigrLogEntry | SprigrLogEntry[]): Promise<SprigrLogResult>;
 
   usage: {
     /** Report billed token usage for metering. billedTokens rounds to int. */
