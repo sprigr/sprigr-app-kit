@@ -181,3 +181,64 @@ describe('requireApproval: _approval.count (decision 0039)', () => {
   });
 });
 
+
+/**
+ * sprigr-app-kit#44: one gate-level `resolveConnection` cannot describe two
+ * families of write truthfully. A spec may override it, and the two consumers
+ * of the resolved value (the card a person reads, the grant hash) must both
+ * follow the spec's answer.
+ */
+describe('requireApproval: per-spec resolver overrides', () => {
+  const handlers = {
+    delete_collection: vi.fn(async () => ({ ok: true, deleted: true })),
+    add_tags: vi.fn(async () => ({ ok: true })),
+  };
+
+  /** Addresses a global id: the store it lands on is not the caller's `store` arg. */
+  const overrideSpecs: Record<string, ApprovalSpec<Env, Env>> = {
+    delete_collection: {
+      keys: ['collection_id', 'id'],
+      resolveConnection: async () => 'primary.myshopify.com',
+      describeTarget: async (env, id) => `"Archive" (${id}) via ${env.pinned}`,
+      stampConnection: (r, c) => ({ ...(r as object), shop: c }),
+      describe: (target, _a, store) => ({ question: `Permanently delete ${target} on ${store}?`, header: 'Shop' }),
+    },
+    add_tags: specs.add_tags!,
+  };
+
+  it("ask pass: the spec's resolveConnection and describeTarget win over the gate's, for the card AND the hash", async () => {
+    const gated = requireApproval(handlers, overrideSpecs, opts());
+    const r = (await gated.delete_collection!({ collection_id: 'gid://C/1', store: 'eu' }, { defaultStore: 'us.myshopify.com' })) as {
+      _approval: { question: string; hash: string };
+    };
+    expect(handlers.delete_collection).not.toHaveBeenCalled();
+    // The gate would have resolved eu.myshopify.com from the args and pinned to it.
+    expect(r._approval.question).toBe('Permanently delete "Archive" (gid://C/1) via primary.myshopify.com on primary.myshopify.com?');
+    expect(r._approval.hash).toBe('gid://C/1\u001fprimary.myshopify.com');
+    expect(r._approval.hash).not.toContain('eu.myshopify.com');
+  });
+
+  it('ask pass: a spec with no override keeps the pre-change hash byte for byte', async () => {
+    const gated = requireApproval(handlers, overrideSpecs, opts());
+    const r = (await gated.add_tags!({ id: 1, tags: ['b', 'a'] }, { defaultStore: 'us.myshopify.com' })) as { _approval: { hash: string } };
+    // Literal pinned from the pre-change implementation: raw id, gate-resolved
+    // connection, then the sorted tag set.
+    expect(r._approval.hash).toBe('1\u001fus.myshopify.com\u001fa\u001fb');
+    expect(r._approval.hash).toBe(approvalHash(1, 'us.myshopify.com', set(['a', 'b'])));
+  });
+
+  it("granted pass: the spec's stampConnection stamps the spec-resolved connection", async () => {
+    const gated = requireApproval(handlers, overrideSpecs, opts());
+    const r = (await gated.delete_collection!({ collection_id: 'gid://C/1', store: 'eu', [APPROVAL_GRANTED_KEY]: true }, { defaultStore: 'us.myshopify.com' })) as Record<string, unknown>;
+    expect(handlers.delete_collection).toHaveBeenCalledTimes(1);
+    expect(r.shop).toBe('primary.myshopify.com');
+    expect(r.store).toBeUndefined();
+  });
+
+  it('granted pass: a spec with no override still stamps through the gate', async () => {
+    const gated = requireApproval(handlers, overrideSpecs, opts());
+    const r = (await gated.add_tags!({ id: 1, tags: ['a'], [APPROVAL_GRANTED_KEY]: true }, { defaultStore: 'us.myshopify.com' })) as Record<string, unknown>;
+    expect(r.store).toBe('us.myshopify.com');
+    expect(r.shop).toBeUndefined();
+  });
+});

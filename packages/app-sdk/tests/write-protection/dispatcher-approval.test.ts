@@ -107,3 +107,115 @@ describe('dispatcherApproval', () => {
     expect(() => dispatcherApproval<Env, State>(specs, { scope: 's', resolveConnection: async () => '' })).toThrow(/no journal/);
   });
 });
+
+/**
+ * Asana's shape (sprigr-app-kit#44): the gate resolves the install's workspace
+ * pin, but ~25 gated actions address a bare gid on a workspace-free path. One
+ * gate-level resolver named a workspace on those cards, and mixed it into the
+ * grant hash, while being false.
+ */
+describe('dispatcherApproval: per-spec resolver overrides', () => {
+  const overrideSpecs: Record<string, ApprovalSpec<State, Env>> = {
+    // Workspace-free path: the honest connection is '', not the install pin.
+    delete_goal: {
+      keys: ['goal_gid'],
+      resolveConnection: async () => '',
+      describeTarget: async (_pinned, gid, action) => `goal ${gid} (${action})`,
+      describe: (target, _p, ws) => ({ question: `Permanently delete ${target}${ws ? ` in ${ws}` : ''}?`, header: 'Asana' }),
+      undo: {
+        resource: 'goal',
+        fidelity: 'recreated',
+        capture: async (_state, gid) => ({ gid, name: 'Q3 revenue' }),
+        describe: (before) => `goal "${before.name}"`,
+        warning: () => 'Recreates under a new gid.',
+      },
+    },
+    // Resolves its own non-empty connection AND stamps it its own way.
+    move_goal: {
+      keys: ['goal_gid'],
+      resolveConnection: async () => 'ws-actual',
+      stampConnection: (r, c) => ({ ...(r as object), target_workspace: c }),
+      describe: (target, _p, ws) => ({ question: `Move ${target} to ${ws}?`, header: 'Asana' }),
+    },
+    // No overrides: everything must still come from the gate.
+    complete_task: {
+      keys: ['task_gid'],
+      describe: (target, _p, ws) => ({ question: `Complete ${target} in ${ws}?`, header: 'Asana' }),
+    },
+  };
+
+  function overrideGate(journal = { captureBefore: vi.fn(async () => ({ ref: 'cap_9' })) }) {
+    const gate = dispatcherApproval<Env, State>(overrideSpecs, {
+      scope: 'asana-undo',
+      inputField: 'params',
+      resolveConnection: async (_env, params) => (typeof params.workspace === 'string' ? params.workspace : 'ws-default'),
+      pinEnv: async (_env, ws) => ({ token: 't', workspace: ws }),
+      describeTarget: async (state, gid, action) => `"Ship it" (${gid}) via ${state.workspace} for ${action}`,
+      stampConnection: (r, c) => ({ ...(r as object), workspace: c }),
+      journal: () => journal,
+    });
+    return { gate, journal };
+  }
+
+  it("ask pass: a spec's own resolveConnection and describeTarget win over the gate's, for the card AND the hash", async () => {
+    const { gate } = overrideGate();
+    const write = vi.fn(async () => ({ ok: true }));
+    const r = (await gate.run('delete_goal', { action: 'delete_goal', params: { goal_gid: '77', workspace: 'ws-eu' } }, { DB: {} }, write)) as {
+      _approval: { question: string; hash: string };
+    };
+    expect(write).not.toHaveBeenCalled();
+    // The gate would have said "in ws-eu" and hashed it in; the spec says neither.
+    expect(r._approval.question).toBe('Permanently delete goal 77 (delete_goal)?');
+    expect(r._approval.hash).toBe('delete_goal\u001f77\u001f');
+    expect(r._approval.hash).not.toContain('ws-eu');
+  });
+
+  it('ask pass: a spec with no override still takes the gate value, byte-identically to before the override existed', async () => {
+    const { gate } = overrideGate();
+    const r = (await gate.run('complete_task', { action: 'complete_task', params: { task_gid: '123', workspace: 'ws-eu' } }, { DB: {} }, async () => ({ ok: true }))) as {
+      _approval: { question: string; hash: string };
+    };
+    expect(r._approval.question).toBe('Complete "Ship it" (123) via ws-eu for complete_task in ws-eu?');
+    // Literal pinned from the pre-change implementation: action, raw id, connection.
+    expect(r._approval.hash).toBe('complete_task\u001f123\u001fws-eu');
+    expect(r._approval.hash).toBe(approvalHash('complete_task', '123', 'ws-eu'));
+  });
+
+  it("granted pass: the spec's resolver drives the journal connection, not the gate's", async () => {
+    const { gate, journal } = overrideGate();
+    await gate.run(
+      'delete_goal',
+      { action: 'delete_goal', params: { goal_gid: '77', workspace: 'ws-eu' }, [APPROVAL_GRANTED_KEY]: true },
+      { DB: {} },
+      async () => ({ ok: true }),
+    );
+    expect(journal.captureBefore).toHaveBeenCalledWith({
+      entity: 'delete_goal',
+      originalId: '77',
+      before: { gid: '77', name: 'Q3 revenue' },
+      connection: null,
+    });
+  });
+
+  it("granted pass: a spec's own stampConnection wins, and stamps the spec-resolved value", async () => {
+    const { gate } = overrideGate();
+    const r = await gate.run(
+      'move_goal',
+      { action: 'move_goal', params: { goal_gid: '77', workspace: 'ws-eu' }, [APPROVAL_GRANTED_KEY]: true },
+      { DB: {} },
+      async () => ({ ok: true }),
+    );
+    expect(r).toEqual({ ok: true, target_workspace: 'ws-actual' });
+  });
+
+  it('granted pass: a spec with no override still stamps through the gate', async () => {
+    const { gate } = overrideGate();
+    const r = await gate.run(
+      'complete_task',
+      { action: 'complete_task', params: { task_gid: '1', workspace: 'ws-eu' }, [APPROVAL_GRANTED_KEY]: true },
+      { DB: {} },
+      async () => ({ ok: true }),
+    );
+    expect(r).toEqual({ ok: true, workspace: 'ws-eu' });
+  });
+});

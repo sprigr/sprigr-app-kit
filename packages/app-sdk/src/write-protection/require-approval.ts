@@ -36,13 +36,26 @@ import { APPROVAL_GRANTED_KEY, type AppApprovalEnvelope, type ToolArgs, type Too
  *    `_undo` ON A NULL CAPTURE. A failed capture does not fail the write: the
  *    user asked for it and a human approved it. It degrades to no token.
  *
+ * Every resolver here is gate-level by default and overridable per spec:
+ * `ApprovalSpec.resolveConnection` / `.describeTarget` / `.stampConnection`
+ * win over the gate's for that spec alone. One rule cannot describe two
+ * families of write truthfully, and both consumers of the resolved value are
+ * safety surfaces (the card a person reads, and the grant hash).
+ *
  * Generalised from the Shopify app's `require-approval.ts`; the per-tool
  * questions stay in the app, because only the app knows what cannot be walked
  * back.
  */
 
-/** Per-tool (or per-action) spec: how the card reads, and (optionally) how to journal a before-image. */
-export interface ApprovalSpec<P = unknown> {
+/**
+ * Per-tool (or per-action) spec: how the card reads, and (optionally) how to
+ * journal a before-image.
+ *
+ * `P` is the pinned connection handed to `capture` / `describeTarget`; `E` is
+ * the env a spec-level `resolveConnection` receives. `E` defaults to `unknown`
+ * so `ApprovalSpec<MyState>` keeps working unchanged.
+ */
+export interface ApprovalSpec<P = unknown, E = unknown> {
   /**
    * Arg names that may carry the target id, most specific first. ONE list, used
    * for both the card label and the grant hash, so the two cannot drift apart
@@ -71,6 +84,27 @@ export interface ApprovalSpec<P = unknown> {
    * can ever cover it, which is the safe side but not the useful one.
    */
   count?: (args: ToolArgs) => number;
+  /**
+   * Overrides the gate's `resolveConnection` for THIS spec only; the gate's
+   * value stays the default for every spec that omits it.
+   *
+   * One gate serves every spec, so a gate-level resolver has to pick one rule.
+   * That is wrong the moment an app has two families of write that reach a
+   * connection differently: in meta-ads (sprigr-apps#1462) six creates POST
+   * under an ad account and three address a Graph object by id on a path that
+   * carries no account at all, so the account resolved for the creates was
+   * printed on the delete's card and mixed into its hash while being false.
+   * A resolver returning '' here is the honest answer for such a spec.
+   */
+  resolveConnection?: (env: E, args: ToolArgs) => Promise<string>;
+  /** Overrides the gate's `describeTarget` for this spec only. */
+  describeTarget?: (pinned: P, id: string, name: string) => Promise<string>;
+  /**
+   * Overrides the gate's `stampConnection` for this spec only. The stamp
+   * repeats the card's claim in the agent's "done" report, so a spec that
+   * resolves its own connection usually wants to stamp it its own way too.
+   */
+  stampConnection?: (result: unknown, connection: string) => unknown;
   /** Present only for tools whose write can be (partly) reversed. */
   undo?: UndoCaptureSpec<P>;
 }
@@ -110,6 +144,10 @@ export interface ApprovalGateOptions<E, P = E> {
    * arguments and the install, canonicalised (a label like "EU store" becomes
    * the real domain). Return '' for a single-connection app. Never read it off
    * the arguments alone: on the retry the model usually omits it.
+   *
+   * This is the DEFAULT for every spec. A spec whose write reaches a
+   * connection by another rule overrides it with
+   * `ApprovalSpec.resolveConnection`.
    */
   resolveConnection: (env: E, args: ToolArgs) => Promise<string>;
   /**
@@ -122,7 +160,8 @@ export interface ApprovalGateOptions<E, P = E> {
    * back to the id on any miss; never guess, a confidently wrong card is worse
    * than a terse one. Omit to always show the raw id. `name` is the tool, or
    * for a dispatcher the action, so a lookup can route by resource type when
-   * the id alone does not say what it is (an Asana gid).
+   * the id alone does not say what it is (an Asana gid). Overridable per
+   * spec.
    */
   describeTarget?: (pinned: P, id: string, name: string) => Promise<string>;
   /**
@@ -133,7 +172,8 @@ export interface ApprovalGateOptions<E, P = E> {
   journal?: (env: E) => CaptureJournal;
   /**
    * Stamp the resolved connection onto a successful result (e.g. `{ store }`)
-   * so an agent reporting "deleted it" can name where. Optional.
+   * so an agent reporting "deleted it" can name where. Optional, and
+   * overridable per spec.
    */
   stampConnection?: (result: unknown, connection: string) => unknown;
 }
@@ -214,16 +254,17 @@ async function pin<E, P>(opts: ApprovalGateOptions<E, P>, env: E, connection: st
  */
 async function askPass<E, P>(
   name: string,
-  spec: ApprovalSpec<P>,
+  spec: ApprovalSpec<P, E>,
   params: ToolArgs,
   env: E,
   opts: ApprovalGateOptions<E, P>,
   hashPrefix: string[],
 ): Promise<{ ok: false; _approval: AppApprovalEnvelope }> {
-  const connection = await opts.resolveConnection(env, params);
+  const connection = await (spec.resolveConnection ?? opts.resolveConnection)(env, params);
   const rawId = rawIdOf(params, spec.keys);
   const pinned = await pin(opts, env, connection);
-  const target = rawId && opts.describeTarget ? await safeLabel(opts.describeTarget, pinned, rawId, name) : rawId || '(unknown id)';
+  const describeTarget = spec.describeTarget ?? opts.describeTarget;
+  const target = rawId && describeTarget ? await safeLabel(describeTarget, pinned, rawId, name) : rawId || '(unknown id)';
   const extra = spec.hash ? spec.hash(params) : [];
   const count = countOf(spec as ApprovalSpec<unknown>, params, rawId);
   return {
@@ -244,7 +285,7 @@ async function askPass<E, P>(
  */
 async function grantedPass<E, P>(
   name: string,
-  spec: ApprovalSpec<P>,
+  spec: ApprovalSpec<P, E>,
   params: ToolArgs,
   env: E,
   opts: ApprovalGateOptions<E, P>,
@@ -252,9 +293,11 @@ async function grantedPass<E, P>(
 ): Promise<unknown> {
   // Even with nothing to journal, name the connection this hit. An agent that
   // reports "deleted it" without naming the store on a multi-store install is
-  // one the user cannot check.
-  const connection = await opts.resolveConnection(env, params);
-  const stamp = (r: unknown) => (connection && opts.stampConnection ? opts.stampConnection(r, connection) : r);
+  // one the user cannot check. Resolve it the same way the ask pass did, or
+  // the report contradicts the card the person tapped.
+  const connection = await (spec.resolveConnection ?? opts.resolveConnection)(env, params);
+  const stampConnection = spec.stampConnection ?? opts.stampConnection;
+  const stamp = (r: unknown) => (connection && stampConnection ? stampConnection(r, connection) : r);
 
   const undo = spec.undo;
   const id = rawIdOf(params, spec.keys);
@@ -281,7 +324,7 @@ async function grantedPass<E, P>(
   return { ...(stamp(result) as Record<string, unknown>), _undo: envelope };
 }
 
-function assertJournal<E, P>(name: string, spec: ApprovalSpec<P>, opts: ApprovalGateOptions<E, P>, who: string): void {
+function assertJournal<E, P>(name: string, spec: ApprovalSpec<P, E>, opts: ApprovalGateOptions<E, P>, who: string): void {
   if (spec.undo && !opts.journal) {
     throw new Error(`${who}: "${name}" declares undo but no journal was supplied.`);
   }
@@ -301,7 +344,7 @@ function assertJournal<E, P>(name: string, spec: ApprovalSpec<P>, opts: Approval
  */
 export function requireApproval<E>(
   handlers: Record<string, ToolHandler<E>>,
-  specs: Record<string, ApprovalSpec<E>>,
+  specs: Record<string, ApprovalSpec<E, E>>,
   opts: RequireApprovalOptions<E>,
 ): Record<string, ToolHandler<E>> {
   const gated: Record<string, ToolHandler<E>> = {};
@@ -344,7 +387,7 @@ export function requireApproval<E>(
  * top-level args when that field is absent (the flat-verb envelope).
  */
 export function dispatcherApproval<E, P = E>(
-  specs: Record<string, ApprovalSpec<P>>,
+  specs: Record<string, ApprovalSpec<P, E>>,
   opts: DispatcherApprovalOptions<E, P>,
 ): DispatcherApprovalGate<E> {
   for (const [name, spec] of Object.entries(specs)) assertJournal(name, spec, opts, 'dispatcherApproval');

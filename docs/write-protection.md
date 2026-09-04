@@ -148,6 +148,30 @@ What the wrapper guarantees:
 - On the granted pass it **captures before the write, mints only after the write reported `ok`**, and never returns `_undo` when the capture or the journal failed. A failed capture does not fail the write.
 - A spec naming a tool absent from the registry **throws at build time** rather than silently ungating a rename.
 
+### One connection rule per spec, not per gate
+
+`resolveConnection`, `describeTarget` and `stampConnection` on the gate are **defaults**. A spec that reaches its connection by another rule overrides them for itself:
+
+```ts
+const SPECS: Record<string, ApprovalSpec<AcmeState, AcmeEnv>> = {
+  acme_delete_object: {
+    keys: ['object_id'],
+    // This write addresses a global object id on a path that carries no
+    // account, so there is no account to name. '' is the honest answer.
+    resolveConnection: async () => '',
+    describeTarget: async (_pinned, id) => `object ${id}`,
+    describe: (target, _args, account) => ({
+      question: `Permanently delete ${target}${account ? ` on ${account}` : ''}?`,
+      header: 'Acme',
+    }),
+  },
+};
+```
+
+Why this is not cosmetic: both consumers of the resolved connection are safety surfaces. It is the text a human reads before authorising an irreversible write, **and** an ingredient of the grant hash. In meta-ads (sprigr-apps#1462) six creates POST under an ad account and three address a Graph object by id; one gate-level resolver served both, so a permanent delete on one account raised a card naming the install's default account, and the grant was bound to that wrong value. Nothing errored.
+
+A spec that omits an override keeps the gate value, and its hash is unchanged, so existing grants stay valid.
+
 Autonomous runs get neither the write nor a card: a scheduled task or workflow step has no one to ask, so the platform returns the question with a note that nothing was written. The one exception is a workflow step whose author saved a **standing approval** (sprigr-team decision 0039): the platform honours it only when your envelope's `count` (how many records this one call touches) is within the step's cap, so the wrapper sets `count` to 1 for a single-target spec and a batch action must supply `ApprovalSpec.count`. No count means no standing approval, which is the safe side. Otherwise, scope what a background agent may do; do not rely on `_approval` there.
 
 ### Dispatcher tools
