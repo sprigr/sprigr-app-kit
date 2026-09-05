@@ -175,7 +175,7 @@ Two things that only matter for an app that ALREADY has installs:
 
 `{ mode: 'cleartext', reason }` exists for a table that holds no credential material, and demands a written reason so it can never happen by omission.
 
-From `@sprigr/apps-app-sdk` (npm dep): `encodeState`/`decodeState` (the bouncer decodes YOUR state, so always build it with `encodeState`), `randomHex`, `hmacSha256Hex` + `constantTimeEqual` (webhook signatures), `fetchWithRetry` (rate-limited provider APIs).
+From `@sprigr/apps-app-sdk` (npm dep): `encodeState`/`decodeState` (the bouncer decodes YOUR state, so always build it with `encodeState`), `randomHex`, `hmacSha256Hex` + `constantTimeEqual` (webhook signatures), `fetchWithRetry` (rate-limited provider APIs). For anything that runs under a schedule or a long tool call, add `@sprigr/apps-fetch-budget` (`createDeadline` + `fetchWithBudget`): `fetchWithRetry` carries no timeout, and an unbounded `fetch` hangs until the platform dispatcher's 110s wall kills the whole invocation. See [marketplace-app-development.md](marketplace-app-development.md#bounding-outbound-http-the-110-second-dispatch-wall-sprigrapps-fetch-budget).
 
 Why tokens live in D1 and not manifest secrets: manifest `secrets[]` are read-only at runtime, and refresh rotation needs writes. Per-install D1 is isolated, and the store seals values under the install's own key on top of that (Cloudflare's storage-layer encryption at rest is not protection against a read primitive inside the app itself, which is what the KEK is for).
 
