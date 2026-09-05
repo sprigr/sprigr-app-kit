@@ -242,6 +242,7 @@ Vendored under `src/lib/vendor/app-sdk/`. Small, no runtime deps. Provides:
 - `encodeState(obj)` / `decodeState(str)` — base64url state codec for OAuth + dispatch routing
 - `randomHex(bytes)`, `hmacSha256Hex(key, data)`, `constantTimeEqual(a, b)` — Web Crypto wrappers
 - `fetchWithRetry(url, init, options)` — exponential-backoff fetch (Procore's API rate-limits hard)
+- No timeout, though: bound outbound calls with `@sprigr/apps-fetch-budget` (`createDeadline` + `fetchWithBudget`), see [marketplace-app-development.md](marketplace-app-development.md#bounding-outbound-http-the-110-second-dispatch-wall-sprigrapps-fetch-budget)
 - `putAppFileStream(env, args)` / `appFileUrl(env, args)` (+ `putAppFile`, `getAppFile`, `listAppFiles`, `deleteAppFile`): durable app-scoped file storage for code running **outside** the injected bridge (e.g. inline route handlers); inside a tool / webhook handler use `env.SPRIGR.files` instead (§4)
 - Types: `D1Like`, `WebhookArgs`, `ScheduleArgs`, `EventArgs`, `HandlerFn`, `SprigrDataApi`, `SprigrFilesApi` (type `env.SPRIGR.data` / `env.SPRIGR.files` without re-declaring them)
 

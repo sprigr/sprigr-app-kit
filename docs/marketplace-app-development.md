@@ -475,6 +475,7 @@ A small npm package (no runtime deps). Provides:
 - `encodeState(obj)` / `decodeState(str)` - base64url state codec for OAuth + dispatch routing
 - `randomHex(bytes)`, `hmacSha256Hex(key, data)`, `constantTimeEqual(a, b)` - Web Crypto wrappers
 - `fetchWithRetry(url, init, options)` - exponential-backoff fetch (provider APIs rate-limit hard)
+- `fetchWithRetry` has no timeout: pair it with `@sprigr/apps-fetch-budget` for anything under a schedule or the dispatcher's 110s wall (see below)
 - Types: `D1Like`, `WebhookArgs`, `ScheduleArgs`, `EventArgs`, `HandlerFn`
 
 Plus a companion `@sprigr/apps-oauth-utils` with:
@@ -483,6 +484,33 @@ Plus a companion `@sprigr/apps-oauth-utils` with:
 - `OAuthError` typed errors
 
 And `@sprigr/apps-d1-kv` with `makeD1TokenStore` / `makeSettingsStore` (D1-backed token + settings stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables). `makeD1TokenStore` takes a **required** `encryption` option; a scaffolded app gets `{ mode: 'encrypt', kek: env.<SLUG>_TOKEN_KEK }` and the matching `auto_generate` manifest secret, so its tokens are sealed at rest from the first write. See [build-guide.md](build-guide.md) for the modes and for the two-step path an app with existing installs has to take. The scaffolder exact-pins all of these.
+
+### Bounding outbound HTTP: the 110-second dispatch wall (`@sprigr/apps-fetch-budget`)
+
+`fetchWithRetry` retries and backs off, but it takes no timeout and passes no signal. `fetch()` in workerd has **no default timeout**, so a provider request that never answers hangs until something above kills the whole invocation. For a tool or a schedule that something is the platform dispatcher: it aborts at **110s** and reports `timeout: dispatch exceeded 110000ms`, naming neither your app nor the call that hung. Five apps hit this and each wrote its own helper before the kit had one.
+
+`@sprigr/apps-fetch-budget` is that helper. It has two clocks and you almost always need both:
+
+- an **attempt cap** sizes one outbound request, so a single stalled connection cannot consume the invocation;
+- a **call budget** (a `Deadline`, computed once at invocation start) is shared by every attempt, every retry and every throttle sleep, so N bounded legs cannot add up past the wall.
+
+```ts
+import { createDeadline, budgetExhausted, fetchWithBudget } from '@sprigr/apps-fetch-budget';
+
+const deadline = createDeadline(25_000);              // ONCE per invocation, then thread it down
+while (cursor && !budgetExhausted(deadline, 3_000)) { // 3s = the smallest useful leg
+  const resp = await fetchWithBudget(pageUrl(cursor), { headers }, deadline, { attemptCapMs: 15_000 });
+  cursor = await handlePage(resp);
+}
+```
+
+**Which number to size, and how.** The attempt cap is a property of the *provider call*: how long one round trip can plausibly take before the connection is dead rather than slow (a token exchange returns a tiny body, so 10s; an HTML scrape or a large page listing, 25s). The call budget is a property of *your invocation*: add up the legs the invocation can make in the worst case, leave room for the work either side of them, and keep the total well under `DISPATCH_WALL_MS`. Worked example from the shopify sweep: 15s sweep deadline plus one unconditional 25s page plus one 15s token refresh is 55s worst case, against a 110s wall.
+
+**A cap alone is not a budget**, and a pre-check is not a bound. `if (Date.now() < limit) await leg()` tests the clock and then awaits a leg with nothing capping it; that is how sprigr-team#7205 overran an 18s self-imposed budget by more than 6x. The deadline here is enforced twice: `budgetExhausted` refuses to start new work, and the attempt timeout is clamped to `min(cap, time left)`, so a leg starting just under the deadline aborts **at** the deadline instead of a full cap past it.
+
+**Treat a cut-short leg as a failure, never as a completed sync.** `FetchBudgetTimeoutError` carries `retryable = true` (a hung connection says nothing about the request, and no write is known to have landed) and a `phase`: `'attempt'` means the per-attempt cap fired and the budget may still have room, `'budget'` means the invocation is out of time and retrying here only re-aborts sooner. Let it throw past your page loop so the cursor does not advance, and the next tick re-runs the leg.
+
+Full API, failure modes, and the retry caveat: [packages/fetch-budget/README.md](../packages/fetch-budget/README.md).
 
 ## 4. The runtime env
 
