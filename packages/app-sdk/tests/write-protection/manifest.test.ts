@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { applyConfirmationPolicies, manifestIsFresh, serializeManifest, buildConfirmationPolicy } from '../../src/index';
-import type { ManifestLike } from '../../src/write-protection/manifest';
+import type { AppToolEffectsDeclaration, ManifestLike, ManifestToolLike } from '../../src/write-protection/manifest';
 
 function manifest(): ManifestLike {
   return {
@@ -72,5 +72,64 @@ describe('manifestIsFresh', () => {
 describe('serializeManifest', () => {
   it('matches the committed formatting: two-space indent and a trailing newline', () => {
     expect(serializeManifest({ a: 1 })).toBe('{\n  "a": 1\n}\n');
+  });
+});
+
+// sprigr-app-kit#49 / platform decision 0057: `tools[].effects` is a typed,
+// optional manifest field. The confirmation generator strips two other
+// tool-level fields (`confirmation_required`, the app-declared `confirm`
+// input), so the risk worth pinning is that a future strip takes `effects`
+// with it and an app silently loses its write-tier declaration on the next
+// `gen:confirmation` run.
+describe('tools[].effects survives the confirmation generator', () => {
+  function withEffects(): ManifestLike {
+    return {
+      tools: [
+        {
+          name: 'crm_sync_contacts',
+          effects: 'write',
+          confirmation_required: true,
+          input_schema: { properties: { id: {}, confirm: { type: 'boolean' } }, required: ['id', 'confirm'] },
+        },
+        { name: 'widget_list', input_schema: { properties: { q: {} } } },
+      ],
+    };
+  }
+
+  it('keeps the declaration on a tool the generator rewrites', () => {
+    const m = withEffects();
+    applyConfirmationPolicies(m, { policies: { crm_sync_contacts: rule } });
+    const tool = m.tools![0]!;
+    expect(tool.effects).toBe('write');
+    // The fields the generator IS meant to retire still go.
+    expect(tool.confirmation_required).toBeUndefined();
+    expect(tool.input_schema!.properties!.confirm).toBeUndefined();
+  });
+
+  it('keeps it on an untouched tool and through a serialize round-trip', () => {
+    const m = withEffects();
+    applyConfirmationPolicies(m, { policies: {} });
+    expect(m.tools![0]!.effects).toBe('write');
+    expect(m.tools![1]!.effects).toBeUndefined();
+    const round = JSON.parse(serializeManifest(m)) as ManifestLike;
+    expect(round.tools![0]!.effects).toBe('write');
+  });
+
+  it('is invisible to manifestIsFresh, so declaring it does not read as drift', () => {
+    const m = withEffects();
+    const opts = { policies: { crm_sync_contacts: rule } };
+    applyConfirmationPolicies(m, opts);
+    expect(manifestIsFresh(m, opts)).toBe(true);
+  });
+
+  it("accepts 'write' as the typed value on ManifestToolLike", () => {
+    // The type is exported as one literal on purpose: 'read' is not honoured
+    // by the platform and must not be expressible. Tests are not typechecked
+    // in this package, so this asserts the runtime shape only; the compile
+    // time guarantee is the `effects?: AppToolEffectsDeclaration` field
+    // itself, which `pnpm -F @sprigr/apps-app-sdk typecheck` covers.
+    const tool: ManifestToolLike = { name: 't', effects: 'write' };
+    const declared: AppToolEffectsDeclaration = 'write';
+    expect(tool.effects).toBe(declared);
   });
 });

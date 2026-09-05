@@ -192,6 +192,8 @@ Single source of truth. Validated server-side at publish.
 
 The dedup key is `(turnId, round, toolName, canonical input)` **without** the tool_use id, so two distinct tool_use blocks with identical input merge — but distinct params/seeds (different input) and a genuine later-turn repeat (different turn) never do. The duplicate returns the first call's result. Opt in only where an identical repeat in one round is never intended; never for a counter/increment-style tool.
 
+**`tools[].effects` (optional): force the write dispatch tier.** The platform classifies a tool call as a read or a write from the tool's NAME (a recognised read verb prefix such as `list_` / `get_` / `find_` is a read, everything else is a write), and a read is blind-retried when the dispatch times out or the app's Durable Object disconnects. Set `"effects": "write"` on any tool that mutates but is not named like it (`*_or_create_*`, `sync_*`, `reconcile_*`, `list_and_stage_batch`) and the write tier is forced regardless of the name: shorter budget, no automatic retry, idempotency token forwarded. Omitting it leaves the name heuristic in charge, unchanged. `"read"` is not accepted (it would buy the blind retry, so it is not app-declarable), and any unrecognised value is ignored with a server-side publish warning rather than a rejection. Full guidance: [marketplace-app-development.md](marketplace-app-development.md#declaring-a-tools-side-effects-toolseffects).
+
 **Schema gotchas hit during the procore build:**
 - `secrets[].type` must be `"secret"`. We initially used `"string"` — rejected with `Invalid secrets[].type`.
 - `schedules[].name` must be snake_case. `refresh-tokens` was rejected; `refresh_tokens` works.

@@ -148,6 +148,13 @@ Single source of truth. Validated server-side at publish.
       "input_schema": { /* JSON Schema for the tool args */ }
     },
     {
+      "name": "my_crm_sync_contacts",
+      "description": "...",
+      "handler": "src/handlers/sync-contacts.ts",
+      "effects": "write",                     // optional; forces the write dispatch tier - see below
+      "input_schema": { /* JSON Schema for the tool args */ }
+    },
+    {
       "name": "my_crm_oauth_callback",        // dispatched by the bouncer
       "handler": "src/handlers/oauth-callback.ts",
       "input_schema": { /* { code, redirectUri, environment } */ }
@@ -163,6 +170,32 @@ Single source of truth. Validated server-side at publish.
 - `runtime.tier` is required for non-agent apps (`"ssr"` for Next.js/Astro/Remix, `"static"` for plain HTML).
 - `permissions.network_domains` is an outbound allowlist - every domain `fetch()` calls **must** be there, including OAuth login hosts. WFP returns a network error otherwise.
 - `tools[].handler` paths are **relative to the app dir**, not the bundle root. The build-runner adapter resolves them when generating `__sprigr_handlers.js`.
+
+### Declaring a tool's side effects (`tools[].effects`)
+
+The platform decides which **dispatch tier** a tool call lands on from the tool's NAME: a recognised read verb prefix (`list_`, `get_`, `search_`, `find_`, ...) is a read, and anything else is a write. The tier is not cosmetic. A read gets a slightly longer dispatch budget and is **blind-retried** when the dispatch times out or the Durable Object serving your app disconnects; a write gets the shorter budget, is never retried automatically, and has an idempotency token forwarded to it.
+
+That heuristic reads a name, not intent, so it is blind in one direction: a tool that mutates but is named like a read is eligible for the blind retry. A `find_or_create_customer` that timed out after the create half had already run got re-dispatched and created a second record.
+
+Declare `effects: "write"` on any tool whose action mutates and whose name does not obviously say so:
+
+```jsonc
+{
+  "name": "crm_sync_contacts",
+  "handler": "src/handlers/sync-contacts.ts",
+  "effects": "write",
+  "input_schema": { /* ... */ }
+}
+```
+
+Typical candidates: `*_or_create_*` composites, `sync_*`, `reconcile_*`, and any create hiding behind a read verb (`list_and_stage_batch`). Plain `create_*` / `update_*` / `delete_*` names are already classified as writes and need nothing.
+
+- **Declaring it forces the write tier** regardless of the name: shorter budget, no automatic retry on a dispatch timeout or a DO disconnect, idempotency token forwarded.
+- **Omitting it changes nothing.** The name heuristic decides, exactly as it does for every app published so far. This field is opt-in and inert until you set it.
+- **`"read"` is not accepted.** Declaring `write` can only ever narrow what your app is granted, which is what makes it app-declarable; the opposite direction would let a manifest opt a write into the blind retry, so the platform does not honour it.
+- **A value other than `"write"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
+
+In TypeScript the field is on `ManifestToolLike` in `@sprigr/apps-app-sdk`, typed `AppToolEffectsDeclaration`.
 
 ## 2b. Shipping AI-facing docs (`docs[]`)
 

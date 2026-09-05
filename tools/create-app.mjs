@@ -165,6 +165,14 @@ const manifest = {
       name: `${SLUG_U}_tool`,
       description: `TODO: describe what the ${NAME} agent tool does. Agents pick tools by this description.`,
       handler: `src/handlers/${SLUG}-tool.ts`,
+      // Add `effects: "write"` to a tool whose action MUTATES but whose name
+      // reads like a read (`*_or_create_*`, `sync_*`, `reconcile_*`,
+      // `list_and_stage_batch`). It forces the platform's write dispatch tier:
+      // shorter budget, no blind auto-retry after a timeout, idempotency token
+      // forwarded. Omit it and the platform's name heuristic decides, which is
+      // the behaviour every app has today. See docs/marketplace-app-development.md
+      // section 2, "Declaring a tool's side effects".
+      // effects: "write",
       input_schema: {
         type: "object",
         properties: {
