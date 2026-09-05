@@ -23,12 +23,41 @@ export interface ManifestDispatchBlock {
   actionInputs?: Record<string, { accepts: string[]; required?: string[] }>;
 }
 
+/**
+ * A manifest tool's DECLARED side-effect class, the `tools[].effects` field of
+ * `sprigr-app.json`. Mirrors the platform's `AppToolEffectsDeclaration`.
+ *
+ * Deliberately the single literal `'write'`, not a `'read' | 'write'` union.
+ * The platform decides a marketplace tool call's dispatch tier from a name
+ * heuristic (a read verb prefix such as `list_` / `get_` / `find_`, anything
+ * else is a write), and the tier controls the dispatch budget, whether a
+ * timeout or a Durable Object disconnect is blind-retried, and whether an
+ * idempotency token is forwarded.
+ *
+ * Declaring `'write'` only ever NARROWS what the app gets: the shorter budget,
+ * no automatic retry, idempotency token forwarded. `'read'` would be the
+ * inverse and is NOT honoured by the platform, so it is not expressible here.
+ * See the platform's decision note 0057.
+ */
+export type AppToolEffectsDeclaration = 'write';
+
 export interface ManifestToolLike {
   name: string;
   input_schema?: { properties?: Record<string, unknown>; required?: string[]; [k: string]: unknown };
   confirmation?: unknown;
   confirmation_required?: boolean;
   dispatch?: unknown;
+  /**
+   * Force the platform's WRITE dispatch tier for this tool regardless of what
+   * it is named. Declare it when the action mutates and the name does not
+   * obviously say so: `*_or_create_*` composites, `sync_*`, `reconcile_*`, or
+   * a genuine create hiding behind a read verb (`list_and_stage_batch`).
+   *
+   * Omitting it keeps today's behaviour exactly: the name heuristic decides.
+   * A value the platform does not recognise is ignored with a publish-time
+   * warning, never a rejection.
+   */
+  effects?: AppToolEffectsDeclaration;
   [k: string]: unknown;
 }
 
