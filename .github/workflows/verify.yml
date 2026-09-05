@@ -18,6 +18,20 @@ jobs:
           node-version: 20
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Lockfile has no phantom importers
+        # `pnpm install --frozen-lockfile` above does NOT catch this. pnpm keeps an
+        # importer block for a workspace directory that no longer exists rather than
+        # failing, so a phantom block survives every CI run and only vanishes the next
+        # time a contributor regenerates the lockfile; their unrelated PR then carries
+        # a lockfile deletion it never intended (issue #53, `apps/kek-probe`).
+        #
+        # A resolve-only install rewrites the lockfile exactly as a contributor's
+        # `pnpm install` would, so the resulting diff is the check.
+        # `--no-frozen-lockfile` is required: pnpm defaults frozen-lockfile to true
+        # whenever CI is set, which would make this step a silent no-op.
+        run: |
+          pnpm install --no-frozen-lockfile --lockfile-only --ignore-scripts
+          git diff --exit-code pnpm-lock.yaml
       - name: Vendor drift + migration immutability
         run: pnpm verify:local
       - name: Package tests
