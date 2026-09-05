@@ -89,10 +89,24 @@ export async function onDeal(env: ShowcaseEnv, args: WebhookArgs): Promise<Handl
   const payload = JSON.parse(args.body) as { deal?: { id?: string; contact_id?: string; amount?: number } };
   const deal = payload.deal ?? {};
 
-  // STAGING-ONLY: emit a marketplace event a workflow_template / subscription reacts to.
+  // STAGING-ONLY: emit a marketplace event a workflow_template / subscription
+  // reacts to, then record the delivery outcome on the platform log. The log
+  // line is the replacement for a per-webhook `<slug>_audit` D1 row: D1 bills
+  // every row written, Analytics Engine does not, and the row is queryable
+  // at /api/data/system-logs (category `showcase.webhook.ok`). Keep the
+  // summary short and the varying parts in metadata; caps throw, never trim.
   return stagingOnly(
-    () => env.SPRIGR.emit('showcase.deal.won', { deal_id: deal.id, contact_id: deal.contact_id, amount: deal.amount }),
-    'onDeal emits showcase.deal.won via env.SPRIGR.emit — publish to staging.',
+    async () => {
+      const emitted = await env.SPRIGR.emit('showcase.deal.won', { deal_id: deal.id, contact_id: deal.contact_id, amount: deal.amount });
+      await env.SPRIGR.log({
+        level: 'info',
+        category: 'webhook.ok',
+        summary: `acme/deal ${deal.id ?? 'unknown'} emitted showcase.deal.won`,
+        metadata: { deal_id: deal.id ?? null, bytes: args.body.length },
+      });
+      return emitted;
+    },
+    'onDeal emits showcase.deal.won via env.SPRIGR.emit and logs the delivery via env.SPRIGR.log: publish to staging.',
   );
 }
 

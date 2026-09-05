@@ -44,6 +44,24 @@ export type {
   WfpBridgeEnv,
   WfpEmitReply,
 } from './wfp-bridge';
+export {
+  logToPlatform,
+  withSprigrLogFallback,
+  canLog,
+  validateLogEntry,
+  validateLogEntries,
+  SprigrLogValidationError,
+  SPRIGR_LOG_LEVELS,
+  SPRIGR_LOG_LIMITS,
+  DEFAULT_LOG_TIMEOUT_MS,
+} from './platform-log';
+export type {
+  SprigrLogLevel,
+  SprigrLogEntry,
+  SprigrLogResult,
+  SprigrLogFn,
+  LogToPlatformOptions,
+} from './platform-log';
 export { parseActor, actorKey, ownerFromActorKey } from './actor';
 export type { Actor, InboxOwner } from './actor';
 export {
