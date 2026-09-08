@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The sources are byte-identical ports from sprigr-team, whose tsconfig
+    // does not set noUncheckedIndexedAccess. `m[1].toUpperCase()` on a regex
+    // match is idiomatic there and would fail under the kit-wide flag; the
+    // port stays verbatim and this package opts out instead of rewriting.
+    "noUncheckedIndexedAccess": false,
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules"]
+}

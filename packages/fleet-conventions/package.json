@@ -1,0 +1,35 @@
+{
+  "name": "@sprigr/apps-fleet-conventions",
+  "version": "0.1.0",
+  "description": "Sprigr dev-fleet GitHub comment conventions: tech-lead verdict parsing and the odd/even issue shard rule",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsup src/index.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/fleet-conventions"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

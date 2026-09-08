@@ -9,6 +9,7 @@ Every package under `packages/` publishes to npm, so apps (internal and external
 | `@sprigr/apps-d1-kv` | |
 | `@sprigr/apps-sync-cursor` | |
 | `@sprigr/apps-dedup-latch` | |
+| `@sprigr/apps-fleet-conventions` | Pure functions, no runtime deps. Shared with sprigr-team's `@sprigr/team-shared`. |
 | `@sprigr/apps-fetch-budget` | |
 | `@sprigr/apps-undo-journal` | |
 | `@sprigr/apps-webhook-registry` | |
