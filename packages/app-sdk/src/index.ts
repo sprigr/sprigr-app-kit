@@ -62,6 +62,19 @@ export type {
   SprigrLogFn,
   LogToPlatformOptions,
 } from './platform-log';
+export {
+  partialUpdateData,
+  canPartialUpdate,
+  buildPartialUpdateBody,
+  SprigrDataValidationError,
+  DATA_PARTIAL_UPDATE_PATH,
+  SPRIGR_DATA_MAX_OBJECTS_PER_CALL,
+} from './platform-data';
+export type {
+  SprigrDataPatch,
+  SprigrDataPartialUpdateBody,
+  PartialUpdateDataOptions,
+} from './platform-data';
 export { parseActor, actorKey, ownerFromActorKey } from './actor';
 export type { Actor, InboxOwner } from './actor';
 export {
@@ -258,6 +271,32 @@ export interface SprigrDataIndexOpts {
   index?: string;
 }
 
+/** Options for `env.SPRIGR.data.partialUpdate`. */
+export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts {
+  /**
+   * Create an object that does not exist yet from the patch alone. Default
+   * `false`: a patch never creates half an object unless asked, and a
+   * missing target is counted in `skippedMissing` instead of being written.
+   */
+  createIfNotExists?: boolean;
+}
+
+/** Reply of `env.SPRIGR.data.partialUpdate` (`POST /internal/wfp/data/partial-update`). */
+export interface SprigrDataPartialUpdateResult {
+  ok: true;
+  /** Objects whose stored copy changed. */
+  updated: number;
+  /** Objects that did not exist. Only non-zero when `createIfNotExists` is false. */
+  skippedMissing: number;
+  /**
+   * The logical index name for multi-index apps, else the physical index
+   * that was patched (informational).
+   */
+  index: string;
+  /** Multi-index apps: what was patched per physical index/shard. */
+  physical_indexes?: Array<{ index: string; shard?: string; updated: number }>;
+}
+
 /**
  * The marketplace install's per-company datastore on Sprigr search,
  * injected on `env.SPRIGR` by the platform wrapper for /__sprigr/*
@@ -314,6 +353,32 @@ export interface SprigrDataApi {
     objectID: string,
     opts?: SprigrDataIndexOpts,
   ): Promise<{ ok: boolean; object: Record<string, unknown> | null; index: string }>;
+  /**
+   * Merge fields into existing objects without reading them first. Each
+   * patch MUST carry a string `objectID`. Max 1000 objects per call, the
+   * same cap as `import`. The platform deep-merges each patch onto the
+   * stored object: nested objects recurse, arrays and scalars replace
+   * wholesale, keys you do not send survive. `null` is a value and
+   * overwrites, so strip keys you do not mean to change rather than
+   * sending them as `null` or `undefined`-then-serialised.
+   *
+   * `createIfNotExists` defaults to `false`: a patch never creates half an
+   * object unless asked, and a missing target is counted in
+   * `skippedMissing`. On a hash- or date-sharded logical index every patch
+   * MUST carry the `shard_field` value, or the WHOLE batch fails with
+   * `shard_field_invalid`: a patch cannot be routed to its shard otherwise,
+   * and the platform will not probe every shard to find it. The response's
+   * `physical_indexes` lists what was patched per shard.
+   *
+   * `?`-optional because wrapper builds older than the platform route
+   * predate it. Feature-detect, or call this package's
+   * `partialUpdateData(env, objects, opts)`, which uses this member when
+   * present and the install-token bridge otherwise.
+   */
+  partialUpdate?(
+    objects: Array<{ objectID: string; [key: string]: unknown }>,
+    opts?: SprigrDataPartialUpdateOpts,
+  ): Promise<SprigrDataPartialUpdateResult>;
   /**
    * Delete objects by objectID (mirror maintenance for source-side
    * deletions). Idempotent: unknown ids and never-imported indexes are a
