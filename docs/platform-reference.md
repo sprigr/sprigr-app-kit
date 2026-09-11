@@ -395,7 +395,7 @@ Tool / event / webhook handlers also get an injected `env.SPRIGR` host object. E
 |---|---|
 | `emit(name, payload, opts?)` | Emit a marketplace event (subscribers / cross-tenant fan-out) |
 | `collections.{define,ingest,ingestFromTable,query,reconcile,describe,history}` | Typed + faceted data store (see below) |
-| `data.{import,search,get,delete,listIds}` | Raw private discovery index (`<companyId>-app-<slug>`) for search-then-fetch-live; `delete`/`listIds` maintain a mirror (see below) |
+| `data.{import,partialUpdate,search,get,delete,listIds}` | Raw private discovery index (`<companyId>-app-<slug>`) for search-then-fetch-live; `partialUpdate` merges fields without a read; `delete`/`listIds` maintain a mirror (see below) |
 | `schedules.create(args)` | Self-provision an agent-side scheduled task |
 | `integrations.invoke(req)` / `invoke(tool, args)` | Call a built-in integration / cross-tenant tool |
 | `run_workflow(id, opts)` | Synchronously run a tenant workflow (Decision Points) |
@@ -466,6 +466,22 @@ Map keys are LOGICAL names (`[a-z][a-z0-9_]{0,31}`, no `acl` prefix). Every `dat
 - `withAcl` cannot be combined with `index`: the ACL file surface stays bound to the legacy single-index layout.
 
 **Mirror maintenance (`data.delete` + `data.listIds`).** An app that mirrors an external store into its index (e.g. OneDrive file indexing) needs more than upserts. `data.delete(objectIDs, opts?)` removes rows whose source items were deleted (idempotent; unknown IDs are a no-op). `data.listIds(prefix, opts?)` -> `{ objectIDs, total, truncated }` enumerates what the index currently holds under a required prefix, so a full re-walk of the source can diff its live set against the index and delete rows the walk did not see - the only way to heal rows whose one-shot deletion signal (a delta `@removed` entry) was consumed before the app could act on it. Both take `{ withAcl: true }` to target the ACL index (`<companyId>-app-<slug>-acl-files`); unlike `search`/`get` they are permitted there, because a delete only reduces what the index holds and an IDs-only listing carries no row content or principals. Both are `?`-optional on older wrapper builds - feature-detect and degrade (skip the reconcile; never delete on uncertainty). Reference implementation: `apps/microsoft-365/src/lib/file-indexing.ts` (`reconcileWalk`).
+
+**Partial updates (`data.partialUpdate`).** `data.partialUpdate(objects, opts?)` merges fields into objects the app already imported, without reading them first. Each patch carries its `objectID` plus ONLY the fields to change; the platform deep-merges it onto the stored object (nested objects recurse, arrays and scalars replace wholesale, keys you do not send survive). `null` is a value and overwrites, so strip keys you do not mean to change. `createIfNotExists` defaults to `false`: a patch never creates half an object unless asked, and a missing target is counted in `skippedMissing`. On a hash- or date-sharded logical index every patch MUST carry the `shard_field` value, or the whole batch fails with `shard_field_invalid`, because a patch cannot be routed to its shard otherwise. Same 1000-object cap as `import`; returns `{ ok, updated, skippedMissing, index, physical_indexes? }`. It replaces the read-then-import pattern, which costs two platform calls, rewrites the whole object, and races any other writer in the gap:
+
+```ts
+// before: get + import, whole-object rewrite
+const { object } = await env.SPRIGR.data.get(orderId, { index: 'orders' });
+await env.SPRIGR.data.import([{ ...object, status: 'shipped' }], { index: 'orders' });
+
+// after: one call, only `status` changes (`created_at` rides along because `orders` is sharded on it)
+await env.SPRIGR.data.partialUpdate(
+  [{ objectID: orderId, created_at: order.created_at, status: 'shipped' }],
+  { index: 'orders' },
+);
+```
+
+The member is `?`-optional on wrapper builds older than the platform route. The SDK's `partialUpdateData(env, objects, opts?)` uses the member when present and the install-token bridge (`POST /internal/wfp/data/partial-update`) otherwise, so it also works from inline Next.js routes; `canPartialUpdate(env)` gates a patch step on either transport. Both throw on a platform rejection (the `Error` carries `.status`, `.error`, `.detail`) and on a bad batch before anything is sent (`SprigrDataValidationError`), matching `import`; nothing is reported as a soft failure.
 
 **Collections: a typed, faceted, queryable store.** Use it when your connector owns structured records it wants to query, facet, sort, and report on (an OMS board, an order ledger, a parts catalogue). It is the richer sibling of `data.*` (which is a raw discovery index): collections add a declared schema, deterministic dedup keys, optional change history, faceted querying, and cross-source reconcile.
 
