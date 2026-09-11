@@ -121,27 +121,27 @@ describe('partialUpdateData over the install-token bridge', () => {
   it('POSTs the body to /internal/wfp/data/partial-update with the install bearer', async () => {
     const res = await partialUpdateData(inlineEnv(), [patch], { index: 'orders' });
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe(`${BASE}${DATA_PARTIAL_UPDATE_PATH}`);
-    expect(calls[0].method).toBe('POST');
-    expect(calls[0].headers.authorization).toBe(`Bearer ${TOKEN}`);
-    expect(calls[0].headers['content-type']).toBe('application/json');
-    expect(calls[0].body).toEqual({ index: 'orders', objects: [patch], createIfNotExists: false });
+    expect(calls[0]?.url).toBe(`${BASE}${DATA_PARTIAL_UPDATE_PATH}`);
+    expect(calls[0]?.method).toBe('POST');
+    expect(calls[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]?.headers['content-type']).toBe('application/json');
+    expect(calls[0]?.body).toEqual({ index: 'orders', objects: [patch], createIfNotExists: false });
     expect(res).toEqual({ ok: true, updated: 1, skippedMissing: 0, index: 'orders' });
   });
 
   it('defaults createIfNotExists to false and omits index when the caller passes no options', async () => {
     await partialUpdateData(inlineEnv(), [patch]);
-    expect(calls[0].body).toEqual({ objects: [patch], createIfNotExists: false });
+    expect(calls[0]?.body).toEqual({ objects: [patch], createIfNotExists: false });
   });
 
   it('sends createIfNotExists: true when asked and strips the SDK-only timeoutMs from the body', async () => {
     await partialUpdateData(inlineEnv(), [patch], { createIfNotExists: true, timeoutMs: 1_000 });
-    expect(calls[0].body).toEqual({ objects: [patch], createIfNotExists: true });
+    expect(calls[0]?.body).toEqual({ objects: [patch], createIfNotExists: true });
   });
 
   it('strips a trailing slash from the base', async () => {
     await partialUpdateData(inlineEnv({ SPRIGR_PLATFORM_BASE: `${BASE}/` }), [patch]);
-    expect(calls[0].url).toBe(`${BASE}${DATA_PARTIAL_UPDATE_PATH}`);
+    expect(calls[0]?.url).toBe(`${BASE}${DATA_PARTIAL_UPDATE_PATH}`);
   });
 
   it('propagates a platform rejection with status, error code and detail', async () => {
@@ -232,7 +232,7 @@ describe('partialUpdateData with the injected host member', () => {
   it('falls back to HTTP when SPRIGR exists but has no data.partialUpdate (older wrapper build)', async () => {
     await partialUpdateData(inlineEnv({ SPRIGR: { data: { import: async () => ({}) } } }), [patch]);
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe(`${BASE}${DATA_PARTIAL_UPDATE_PATH}`);
+    expect(calls[0]?.url).toBe(`${BASE}${DATA_PARTIAL_UPDATE_PATH}`);
   });
 });
 
