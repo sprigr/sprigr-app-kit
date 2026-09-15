@@ -170,13 +170,13 @@ Events (the adapter emits; the hub subscribes):
 
 | event | payload |
 |---|---|
-| `order_source.order.created` | `{ adapter_slug, order, lines }` |
-| `order_source.order.updated` | `{ adapter_slug, order, lines, changed: string[] }` |
-| `order_source.order.cancelled` | `{ adapter_slug, source_ref, reason }` |
-| `order_source.request.submitted` | `{ adapter_slug, source_ref, source_request_ref, source_location_ref, lines: [{ source_line_ref, sku, quantity }] }` (THE routing trigger) |
-| `order_source.request.cancellation_submitted` | `{ adapter_slug, source_ref, source_request_ref, reason }` |
-| `order_source.request.hold_released` | `{ adapter_slug, source_ref, source_request_ref }` |
-| `order_source.stock.changed` | `{ adapter_slug, source_location_ref, sku, on_hand }` |
+| `source.order.created` | `{ adapter_slug, order, lines }` |
+| `source.order.updated` | `{ adapter_slug, order, lines, changed: string[] }` |
+| `source.order.cancelled` | `{ adapter_slug, source_ref, reason }` |
+| `source.request.submitted` | `{ adapter_slug, source_ref, source_request_ref, source_location_ref, lines: [{ source_line_ref, sku, quantity }] }` (THE routing trigger) |
+| `source.request.cancellation_submitted` | `{ adapter_slug, source_ref, source_request_ref, reason }` |
+| `source.request.hold_released` | `{ adapter_slug, source_ref, source_request_ref }` |
+| `source.stock.changed` | `{ adapter_slug, source_location_ref, sku, on_hand }` |
 
 ## 4. `fulfilment-hub/fulfilment_provider` v1.0.0
 
@@ -209,10 +209,18 @@ Events:
 
 ## 5. What the hub owns
 
-Routing rules (data the brand edits; evaluated by the hub per `order_source.request.submitted`: by destination country, channel, tag, SKU eligibility, stock, then provider and warehouse), the state machine `received -> routing -> pushed -> accepted -> shipped -> delivered` with `cancelled`, `failed` and `held` off-ladder, an outbox with an atomic claim latch so at-least-once event delivery cannot double-push, routing timeouts and stuck-request sweeps, the exception ledger with severity, deadline and escalation, the backorder and presale engine (allocations, hold gate, release, mixed-order split through `order_source.split`), stock reconciliation (`sellable = on_hand - held - reserved` pushed to every bound order source), the brand dashboard (Orders, Shipments, Inventory, Exceptions, Backorders, Reports, Settings), agent tools, a daily shipment report snapshot, and decision points for ambiguous routing and exception handling. Tariffs and statements are a later module.
+Routing rules (data the brand edits; evaluated by the hub per `source.request.submitted`: by destination country, channel, tag, SKU eligibility, stock, then provider and warehouse), the state machine `received -> routing -> pushed -> accepted -> shipped -> delivered` with `cancelled`, `failed` and `held` off-ladder, an outbox with an atomic claim latch so at-least-once event delivery cannot double-push, routing timeouts and stuck-request sweeps, the exception ledger with severity, deadline and escalation, the backorder and presale engine (allocations, hold gate, release, mixed-order split through `order_source.split`), stock reconciliation (`sellable = on_hand - held - reserved` pushed to every bound order source), the brand dashboard (Orders, Shipments, Inventory, Exceptions, Backorders, Reports, Settings), agent tools, a daily shipment report snapshot, and decision points for ambiguous routing and exception handling. Tariffs and statements are a later module.
 
 The hub never names an adapter slug in code. It lists providers with `env.SPRIGR.grants.providers(interfaceId)`, calls `describe` once per provider install (cached in D1 with the binding's `install_id`), and dispatches ops by the bound tool names. Every write op through a provider is wrapped: claim the outbox row, invoke, record the ack, wait for the event.
 
 ## 6. Versioning
 
 `1.0.0` is the first published version of both. Adding an optional input field, an output field or an event is a minor. Removing or renaming an op, removing or narrowing a field, or making an input required is a new major. Adapters pin `version: '1.0.0'` in their `provides` tags and the hub requires `^1`.
+
+## 7. Clarifications (binding, added after the first implementer pass)
+
+1. **Source event names are `source.*`, not `order_source.*`.** The platform's publish-time `EVENT_NAME_REGEX` allows no underscore in the first dotted segment (`shopify.orders.create`, `provider.order.accepted` pass; `order_source.order.created` is refused at publish, and `sprigr app validate` does not run that check). The seven source events are therefore `source.order.created`, `source.order.updated`, `source.order.cancelled`, `source.request.submitted`, `source.request.cancellation_submitted`, `source.request.hold_released`, `source.stock.changed`. Payloads are unchanged. The tables above are already updated.
+2. **Op ack statuses.** `order_source` write ops return `status: 'accepted' | 'rejected' | 'error'` (`error` = a transient failure the hub may retry; `rejected` = terminal, do not retry). `fulfilment_provider` write ops keep `accepted | queued | rejected` and signal transient trouble through `provider.order.error { retryable: true }`. Read ops on both interfaces return their data shape directly.
+3. **`source_line_ref` on `source.request.submitted` is the request-scoped line id** (for Shopify, the FulfillmentOrderLineItem gid), because that is what the source's fulfil, cancel and split calls take; `get_order` lines carry the order-scoped line id. Both are opaque to the hub; the hub passes back whichever it was given for the call it makes.
+4. **`list_locations[].country`** may be a display name when the source cannot provide ISO alpha-2; the hub matches `location` rows on `source_location_ref`, never on country.
+5. **`order_line.requires_shipping`** defaults to `true` when the source does not project it.
