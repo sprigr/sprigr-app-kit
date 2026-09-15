@@ -5,8 +5,8 @@
   "metadata": {
     "name": "Mock Warehouse",
     "slug": "mock-warehouse",
-    "version": "0.0.1",
-    "description": "Deterministic fulfilment-hub/fulfilment_provider implementer. Accepts every push, holds it until mock_warehouse_advance fires provider.order.accepted then provider.shipment.created, and answers get_stock from a fixed fixture. The shakedown fixture for the hub, and the worked reference for a real warehouse adapter.",
+    "version": "0.0.2",
+    "description": "Deterministic fulfilment-hub/fulfilment_provider implementer. Accepts every push, holds it until mock_warehouse_advance fires provider.order.accepted then provider.shipment.created, drives the carrier scans and the delivery through provider.shipment.event, and answers get_stock from a fixed fixture. The shakedown fixture for the hub, and the worked reference for a real warehouse adapter.",
     "author": {
       "name": "Sprigr Company",
       "email": "platform@sprigr.com"
@@ -35,6 +35,11 @@
       "file": "migrations/0001_init.sql",
       "version": 1,
       "description": "The one table: the push_order idempotency record and its stage."
+    },
+    {
+      "file": "migrations/0002_scan_history.sql",
+      "version": 2,
+      "description": "Adds scans_json and delivered_at to the one request row: the carrier-scan history and the delivery stamp."
     }
   ],
   "tools": [
@@ -493,7 +498,7 @@
     },
     {
       "name": "mock_warehouse_advance",
-      "description": "Shakedown lever, not part of the interface. Moves one request forward and emits what a real warehouse callback would: provider.order.accepted, then provider.shipment.created. Call it with no `to` to do both.",
+      "description": "Shakedown lever, not part of the interface. Moves one request forward and emits what a real warehouse callback would: provider.order.accepted, then provider.shipment.created. Call it with no `to` to do both. `to=scan` emits one provider.shipment.event; `to=deliver` emits the four a carrier reports between the warehouse door and the doorstep and records the delivery. Both refuse a request that has not shipped.",
       "handler": "src/handlers/provider.ts",
       "effects": "write",
       "input_schema": {
@@ -507,15 +512,37 @@
             "enum": [
               "accept",
               "ship",
+              "scan",
+              "deliver",
               "cancel"
             ],
-            "description": "Omit to accept then ship in one call."
+            "description": "Omit to accept then ship in one call. scan and deliver need a shipped request."
           },
           "carrier": {
             "type": "string"
           },
           "tracking_number": {
             "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "label_printed",
+              "departed_warehouse",
+              "first_scan",
+              "destination_arrival",
+              "delivered",
+              "exception"
+            ],
+            "description": "to=scan only: which carrier scan to emit. Defaults to departed_warehouse."
+          },
+          "location": {
+            "type": "string",
+            "description": "to=scan only: overrides the stage's default location."
+          },
+          "detail": {
+            "type": "string",
+            "description": "to=scan only: free text the carrier would put on the scan."
           }
         },
         "required": [
@@ -542,6 +569,17 @@
           },
           "reason": {
             "type": "string"
+          },
+          "scans": {
+            "type": "array",
+            "description": "The scans this call emitted, in order.",
+            "items": {
+              "type": "object"
+            }
+          },
+          "delivered_at": {
+            "type": "string",
+            "description": "ISO 8601 UTC. Set by to=deliver."
           }
         },
         "required": [
@@ -1204,6 +1242,58 @@
             "fulfilment_request_id",
             "provider_ref",
             "shipment"
+          ]
+        }
+      },
+      {
+        "name": "provider.shipment.event",
+        "description": "A carrier scan on a shipment: the hub's only source of transit and delivery. Fired by mock_warehouse_advance with to=scan (one) or to=deliver (the four a real carrier reports). The hub correlates on provider_shipment_ref and dedups on provider_event_ref.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "provider_shipment_ref": {
+              "type": "string"
+            },
+            "tracking_number": {
+              "type": "string"
+            },
+            "stage": {
+              "type": "string",
+              "enum": [
+                "label_printed",
+                "departed_warehouse",
+                "first_scan",
+                "destination_arrival",
+                "delivered",
+                "exception"
+              ]
+            },
+            "occurred_at": {
+              "type": "string",
+              "description": "ISO 8601 UTC, Z suffix."
+            },
+            "location": {
+              "type": "string"
+            },
+            "provider_event_ref": {
+              "type": "string",
+              "description": "Dedup key. mwe_<fulfilment_request_id>_<stage>_<n>."
+            },
+            "detail": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "provider_shipment_ref",
+            "tracking_number",
+            "stage",
+            "occurred_at",
+            "provider_event_ref"
           ]
         }
       }
