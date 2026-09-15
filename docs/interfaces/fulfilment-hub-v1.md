@@ -224,3 +224,23 @@ The hub never names an adapter slug in code. It lists providers with `env.SPRIGR
 3. **`source_line_ref` on `source.request.submitted` is the request-scoped line id** (for Shopify, the FulfillmentOrderLineItem gid), because that is what the source's fulfil, cancel and split calls take; `get_order` lines carry the order-scoped line id. Both are opaque to the hub; the hub passes back whichever it was given for the call it makes.
 4. **`list_locations[].country`** may be a display name when the source cannot provide ISO alpha-2; the hub matches `location` rows on `source_location_ref`, never on country.
 5. **`order_line.requires_shipping`** defaults to `true` when the source does not project it.
+
+The rest were added with the conformance harness (`@sprigr/apps-fulfilment-conformance`). Each is a reading of a rule already in sections 1 to 4 that the prose left open; the harness has to pick one, so it is written down rather than left to each adapter. Where one is an addition rather than a reading, it says so.
+
+6. **A `rejected` ack carries a non-empty `reason`, and so does an `order_source` `error`.** The hub has no other way to tell a refusal from a bug, and section 1 says it never discovers a limit from error text. `accepted` and `queued` may omit it.
+
+7. **A non-rejected `push_order` ack carries a non-empty `provider_ref`.** The hub correlates the later `provider.*` event on it, so an accepted push with no ref leaves the request uncorrelatable. `cancel_order` does not need one: it is given the ref.
+
+8. **`describe().adapter_slug` is the installed app's own slug.** The hub stamps rows with it and payloads repeat it; a describe that reports something else silently misattributes every row from that binding.
+
+9. **Behaviour may not contradict a declared capability.** An adapter whose `capabilities` say `supports_cancel: false` must still answer `cancel_order` with an ack, and that ack must be `rejected`. Accepting it would leave the hub waiting for a `provider.order.cancelled` that never arrives. Same for `supports_split` on `order_source.split` and `supports_stock_write` on `set_stock_level`. An op is never absent and never throws: a capability the adapter lacks is a refusal, not a missing binding.
+
+10. **Every canonical field in section 2 is required on the wire, with an empty string where the value is absent.** `get_order` returns `order.order_id` as `''` (the hub assigns it) and `order.hold_reason` as `''` when the order is not held, rather than omitting either. An optional field is one the table marks optional; `list_warehouses`'s `cutoff_local_time` and `get_order_status`'s `tracking` are the examples.
+
+11. **"ISO 8601 UTC" means a `Z` suffix.** A local-offset stamp (`2026-09-15T10:00:00+10:00`) is refused. The hub stores these on decision 0030 `date` fields, and two adapters disagreeing about the zone is exactly the silent skew the contract exists to stop.
+
+12. **An adapter claims EVERY op of the interface it implements.** The hub dispatches by op and cannot tell a missing binding from a broken adapter, so a partial implementer is not interchangeable. The harness's manifest check fails on an unclaimed op; `checkAdapterManifest(manifest, role, { allowUnclaimedOps: [...] })` is the deliberate, named escape hatch for an adapter that genuinely cannot.
+
+13. **Declaring outcome events is part of claiming a write op** (an addition, not a reading). Every write op acknowledges asynchronously, so the hub only ever learns the outcome from an event, and the platform drops an emit the manifest does not declare. The harness therefore requires: claiming `push_order` means declaring `provider.order.accepted`, `.rejected` and `.error` in `events.emits[]`; claiming `cancel_order` means declaring `provider.order.cancelled` and `.cancel_refused`; and any `order_source` adapter declares `source.order.created` and `source.request.submitted`. Declaring an event the adapter does not yet emit is fine and expected; emitting one it has not declared is not possible.
+
+14. **The dispatch budget the harness enforces is 20 s**, against the 25 s section 1 allows, so an op that only just fits in CI is caught before it only just fails in production. Callers can raise or lower it with `opts.timeBudgetMs`.

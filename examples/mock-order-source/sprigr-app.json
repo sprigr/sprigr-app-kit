@@ -1,0 +1,1864 @@
+{
+  "sprigr_app": {
+    "version": "1"
+  },
+  "metadata": {
+    "name": "Mock Order Source",
+    "slug": "mock-order-source",
+    "version": "0.0.1",
+    "description": "Deterministic fulfilment-hub/order_source implementer. Keeps orders in per-install D1, implements every op against that store, and fires source.order.created plus source.request.submitted from one mock_order_source_place_order call. The selling-system half of the hub shakedown fixture.",
+    "author": {
+      "name": "Sprigr Company",
+      "email": "platform@sprigr.com"
+    },
+    "category": "operations",
+    "tags": [
+      "reference",
+      "fulfilment",
+      "interfaces",
+      "fixture"
+    ]
+  },
+  "kind": "tool",
+  "runtime": {
+    "entry": "src/app/page.tsx",
+    "tier": "ssr",
+    "framework": "next"
+  },
+  "permissions": {
+    "scopes": [
+      "tools:register"
+    ]
+  },
+  "migrations": [
+    {
+      "file": "migrations/0001_init.sql",
+      "version": 1,
+      "description": "Orders, lines, fulfilment requests, locations and stock, plus the seed order a fresh install answers get_order with."
+    }
+  ],
+  "tools": [
+    {
+      "name": "mock_order_source_describe",
+      "description": "Report this adapter slug, its channel and its capability block. The hub reads capabilities to choose a path and never infers a limit from error text.",
+      "handler": "src/handlers/order-source.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "adapter_slug": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "supports_hold": {
+                "type": "boolean"
+              },
+              "supports_split": {
+                "type": "boolean"
+              },
+              "supports_cancel": {
+                "type": "boolean"
+              },
+              "supports_stock_write": {
+                "type": "boolean"
+              },
+              "request_model": {
+                "type": "string",
+                "enum": [
+                  "fulfilment_orders",
+                  "orders"
+                ]
+              }
+            },
+            "required": [
+              "supports_hold",
+              "supports_split",
+              "supports_cancel",
+              "supports_stock_write",
+              "request_model"
+            ]
+          }
+        },
+        "required": [
+          "adapter_slug",
+          "channel",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_list_locations",
+      "description": "List the selling system locations a provider warehouse can be mapped onto.",
+      "handler": "src/handlers/order-source.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_location_ref": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "country": {
+                  "type": "string"
+                },
+                "active": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "source_location_ref",
+                "name",
+                "country",
+                "active"
+              ]
+            }
+          }
+        },
+        "required": [
+          "locations"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_register_location",
+      "description": "Create a selling system location for one provider warehouse, so stock and fulfilments can be attributed to it.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "warehouse_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2."
+          },
+          "address": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "warehouse_key",
+          "name",
+          "country"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "source_location_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_get_order",
+      "description": "Read one order and its lines in the canonical shapes, by the selling system id. order_id comes back empty: the hub assigns it.",
+      "handler": "src/handlers/order-source.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_ref"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "order": {
+            "type": "object",
+            "properties": {
+              "order_id": {
+                "type": "string",
+                "description": "Empty: the hub assigns it."
+              },
+              "source_adapter": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "source_number": {
+                "type": "string"
+              },
+              "channel": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "placed_at": {
+                "type": "string",
+                "description": "ISO 8601 UTC."
+              },
+              "currency": {
+                "type": "string",
+                "description": "ISO 4217."
+              },
+              "total_minor": {
+                "type": "number",
+                "description": "Integer minor units."
+              },
+              "customer_email": {
+                "type": "string"
+              },
+              "ship_to_json": {
+                "type": "string"
+              },
+              "tags_json": {
+                "type": "string"
+              },
+              "hold_reason": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string",
+                "description": "ISO 8601 UTC."
+              }
+            },
+            "required": [
+              "order_id",
+              "source_adapter",
+              "source_ref",
+              "source_number",
+              "channel",
+              "status",
+              "placed_at",
+              "currency",
+              "total_minor",
+              "customer_email",
+              "ship_to_json",
+              "tags_json",
+              "hold_reason",
+              "updated_at"
+            ]
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string"
+                },
+                "line_id": {
+                  "type": "string"
+                },
+                "source_line_ref": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "description": "Integer."
+                },
+                "unit_price_minor": {
+                  "type": "number",
+                  "description": "Integer minor units."
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "requires_shipping": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "order_id",
+                "line_id",
+                "source_line_ref",
+                "sku",
+                "title",
+                "quantity",
+                "unit_price_minor",
+                "currency",
+                "requires_shipping"
+              ]
+            }
+          }
+        },
+        "required": [
+          "found"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_accept_request",
+      "description": "Tell the selling system a fulfilment request was accepted by a warehouse.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_reject_request",
+      "description": "Tell the selling system a fulfilment request was refused, with the reason to show the merchant.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "reason"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_mark_shipped",
+      "description": "Write a shipment back to the selling system: carrier, tracking and the lines it covers.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "carrier": {
+            "type": "string"
+          },
+          "tracking_number": {
+            "type": "string"
+          },
+          "tracking_url": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_line_ref": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "description": "Integer."
+                }
+              },
+              "required": [
+                "source_line_ref",
+                "quantity"
+              ]
+            }
+          },
+          "notify_customer": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "source_ref",
+          "carrier",
+          "tracking_number",
+          "lines",
+          "notify_customer"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "source_fulfilment_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_hold",
+      "description": "Put a fulfilment request on hold in the selling system (backorder, fraud check, presale).",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "reason"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_release",
+      "description": "Release a held request. Emits source.request.hold_released, which re-triggers routing.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_cancel",
+      "description": "Cancel a fulfilment request in the selling system. Emits source.request.cancellation_submitted.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "reason"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_split",
+      "description": "Split lines off a fulfilment request into a new one, for a mixed order the hub routes to two warehouses. Emits source.request.submitted for the new half.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_line_ref": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "description": "Integer."
+                }
+              },
+              "required": [
+                "source_line_ref",
+                "quantity"
+              ]
+            }
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "lines"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "new_source_request_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_set_stock_level",
+      "description": "Push a reconciled sellable quantity back to the selling system for one SKU at one location. Integer only.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_location_ref": {
+            "type": "string"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "on_hand": {
+            "type": "number",
+            "description": "Integer."
+          }
+        },
+        "required": [
+          "source_location_ref",
+          "sku",
+          "on_hand"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_add_note",
+      "description": "Append a note (and optional tags) to an order, for an exception the hub wants visible to the merchant. Appends, never replaces.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_ref": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "source_ref",
+          "note"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_place_order",
+      "description": "Shakedown lever, not part of the interface. Creates one order with one line and one submitted fulfilment request, then emits source.order.created and source.request.submitted so the hub routes it. Ids are derived from source_number, so a script knows them in advance.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_number": {
+            "type": "string",
+            "description": "Human order number. Must be unique; the ids are derived from it."
+          },
+          "sku": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "number",
+            "description": "Integer. Default 1."
+          },
+          "unit_price_minor": {
+            "type": "number",
+            "description": "Integer minor units. Default 1500."
+          },
+          "currency": {
+            "type": "string",
+            "description": "ISO 4217. Default AUD."
+          },
+          "customer_email": {
+            "type": "string"
+          },
+          "source_location_ref": {
+            "type": "string",
+            "description": "Default mos_loc_bne."
+          },
+          "country": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2 for the ship-to. Default AU."
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "source_request_ref": {
+            "type": "string"
+          },
+          "emitted": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      }
+    }
+  ],
+  "cross_tenant_tools": [
+    {
+      "tool_name": "mock_order_source_describe",
+      "resource_type": "orders",
+      "action": "read",
+      "description": "Report this adapter slug, its channel and its capability block. The hub reads capabilities to choose a path and never infers a limit from error text.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "adapter_slug": {
+            "type": "string"
+          },
+          "channel": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "supports_hold": {
+                "type": "boolean"
+              },
+              "supports_split": {
+                "type": "boolean"
+              },
+              "supports_cancel": {
+                "type": "boolean"
+              },
+              "supports_stock_write": {
+                "type": "boolean"
+              },
+              "request_model": {
+                "type": "string",
+                "enum": [
+                  "fulfilment_orders",
+                  "orders"
+                ]
+              }
+            },
+            "required": [
+              "supports_hold",
+              "supports_split",
+              "supports_cancel",
+              "supports_stock_write",
+              "request_model"
+            ]
+          }
+        },
+        "required": [
+          "adapter_slug",
+          "channel",
+          "capabilities"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "describe",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_list_locations",
+      "resource_type": "orders",
+      "action": "read",
+      "description": "List the selling system locations a provider warehouse can be mapped onto.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "locations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_location_ref": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "country": {
+                  "type": "string"
+                },
+                "active": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "source_location_ref",
+                "name",
+                "country",
+                "active"
+              ]
+            }
+          }
+        },
+        "required": [
+          "locations"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "list_locations",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_register_location",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Create a selling system location for one provider warehouse, so stock and fulfilments can be attributed to it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "warehouse_key": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string",
+            "description": "ISO 3166-1 alpha-2."
+          },
+          "address": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "warehouse_key",
+          "name",
+          "country"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "source_location_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "register_location",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_get_order",
+      "resource_type": "orders",
+      "action": "read",
+      "description": "Read one order and its lines in the canonical shapes, by the selling system id. order_id comes back empty: the hub assigns it.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_ref"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "order": {
+            "type": "object",
+            "properties": {
+              "order_id": {
+                "type": "string",
+                "description": "Empty: the hub assigns it."
+              },
+              "source_adapter": {
+                "type": "string"
+              },
+              "source_ref": {
+                "type": "string"
+              },
+              "source_number": {
+                "type": "string"
+              },
+              "channel": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "placed_at": {
+                "type": "string",
+                "description": "ISO 8601 UTC."
+              },
+              "currency": {
+                "type": "string",
+                "description": "ISO 4217."
+              },
+              "total_minor": {
+                "type": "number",
+                "description": "Integer minor units."
+              },
+              "customer_email": {
+                "type": "string"
+              },
+              "ship_to_json": {
+                "type": "string"
+              },
+              "tags_json": {
+                "type": "string"
+              },
+              "hold_reason": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string",
+                "description": "ISO 8601 UTC."
+              }
+            },
+            "required": [
+              "order_id",
+              "source_adapter",
+              "source_ref",
+              "source_number",
+              "channel",
+              "status",
+              "placed_at",
+              "currency",
+              "total_minor",
+              "customer_email",
+              "ship_to_json",
+              "tags_json",
+              "hold_reason",
+              "updated_at"
+            ]
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string"
+                },
+                "line_id": {
+                  "type": "string"
+                },
+                "source_line_ref": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "description": "Integer."
+                },
+                "unit_price_minor": {
+                  "type": "number",
+                  "description": "Integer minor units."
+                },
+                "currency": {
+                  "type": "string"
+                },
+                "requires_shipping": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "order_id",
+                "line_id",
+                "source_line_ref",
+                "sku",
+                "title",
+                "quantity",
+                "unit_price_minor",
+                "currency",
+                "requires_shipping"
+              ]
+            }
+          }
+        },
+        "required": [
+          "found"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "get_order",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_accept_request",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Tell the selling system a fulfilment request was accepted by a warehouse.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "accept_request",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_reject_request",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Tell the selling system a fulfilment request was refused, with the reason to show the merchant.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "reason"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "reject_request",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_mark_shipped",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Write a shipment back to the selling system: carrier, tracking and the lines it covers.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "source_ref": {
+            "type": "string"
+          },
+          "carrier": {
+            "type": "string"
+          },
+          "tracking_number": {
+            "type": "string"
+          },
+          "tracking_url": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_line_ref": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "description": "Integer."
+                }
+              },
+              "required": [
+                "source_line_ref",
+                "quantity"
+              ]
+            }
+          },
+          "notify_customer": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "source_ref",
+          "carrier",
+          "tracking_number",
+          "lines",
+          "notify_customer"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "source_fulfilment_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "mark_shipped",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_hold",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Put a fulfilment request on hold in the selling system (backorder, fraud check, presale).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "reason"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "hold",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_release",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Release a held request. Emits source.request.hold_released, which re-triggers routing.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "release",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_cancel",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Cancel a fulfilment request in the selling system. Emits source.request.cancellation_submitted.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "reason"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "cancel",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_split",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Split lines off a fulfilment request into a new one, for a mixed order the hub routes to two warehouses. Emits source.request.submitted for the new half.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_request_ref": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_line_ref": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "description": "Integer."
+                }
+              },
+              "required": [
+                "source_line_ref",
+                "quantity"
+              ]
+            }
+          }
+        },
+        "required": [
+          "source_request_ref",
+          "lines"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "new_source_request_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "split",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_set_stock_level",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Push a reconciled sellable quantity back to the selling system for one SKU at one location. Integer only.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_location_ref": {
+            "type": "string"
+          },
+          "sku": {
+            "type": "string"
+          },
+          "on_hand": {
+            "type": "number",
+            "description": "Integer."
+          }
+        },
+        "required": [
+          "source_location_ref",
+          "sku",
+          "on_hand"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "set_stock_level",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_order_source_add_note",
+      "resource_type": "orders",
+      "action": "write",
+      "description": "Append a note (and optional tags) to an order, for an exception the hub wants visible to the merchant. Appends, never replaces.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "source_ref": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "source_ref",
+          "note"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "rejected",
+              "error"
+            ],
+            "description": "Async ack. accepted = done or in hand; error = a transient failure the hub may retry; rejected = terminal. The outcome, where there is one, arrives as a source.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected or error."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/order_source",
+        "op": "add_note",
+        "version": "1.0.0"
+      }
+    }
+  ],
+  "events": {
+    "emits": [
+      {
+        "name": "source.order.created",
+        "description": "A new order exists in the selling system, with its canonical order and lines. Fired by mock_order_source_place_order.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "interface_version": {
+              "type": "string"
+            },
+            "order": {
+              "type": "object"
+            },
+            "lines": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "order",
+            "lines"
+          ]
+        }
+      },
+      {
+        "name": "source.order.updated",
+        "description": "An existing order changed. `changed` names the fields.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "order": {
+              "type": "object"
+            },
+            "lines": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "changed": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "order",
+            "lines",
+            "changed"
+          ]
+        }
+      },
+      {
+        "name": "source.order.cancelled",
+        "description": "The whole order was cancelled in the selling system.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "source_ref": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "source_ref",
+            "reason"
+          ]
+        }
+      },
+      {
+        "name": "source.request.submitted",
+        "description": "THE routing trigger: a fulfilment request is ready to be routed to a warehouse. Fired by place_order and by the split half.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "interface_version": {
+              "type": "string"
+            },
+            "source_ref": {
+              "type": "string"
+            },
+            "source_request_ref": {
+              "type": "string"
+            },
+            "source_location_ref": {
+              "type": "string"
+            },
+            "lines": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "source_ref",
+            "source_request_ref",
+            "source_location_ref",
+            "lines"
+          ]
+        }
+      },
+      {
+        "name": "source.request.cancellation_submitted",
+        "description": "The merchant asked to cancel a request the hub may already have pushed.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "interface_version": {
+              "type": "string"
+            },
+            "source_ref": {
+              "type": "string"
+            },
+            "source_request_ref": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "source_ref",
+            "source_request_ref",
+            "reason"
+          ]
+        }
+      },
+      {
+        "name": "source.request.hold_released",
+        "description": "A held request is routable again.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "interface_version": {
+              "type": "string"
+            },
+            "source_ref": {
+              "type": "string"
+            },
+            "source_request_ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "source_ref",
+            "source_request_ref"
+          ]
+        }
+      },
+      {
+        "name": "source.stock.changed",
+        "description": "A sellable quantity changed in the selling system.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "interface_version": {
+              "type": "string"
+            },
+            "source_location_ref": {
+              "type": "string"
+            },
+            "sku": {
+              "type": "string"
+            },
+            "on_hand": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "source_location_ref",
+            "sku",
+            "on_hand"
+          ]
+        }
+      }
+    ]
+  }
+}
