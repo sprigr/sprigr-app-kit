@@ -197,3 +197,25 @@ export async function deregisterWarehouse(
     'deregisterWarehouse calls env.SPRIGR.fulfillment_services.delete — publish to staging.',
   );
 }
+
+// ── cross-tenant / interface implementation ──────────────────────────────────
+/**
+ * The handler behind cross_tenant_tools[].showcase_lookup_contact, which the
+ * manifest also tags `provides: showcase/contact_lookup op lookup_contact`
+ * (decision 0077). A consumer bound to this app reaches it through
+ * env.SPRIGR.invoke('showcase_lookup_contact', { contact_id }), dispatched to
+ * /__sprigr/tool/<name>, which is why it MUST also be in tools[] (the build
+ * derives the handler map from tools[] entries with a handler). Returns the
+ * interface's declared output shape: { found, contact? }.
+ */
+export async function lookupContact(env: ShowcaseEnv, contactId: string): Promise<{ found: boolean; contact?: unknown }> {
+  if (!contactId) return { found: false };
+  const got = await getContact(env, contactId);
+  if (!got.ok) return { found: false };
+  const contact = (got as { result?: unknown }).result;
+  return contact ? { found: true, contact } : { found: false };
+}
+
+export default {
+  showcase_lookup_contact: (args: { contact_id: string }, env: ShowcaseEnv) => lookupContact(env, args?.contact_id ?? ''),
+};

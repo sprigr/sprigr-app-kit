@@ -7,9 +7,26 @@
 
 import type { D1Like } from '@sprigr/apps-app-sdk';
 
-/** Narrow host type: this consumer only needs env.SPRIGR.invoke. */
+/** One live provider of an interface, as env.SPRIGR.grants.providers returns it. */
+export interface InterfaceProvider {
+  app_slug: string;
+  install_id: string;
+  interface_version: string;
+  /** op -> the provider's tool name, what env.SPRIGR.invoke takes. */
+  ops: Record<string, string>;
+  status: 'active' | 'pending_review' | 'provider_inactive' | 'revoked';
+}
+
+/**
+ * Narrow host type: this consumer needs env.SPRIGR.invoke and, since it
+ * requires an INTERFACE rather than a provider slug (decision 0077),
+ * env.SPRIGR.grants.providers to learn which tool names are bound.
+ */
 export interface ConsumerSprigrHost {
   invoke(toolName: string, args?: Record<string, unknown>): Promise<unknown>;
+  grants: {
+    providers(interfaceId: string, opts?: { version?: string }): Promise<InterfaceProvider[]>;
+  };
 }
 
 export interface ConsumerEnv {

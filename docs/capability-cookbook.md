@@ -7,7 +7,8 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 ## The reference apps
 
 - **[`examples/showcase`](../examples/showcase)** — a synthetic every-feature app (provider persona: the fictional "Acme CRM"). Its [`sprigr-app.json`](../examples/showcase/sprigr-app.json) declares every manifest field family, and its handlers under [`src/handlers/`](../examples/showcase/src/handlers) exercise every `env.SPRIGR.*` call. Grouped by capability so you can read one file per concern.
-- **[`examples/showcase-consumer`](../examples/showcase-consumer)** — the CONSUMER side: calling another app's cross-tenant tool, subscribing to its cross-tenant event, and the install-config override pattern.
+- **[`examples/showcase-consumer`](../examples/showcase-consumer)** — the CONSUMER side: requiring an INTERFACE (`{ provides }`) instead of a provider slug, listing its live providers with `env.SPRIGR.grants.providers`, calling them, subscribing to a cross-tenant event, and the install-config override pattern.
+- **[`examples/contact-mirror`](../examples/contact-mirror)** — a second PROVIDER of `showcase/contact_lookup`: one tagged cross-tenant tool, so the consumer can be shown bound to two implementers, one installed after it.
 - **[`examples/agent-template`](../examples/agent-template)** — the OTHER app shape: `kind: 'agent'`. Ships no Worker and no tools; installing it provisions a configured agent (persona, model tier, role, channel defaults, recommended apps, training index).
 - **[`examples/static-badge`](../examples/static-badge)** — the simplest valid app: `runtime.tier: 'static'`, no Worker, no build.
 - **[`examples/harvest`](../examples/harvest)** — the realistic single-integration starter (real OAuth, real provider API). The scaffolder (`pnpm create:app`) generates this shape.
@@ -53,6 +54,9 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 | Events: subscribe (+ filter) | `events.subscribes[]` | [`handlers/events.ts`](../examples/showcase/src/handlers/events.ts), consumer [`handlers/enrich.ts`](../examples/showcase-consumer/src/handlers/enrich.ts) | local (dedup) + staging (data.import) | `cross-tenant-demo` |
 | Events: cross-tenant emit | `events.cross_tenant_emits[]` | [`handlers/cross-tenant.ts`](../examples/showcase/src/handlers/cross-tenant.ts) `emitDealWonCrossTenant` | staging (emit) | `cross-tenant-demo` |
 | Cross-tenant tool (provider side) | `cross_tenant_tools[]` | `showcase_lookup_contact` declaration | n/a | `shopify` |
+| Interface: DEFINE (decision 0077) | `interfaces[]` | [`sprigr-app.json`](../examples/showcase/sprigr-app.json) `showcase/contact_lookup` | n/a (registry at publish) | — (first users: the fulfilment hub, decision 0088) |
+| Interface: IMPLEMENT | `cross_tenant_tools[].provides` | showcase `showcase_lookup_contact`, [`contact-mirror`](../examples/contact-mirror) `contact_mirror_lookup_contact` | n/a (bound at install) | — |
+| Interface: REQUIRE + list providers | `app_dependencies[].app = { provides }` + `grants.providers` | consumer [`handlers/enrich.ts`](../examples/showcase-consumer/src/handlers/enrich.ts) | staging (grants.providers + invoke) | — |
 | Cross-tenant tool (consumer side) | `app_dependencies[]` + `env.SPRIGR.invoke` | consumer [`handlers/enrich.ts`](../examples/showcase-consumer/src/handlers/enrich.ts) | staging (invoke) | — (no app declares `app_dependencies` yet) |
 | Integration dependency | `integration_dependencies[]` + `integrations.invoke` | [`handlers/cross-tenant.ts`](../examples/showcase/src/handlers/cross-tenant.ts) `correlateShopifyOrder` | staging (integrations.invoke) | — (no app declares `integration_dependencies` yet) |
 | Fulfillment services | `fulfillment_services[]` + `fulfillment_services.register` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) `registerWarehouse` | staging | — (no app declares `fulfillment_services` yet) |

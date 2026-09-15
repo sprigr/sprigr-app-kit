@@ -34,38 +34,75 @@ function fakeDb(): D1Like {
 
 interface RecordingHost extends ConsumerSprigrHost {
   calls: Array<{ tool: string; args?: Record<string, unknown> }>;
+  providerQueries: string[];
 }
-function recordingHost(canned?: unknown): RecordingHost {
+/**
+ * Two live providers of showcase/contact_lookup, the shape
+ * env.SPRIGR.grants.providers returns after install fan-out bound them
+ * (decision 0077): the showcase app itself and contact-mirror. `canned`
+ * is what every provider answers; by default only the mirror finds the
+ * contact, so the test can see the consumer pick the provider that did.
+ */
+function recordingHost(canned?: (tool: string) => unknown): RecordingHost {
   const calls: Array<{ tool: string; args?: Record<string, unknown> }> = [];
+  const providerQueries: string[] = [];
   return {
     calls,
+    providerQueries,
     invoke(tool: string, args?: Record<string, unknown>) {
       calls.push({ tool, args });
-      return Promise.resolve(canned ?? { found: true, contact: { id: args?.contact_id } });
+      const answer = canned
+        ? canned(tool)
+        : tool === 'contact_mirror_lookup_contact'
+          ? { found: true, contact: { id: args?.contact_id, source: 'contact-mirror' } }
+          : { found: false };
+      return Promise.resolve(answer);
+    },
+    grants: {
+      providers(interfaceId: string) {
+        providerQueries.push(interfaceId);
+        return Promise.resolve([
+          { app_slug: 'showcase', install_id: 'inst_s', interface_version: '1.0.0', ops: { lookup_contact: 'showcase_lookup_contact' }, status: 'active' as const },
+          { app_slug: 'contact-mirror', install_id: 'inst_m', interface_version: '1.0.0', ops: { lookup_contact: 'contact_mirror_lookup_contact' }, status: 'active' as const },
+          { app_slug: 'pending-one', install_id: 'inst_p', interface_version: '1.0.0', ops: { lookup_contact: 'pending_one_lookup_contact' }, status: 'pending_review' as const },
+        ]);
+      },
     },
   };
 }
 function throwingHost(): ConsumerSprigrHost {
-  return {
-    invoke() {
-      throw new Error('env.SPRIGR.invoke is not available in `sprigr app dev` — Publish to staging.');
-    },
+  const dead = () => {
+    throw new Error('env.SPRIGR.grants.providers is not available in `sprigr app dev` — Publish to staging.');
   };
+  return { invoke: dead, grants: { providers: dead } };
 }
 function makeEnv(host: ConsumerSprigrHost): ConsumerEnv {
   return { DB: fakeDb(), SPRIGR: host, INSTALL_ID: 'inst_c', COMPANY_ID: 'comp_c', APP_SLUG: 'showcase-consumer' };
 }
 
 describe('consumer cross-app wiring', () => {
-  it('enrichDeal calls showcase_lookup_contact with the contact_id', async () => {
+  it('enrichDeal asks for the interface providers and calls every ACTIVE one by its bound tool name', async () => {
     const host = recordingHost();
     const res = await enrichDeal(makeEnv(host), { deal_id: 'd1', contact_id: 'c1', amount: 25000 });
-    expect(host.calls).toEqual([{ tool: 'showcase_lookup_contact', args: { contact_id: 'c1' } }]);
+    expect(host.providerQueries).toEqual(['showcase/contact_lookup']);
+    // Both active providers are called (consumer-owned fan-out); the pending one is not.
+    expect(host.calls.map((c) => c.tool).sort()).toEqual(['contact_mirror_lookup_contact', 'showcase_lookup_contact']);
+    expect(host.calls.every((c) => c.args?.contact_id === 'c1')).toBe(true);
     expect(res.ok).toBe(true);
     if (res.ok) {
-      const r = res.result as { high_value: boolean; contact: unknown };
+      const r = res.result as { high_value: boolean; found: boolean; provider: string; providers_tried: number };
       expect(r.high_value).toBe(true); // 25000 >= default 10000
+      expect(r.found).toBe(true);
+      expect(r.provider).toBe('contact-mirror'); // the one that found it
+      expect(r.providers_tried).toBe(2);
     }
+  });
+
+  it('enrichDeal reports not found when no provider resolves the contact', async () => {
+    const host = recordingHost(() => ({ found: false }));
+    const res = await enrichDeal(makeEnv(host), { contact_id: 'c9', amount: 1 });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.result).toMatchObject({ found: false, provider: null, providers_tried: 2 });
   });
 
   it('enrichDeal validates contact_id', async () => {
@@ -75,7 +112,7 @@ describe('consumer cross-app wiring', () => {
 
   it('enrichDeal returns staging_only under the dev stub', async () => {
     const res = await enrichDeal(makeEnv(throwingHost()), { contact_id: 'c1', amount: 1 });
-    expect(res).toEqual({ ok: false, staging_only: true, hint: expect.stringContaining('showcase_lookup_contact') });
+    expect(res).toEqual({ ok: false, staging_only: true, hint: expect.stringContaining('grants.providers') });
   });
 
   it('onDealWon routes the event payload through enrichDeal', async () => {

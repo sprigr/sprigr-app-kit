@@ -1,8 +1,9 @@
 node_modules/
 .next/
 .open-next/
-.turbo/
+out/
+*.log
+.DS_Store
+.env*
+.sprigr/
 *.tsbuildinfo
-dist/
-.claude-worktrees/
-.claude/

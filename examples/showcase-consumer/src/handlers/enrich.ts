@@ -2,11 +2,13 @@
  * Showcase Consumer - the CONSUMER side of cross-app wiring.
  *
  *   consumer_enrich_deal  reads the high-value threshold from install config
- *                         (D1-local), then calls the SHOWCASE app's
- *                         cross-tenant tool `showcase_lookup_contact` via
- *                         env.SPRIGR.invoke to enrich the deal. The grant is
- *                         minted from this app's app_dependencies[] on the
- *                         showcase app (receiver_kind='app_installation').
+ *                         (D1-local), then resolves the contact through EVERY
+ *                         installed provider of the showcase/contact_lookup
+ *                         INTERFACE: env.SPRIGR.grants.providers lists the
+ *                         bound tool names (decision 0077), env.SPRIGR.invoke
+ *                         calls them. Bindings are minted from this app's
+ *                         app_dependencies[] `{ provides }` entry at install
+ *                         and back-filled when a provider arrives later.
  *   consumer_on_deal_won  event-subscription handler: the platform delivers
  *                         the showcase app's cross-tenant showcase.deal.won
  *                         event here (EventArgs { event, payload, eventId }).
@@ -36,16 +38,34 @@ export async function enrichDeal(env: ConsumerEnv, deal: DealSignal): Promise<Ha
   if (!deal.contact_id) return { ok: false, reason: 'contact_id required' };
   const highValue = (deal.amount ?? 0) >= (await threshold(env));
 
-  // Cross-tenant call into the showcase app (staging-only). The platform
-  // gates on an active app-to-app grant for showcase_lookup_contact; a
-  // missing grant throws err.code='no_grant_for_tool'.
+  // Decision 0077: this app requires the INTERFACE showcase/contact_lookup,
+  // not the showcase app by slug. Ask the platform which installed apps
+  // provide it (bound at install, including providers installed after this
+  // app), then call each bound tool name through invoke. The consumer owns
+  // the fan-out: first provider that finds the contact wins. Staging-only
+  // under `sprigr app dev`.
   const lookup = await stagingOnly(
-    () => env.SPRIGR.invoke('showcase_lookup_contact', { contact_id: deal.contact_id }),
-    'enrichDeal calls env.SPRIGR.invoke(showcase_lookup_contact) — publish to staging and approve the app_dependencies grant.',
+    async () => {
+      const providers = (await env.SPRIGR.grants.providers('showcase/contact_lookup')).filter((p) => p.status === 'active');
+      if (providers.length === 0) return { found: false, providers_tried: 0 };
+      const attempts = await Promise.allSettled(
+        providers.map((p) => env.SPRIGR.invoke(p.ops.lookup_contact!, { contact_id: deal.contact_id })),
+      );
+      let contact: unknown = null;
+      let provider: string | null = null;
+      attempts.forEach((a, i) => {
+        if (contact === null && a.status === 'fulfilled' && (a.value as { found?: boolean })?.found) {
+          contact = (a.value as { contact?: unknown }).contact ?? null;
+          provider = providers[i]!.app_slug;
+        }
+      });
+      return { found: contact !== null, contact, provider, providers_tried: providers.length };
+    },
+    'enrichDeal calls env.SPRIGR.grants.providers(showcase/contact_lookup) + invoke — publish to staging with a provider installed.',
   );
 
   if (!lookup.ok) return lookup; // staging_only marker passes through cleanly
-  return { ok: true, result: { deal_id: deal.deal_id, high_value: highValue, contact: lookup.result } };
+  return { ok: true, result: { deal_id: deal.deal_id, high_value: highValue, ...(lookup.result as Record<string, unknown>) } };
 }
 
 export async function onDealWon(env: ConsumerEnv, args: EventArgs): Promise<HandlerResult> {

@@ -165,11 +165,19 @@
     }
   },
   "lifecycle": {
-    "on_connect": ["sync", "subscribe"],
-    "on_disconnect": ["unsubscribe"]
+    "on_connect": [
+      "sync",
+      "subscribe"
+    ],
+    "on_disconnect": [
+      "unsubscribe"
+    ]
   },
   "tool_access": {
-    "allowed_channels": ["chat", "team_room"],
+    "allowed_channels": [
+      "chat",
+      "team_room"
+    ],
     "default_agent_scope": "shared"
   },
   "content_restrictions": {
@@ -201,7 +209,9 @@
       "idempotency": {
         "mode": "content",
         "actionField": "action",
-        "actions": ["cache_contact"]
+        "actions": [
+          "cache_contact"
+        ]
       },
       "dispatch": {
         "actionField": "action",
@@ -214,18 +224,41 @@
         ],
         "actionInputs": {
           "get_contact": {
-            "accepts": ["contact_id"],
-            "required": ["contact_id"]
+            "accepts": [
+              "contact_id"
+            ],
+            "required": [
+              "contact_id"
+            ]
           },
           "list_contacts": {
-            "accepts": ["stage", "owner", "page", "per_page"]
+            "accepts": [
+              "stage",
+              "owner",
+              "page",
+              "per_page"
+            ]
           },
           "search_cached_contacts": {
-            "accepts": ["query", "stage", "hits_per_page"]
+            "accepts": [
+              "query",
+              "stage",
+              "hits_per_page"
+            ]
           },
           "cache_contact": {
-            "accepts": ["contact_id", "name", "email", "company", "stage", "owner", "source"],
-            "required": ["contact_id"]
+            "accepts": [
+              "contact_id",
+              "name",
+              "email",
+              "company",
+              "stage",
+              "owner",
+              "source"
+            ],
+            "required": [
+              "contact_id"
+            ]
           }
         }
       },
@@ -243,28 +276,65 @@
             ],
             "description": "Which Acme CRM operation to run."
           },
-          "contact_id": { "type": "string", "description": "Acme contact id. Required for get_contact / cache_contact." },
-          "stage": { "type": "string", "description": "Pipeline stage filter / facet." },
-          "owner": { "type": "string", "description": "Owner filter / facet." },
-          "source": { "type": "string", "description": "Lead source (cache_contact only)." },
-          "name": { "type": "string" },
-          "email": { "type": "string" },
-          "company": { "type": "string" },
-          "query": { "type": "string", "description": "Full-text query for search_cached_contacts." },
-          "hits_per_page": { "type": "number" },
-          "page": { "type": "number" },
-          "per_page": { "type": "number" }
+          "contact_id": {
+            "type": "string",
+            "description": "Acme contact id. Required for get_contact / cache_contact."
+          },
+          "stage": {
+            "type": "string",
+            "description": "Pipeline stage filter / facet."
+          },
+          "owner": {
+            "type": "string",
+            "description": "Owner filter / facet."
+          },
+          "source": {
+            "type": "string",
+            "description": "Lead source (cache_contact only)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "company": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string",
+            "description": "Full-text query for search_cached_contacts."
+          },
+          "hits_per_page": {
+            "type": "number"
+          },
+          "page": {
+            "type": "number"
+          },
+          "per_page": {
+            "type": "number"
+          }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "ok": { "type": "boolean" },
-          "result": { "type": "object" },
-          "reason": { "type": "string" }
+          "ok": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
         },
-        "required": ["ok"]
+        "required": [
+          "ok"
+        ]
       }
     },
     {
@@ -274,11 +344,20 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "code": { "type": "string" },
-          "redirectUri": { "type": "string" },
-          "state": { "type": "string" }
+          "code": {
+            "type": "string"
+          },
+          "redirectUri": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
         },
-        "required": ["code", "redirectUri"]
+        "required": [
+          "code",
+          "redirectUri"
+        ]
       }
     },
     {
@@ -288,102 +367,205 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "access_token": { "type": "string" },
-          "refresh_token": { "type": "string" },
-          "external_id": { "type": "string" }
+          "access_token": {
+            "type": "string"
+          },
+          "refresh_token": {
+            "type": "string"
+          },
+          "external_id": {
+            "type": "string"
+          }
         },
-        "required": ["access_token"]
+        "required": [
+          "access_token"
+        ]
       }
     },
     {
       "name": "refresh_showcase_tokens",
       "description": "Scheduled keep-warm refresh of the stored Acme OAuth tokens. Not for direct agent use.",
       "handler": "src/handlers/config.ts",
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_webhook_contact",
       "description": "Per-install webhook receiver for Acme contact.updated events (hmac hex). Dedups, then caches the contact to the data index.",
       "handler": "src/handlers/webhooks.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_webhook_deal",
       "description": "Per-install webhook receiver for Acme deal.won events (hmac base64). Emits a marketplace event and optionally appends an inbox message.",
       "handler": "src/handlers/webhooks.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_webhook_bookmarklet",
-      "description": "Operator-driven webhook (install_token bearer scheme) — e.g. a browser bookmarklet posts a contact id to cache.",
+      "description": "Operator-driven webhook (install_token bearer scheme) \u2014 e.g. a browser bookmarklet posts a contact id to cache.",
       "handler": "src/handlers/webhooks.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_webhook_shared",
       "description": "App-level SHARED webhook (one URL for the whole app, fanned out per tenant). Registers each tenant via env.SPRIGR.registerWebhookTenant at connect.",
       "handler": "src/handlers/webhooks.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_channel_receive",
       "description": "Inbound channel receiver: verifies the Acme Chat signature and decodes a provider event into a normalized InboundMessage (or a URL-verification challenge / ignore).",
       "handler": "src/handlers/channel.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_channel_send",
       "description": "Outbound channel sender: encodes + sends a normalized OutboundMessage via the Acme Chat API using the app's stored token.",
       "handler": "src/handlers/channel.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_channel_identity",
       "description": "Maps an Acme Chat user id to a stable sender identity for companion routing / notify defaults.",
       "handler": "src/handlers/channel.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_daily_digest",
       "description": "per_install schedule handler: builds a daily digest of new Acme contacts and reports usage.",
       "handler": "src/handlers/platform.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_tenant_rollup",
       "description": "per_tenant schedule handler: rolls up counts across every install of this app in the tenant.",
       "handler": "src/handlers/platform.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_backfill_step",
-      "description": "Durable job STEP FUNCTION for the contact backfill. Walks Acme pages one at a time, driving continue/sleep/wait/complete/fail directives from job state. Internal — never agent-callable.",
+      "description": "Durable job STEP FUNCTION for the contact backfill. Walks Acme pages one at a time, driving continue/sleep/wait/complete/fail directives from job state. Internal \u2014 never agent-callable.",
       "handler": "src/handlers/jobs.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_on_deal_won",
       "description": "Event subscription handler: reacts to showcase.deal.won emissions (self-subscription) by caching the winning contact.",
       "handler": "src/handlers/events.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "showcase_route_decision",
       "description": "Decision-point extension: reads a tenant-configured routing workflow from install config and calls env.SPRIGR.run_workflow; falls back to built-in routing.",
       "handler": "src/handlers/platform.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "showcase_lookup_contact",
+      "description": "Resolve one cached Acme CRM contact by id (the handler behind the cross-tenant tool of the same name, and the showcase implementation of showcase/contact_lookup op lookup_contact). Internal: agents use the `showcase` dispatcher; other apps reach this through their interface binding.",
+      "handler": "src/handlers/data-and-collections.ts",
+      "internal": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "contact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
+      }
+    }
+  ],
+  "interfaces": [
+    {
+      "name": "contact_lookup",
+      "version": "1.0.0",
+      "description": "Look up one contact by id. Any app that can resolve a contact id to a contact record may implement this; consumers bind to every installed implementer at once (decision 0077).",
+      "consumers": "any",
+      "ops": [
+        {
+          "name": "lookup_contact",
+          "description": "Resolve one contact id. Read-only.",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "contact_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "contact_id"
+            ]
+          },
+          "output_schema": {
+            "type": "object",
+            "properties": {
+              "found": {
+                "type": "boolean"
+              },
+              "contact": {
+                "type": "object"
+              }
+            },
+            "required": [
+              "found"
+            ]
+          }
+        }
+      ]
     }
   ],
   "cross_tenant_tools": [
@@ -391,26 +573,45 @@
       "tool_name": "showcase_lookup_contact",
       "resource_type": "contacts",
       "action": "read",
-      "description": "Look up one cached Acme CRM contact by id. Granted to a consumer app so it can read this brand's contacts.",
+      "description": "Look up one cached Acme CRM contact by id. Granted to a consumer app so it can read this brand's contacts. Also the showcase app's own implementation of its `showcase/contact_lookup` interface (op lookup_contact).",
       "input_schema": {
         "type": "object",
-        "properties": { "contact_id": { "type": "string" } },
-        "required": ["contact_id"]
+        "properties": {
+          "contact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "found": { "type": "boolean" },
-          "contact": { "type": "object" }
+          "found": {
+            "type": "boolean"
+          },
+          "contact": {
+            "type": "object"
+          }
         },
-        "required": ["found"]
+        "required": [
+          "found"
+        ]
+      },
+      "provides": {
+        "interface": "showcase/contact_lookup",
+        "op": "lookup_contact",
+        "version": "1.0.0"
       }
     }
   ],
   "app_dependencies": [
     {
       "app": "hello-marketplace",
-      "tools": ["hello_ping_tool"],
+      "tools": [
+        "hello_ping_tool"
+      ],
       "required": false,
       "reason": "Optional smoke-test ping to the hello-marketplace fixture, demonstrating an app-to-app dependency grant."
     }
@@ -418,9 +619,11 @@
   "integration_dependencies": [
     {
       "integration_type": "shopify",
-      "tools": ["shopify_list_orders"],
+      "tools": [
+        "shopify_list_orders"
+      ],
       "required": false,
-      "reason": "When the brand also runs Shopify, the showcase app can correlate an Acme deal with a Shopify order. Optional — degrades gracefully when no Shopify integration is connected."
+      "reason": "When the brand also runs Shopify, the showcase app can correlate an Acme deal with a Shopify order. Optional \u2014 degrades gracefully when no Shopify integration is connected."
     }
   ],
   "fulfillment_services": [
@@ -445,7 +648,10 @@
         "encoding": "hex"
       },
       "handler_tool": "showcase_webhook_contact",
-      "forward_headers": ["X-Acme-Topic", "X-Acme-Delivery"]
+      "forward_headers": [
+        "X-Acme-Topic",
+        "X-Acme-Delivery"
+      ]
     },
     {
       "path": "/acme/deal",
@@ -457,7 +663,9 @@
         "encoding": "base64"
       },
       "handler_tool": "showcase_webhook_deal",
-      "forward_headers": ["X-Acme-Topic"]
+      "forward_headers": [
+        "X-Acme-Topic"
+      ]
     },
     {
       "path": "/acme/bookmarklet",
@@ -550,11 +758,19 @@
         "schema": {
           "type": "object",
           "properties": {
-            "deal_id": { "type": "string" },
-            "contact_id": { "type": "string" },
-            "amount": { "type": "number" }
+            "deal_id": {
+              "type": "string"
+            },
+            "contact_id": {
+              "type": "string"
+            },
+            "amount": {
+              "type": "number"
+            }
           },
-          "required": ["deal_id"]
+          "required": [
+            "deal_id"
+          ]
         }
       },
       {
@@ -564,9 +780,13 @@
         "schema": {
           "type": "object",
           "properties": {
-            "contact_id": { "type": "string" }
+            "contact_id": {
+              "type": "string"
+            }
           },
-          "required": ["contact_id"]
+          "required": [
+            "contact_id"
+          ]
         }
       }
     ],
@@ -618,7 +838,10 @@
           "next": null
         }
       ],
-      "tags": ["crm", "deals"]
+      "tags": [
+        "crm",
+        "deals"
+      ]
     }
   ],
   "decision_points": [
@@ -628,24 +851,37 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "contact_id": { "type": "string" },
-          "stage": { "type": "string" }
+          "contact_id": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          }
         },
-        "required": ["contact_id"]
+        "required": [
+          "contact_id"
+        ]
       },
       "output_schema": {
         "type": "object",
         "properties": {
-          "owner": { "type": "string" }
+          "owner": {
+            "type": "string"
+          }
         },
-        "required": ["owner"]
+        "required": [
+          "owner"
+        ]
       },
       "default_behavior": "Round-robin assignment across the tenant's active owners."
     }
   ],
   "dependencies": {
     "optional": [
-      { "slug": "hello-marketplace", "reason": "Used only for the optional smoke-test ping." }
+      {
+        "slug": "hello-marketplace",
+        "reason": "Used only for the optional smoke-test ping."
+      }
     ]
   }
 }
