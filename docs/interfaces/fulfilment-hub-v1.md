@@ -9,8 +9,10 @@ Mechanism: decision 0077 (sprigr-team `docs/decisions/implemented/0077-...`), pl
 | Role | Installed where | Manifest | Talks to |
 |---|---|---|---|
 | **Hub** (`fulfilment-hub`) | per brand tenant | defines both interfaces; `app_dependencies` requires both with `{ provides }` | adapters only, via `env.SPRIGR.grants.providers` + `env.SPRIGR.invoke`; never a vendor API |
-| **Order-source adapter** (`<x>-order-source`) | per brand tenant | tags tools with `provides: { interface: 'fulfilment-hub/order_source', op }`; emits the source events | its selling system (via the platform integration app or the vendor API) and the hub |
-| **Fulfilment-provider adapter** (`<x>-fulfilment`) | per brand tenant (brand-direct) | tags tools with `provides: { interface: 'fulfilment-hub/fulfilment_provider', op }`; emits the provider events | its warehouse or 3PL API and the hub |
+| **Order-source implementer** | per brand tenant | tags tools with `provides: { interface: 'fulfilment-hub/order_source', op }`; emits the source events | its selling system and the hub |
+| **Fulfilment-provider implementer** | per brand tenant (brand-direct) | tags tools with `provides: { interface: 'fulfilment-hub/fulfilment_provider', op }`; emits the provider events | its warehouse or 3PL API and the hub |
+
+**Where an implementer lives (ruling 2026-09-15).** When a first-party integration app for the system already exists (`shopify`, `starshipit`, `cin7-core`), that app implements the interface ITSELF: it adds the interface ops as `internal: true` tools named `<slug>_<op>`, tags them, and emits the events from the same code paths that already handle the vendor's webhooks. A brand installs one app per system. A separate `<x>-order-source` / `<x>-fulfilment` adapter app exists only for a system with no first-party app (JSJ / Sinotrans is the public `sinotrans` app) or for a third party publishing against the contract. The separate `shopify-order-source` and `starshipit-fulfilment` apps built on 2026-09-15 were folded into their host apps the same day.
 
 Rules that make an adapter interchangeable (from decision 0088, enforced by the conformance harness):
 
