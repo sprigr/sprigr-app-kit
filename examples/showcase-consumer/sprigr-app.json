@@ -5,14 +5,18 @@
   "metadata": {
     "name": "Showcase Consumer",
     "slug": "showcase-consumer",
-    "version": "0.0.1",
-    "description": "Minimal companion to the showcase app. Demonstrates the CONSUMER side of cross-app wiring: calling another app's cross-tenant tool via env.SPRIGR.invoke, subscribing to its cross-tenant event, and the app_installations.config override pattern.",
+    "version": "0.1.0",
+    "description": "Minimal companion to the showcase app. Demonstrates the CONSUMER side of cross-app wiring: requiring an INTERFACE instead of a provider slug (decision 0077), listing its live providers with env.SPRIGR.grants.providers, calling each via env.SPRIGR.invoke, subscribing to a cross-tenant event, and the app_installations.config override pattern.",
     "author": {
       "name": "Sprigr Company",
       "email": "platform@sprigr.com"
     },
     "category": "productivity",
-    "tags": ["reference", "consumer", "cross-tenant"]
+    "tags": [
+      "reference",
+      "consumer",
+      "cross-tenant"
+    ]
   },
   "kind": "tool",
   "runtime": {
@@ -21,7 +25,9 @@
     "framework": "next"
   },
   "permissions": {
-    "scopes": ["tools:register"]
+    "scopes": [
+      "tools:register"
+    ]
   },
   "config_schema": {
     "type": "object",
@@ -43,10 +49,15 @@
   ],
   "app_dependencies": [
     {
-      "app": "showcase",
-      "tools": ["showcase_lookup_contact"],
-      "required": true,
-      "reason": "The consumer enriches won-deal signals by looking up the contact from the showcase app's cross-tenant tool."
+      "app": {
+        "provides": "showcase/contact_lookup",
+        "version": "^1"
+      },
+      "tools": [
+        "lookup_contact"
+      ],
+      "required": false,
+      "reason": "The consumer enriches won-deal signals by resolving the contact through ANY installed provider of showcase/contact_lookup (the showcase app, contact-mirror, or one installed later)."
     }
   ],
   "tools": [
@@ -57,11 +68,19 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "deal_id": { "type": "string" },
-          "contact_id": { "type": "string" },
-          "amount": { "type": "number" }
+          "deal_id": {
+            "type": "string"
+          },
+          "contact_id": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number"
+          }
         },
-        "required": ["contact_id"]
+        "required": [
+          "contact_id"
+        ]
       }
     },
     {
@@ -69,7 +88,10 @@
       "description": "Event subscription handler: reacts to the showcase app's cross-tenant showcase.deal.won event and enriches it.",
       "handler": "src/handlers/enrich.ts",
       "internal": true,
-      "input_schema": { "type": "object", "properties": {} }
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
     },
     {
       "name": "consumer_set_config",
@@ -79,7 +101,9 @@
       "input_schema": {
         "type": "object",
         "properties": {
-          "high_value_threshold": { "type": "number" }
+          "high_value_threshold": {
+            "type": "number"
+          }
         }
       }
     }

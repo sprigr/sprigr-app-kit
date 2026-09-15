@@ -30,6 +30,7 @@ const SPRIGR_METHODS = {
   data: ['get', 'import', 'search'],
   files: ['putStream', 'url'],
   fulfillment_services: ['delete', 'list', 'register', 'update'],
+  grants: ['providers'],
   inbox: ['append'],
   integrations: ['invoke'],
   jobs: ['cancel', 'get', 'list', 'signal', 'start'],
@@ -50,7 +51,7 @@ const MANIFEST_FIELDS = [
   'training_index', 'tools', 'cross_tenant_tools', 'app_dependencies',
   'integration_dependencies', 'fulfillment_services', 'migrations', 'docs', 'secrets',
   'webhooks', 'channels', 'schedules', 'jobs', 'agent_schedules', 'events',
-  'workflow_templates', 'decision_points', 'dependencies',
+  'workflow_templates', 'decision_points', 'dependencies', 'interfaces',
 ];
 
 const EXAMPLES = 'examples';
@@ -85,6 +86,17 @@ for (const [group, methods] of Object.entries(SPRIGR_METHODS)) {
 
 const declared = new Set(manifests.flatMap(({ json }) => Object.keys(json)));
 const missingFields = MANIFEST_FIELDS.filter((f) => !declared.has(f));
+
+// Decision 0077 nests two declarations below the top level, so the key check
+// above cannot see them: a `provides` tag on a cross-tenant tool (a PROVIDER)
+// and the `{ provides }` form of app_dependencies[].app (a CONSUMER). Both
+// must have a sample or the interface story has no worked example.
+const hasProviderTag = manifests.some(({ json }) =>
+  (json.cross_tenant_tools ?? []).some((t) => t && typeof t.provides === 'object'));
+const hasInterfaceDependency = manifests.some(({ json }) =>
+  (json.app_dependencies ?? []).some((d) => d && typeof d.app === 'object' && typeof d.app.provides === 'string'));
+if (!hasProviderTag) missingFields.push('cross_tenant_tools[].provides (an interface PROVIDER sample)');
+if (!hasInterfaceDependency) missingFields.push('app_dependencies[].app.provides (an interface CONSUMER sample)');
 
 const methodCount = Object.values(SPRIGR_METHODS).reduce((n, m) => n + m.length, 0);
 

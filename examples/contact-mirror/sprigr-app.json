@@ -1,0 +1,88 @@
+{
+  "sprigr_app": {
+    "version": "1"
+  },
+  "metadata": {
+    "name": "Contact Mirror",
+    "slug": "contact-mirror",
+    "version": "0.0.1",
+    "description": "A second, independent PROVIDER of the showcase app's showcase/contact_lookup interface (decision 0077). Exists so a consumer that requires the interface can be shown binding to two implementers, and to one installed AFTER the consumer, with no consumer republish. Answers lookups from a small built-in fixture.",
+    "author": {
+      "name": "Sprigr Company",
+      "email": "platform@sprigr.com"
+    },
+    "category": "productivity",
+    "tags": [
+      "reference",
+      "provider",
+      "interfaces"
+    ]
+  },
+  "kind": "tool",
+  "runtime": {
+    "entry": "src/app/page.tsx",
+    "tier": "ssr",
+    "framework": "next"
+  },
+  "permissions": {
+    "scopes": [
+      "tools:register"
+    ]
+  },
+  "tools": [
+    {
+      "name": "contact_mirror_lookup_contact",
+      "description": "Resolve a contact id from the mirror's fixture. The contact-mirror implementation of showcase/contact_lookup op lookup_contact.",
+      "handler": "src/handlers/lookup.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "contact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
+      }
+    }
+  ],
+  "cross_tenant_tools": [
+    {
+      "tool_name": "contact_mirror_lookup_contact",
+      "resource_type": "contacts",
+      "action": "read",
+      "description": "Look up one mirrored contact by id. Bound to any consumer that requires showcase/contact_lookup.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "contact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "found": {
+            "type": "boolean"
+          },
+          "contact": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "found"
+        ]
+      },
+      "provides": {
+        "interface": "showcase/contact_lookup",
+        "op": "lookup_contact",
+        "version": "1.0.0"
+      }
+    }
+  ]
+}
