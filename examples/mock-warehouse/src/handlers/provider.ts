@@ -111,23 +111,82 @@ export async function pushOrder(deps: WarehouseDeps, args: PushOrderArgs): Promi
   return { status: 'queued', provider_ref: created.provider_ref };
 }
 
+/**
+ * Cancel, and SAY SO.
+ *
+ * The ack is only half the answer: the hub keeps its request open until the
+ * outcome event arrives, so an adapter that acknowledges a cancel and emits
+ * nothing strands the request forever. That is not hypothetical - on staging
+ * 2026-09-15 the hub called this op, got `accepted`, moved the mock's row to
+ * cancelled, and left its own request at `pushed` under a cancelled order,
+ * because the only emit lived behind the advance lever and nothing advances
+ * a cancelled request.
+ *
+ * So both outcomes emit here, immediately: provider.order.cancelled when the
+ * cancel is recorded, provider.order.cancel_refused when it cannot be. The
+ * mock is deterministic and knows the answer inside the op; a real adapter
+ * emits when the warehouse confirms, which is the whole reason the outcome
+ * is an event rather than the ack.
+ */
 export async function cancelOrder(
+  env: MockWarehouseEnv,
   deps: WarehouseDeps,
   args: { fulfilment_request_id: string; provider_ref?: string; reason?: string },
 ): Promise<Ack> {
   const row = await deps.store.get(args?.fulfilment_request_id ?? '');
+  // No row, no provider_ref: cancel_refused requires one and the hub
+  // attributes on it, so an unknown request is a bare refusal. The hub has
+  // nothing open to strand - it never got an accepted push for this id.
   if (!row) return { status: 'rejected', reason: `no request ${args?.fulfilment_request_id}` };
+
   if (row.stage === 'shipped' || row.stage === 'delivered') {
-    return { status: 'rejected', reason: `already ${row.stage}` };
+    const reason = `already ${row.stage}`;
+    await emitCancelRefused(env, row, reason);
+    return { status: 'rejected', reason };
   }
-  await deps.store.update(row.fulfilment_request_id, {
-    stage: 'cancelled',
-    carrier: row.carrier,
-    tracking_number: row.tracking_number,
-    updated_at: deps.now(),
-  });
-  // Acknowledged, not done: provider.order.cancelled follows on advance.
+
+  if (row.stage !== 'cancelled') {
+    await deps.store.update(row.fulfilment_request_id, {
+      stage: 'cancelled',
+      carrier: row.carrier,
+      tracking_number: row.tracking_number,
+      updated_at: deps.now(),
+    });
+  }
+  await emitCancelled(env, row);
   return { status: 'accepted' };
+}
+
+/** The cancellation outcome. Same attributable payload as the advance lever's. */
+async function emitCancelled(env: MockWarehouseEnv, row: RequestRecord): Promise<EmitOutcome> {
+  const outcome = await safeEmit(env, 'provider.order.cancelled', {
+    adapter_slug: ADAPTER_SLUG,
+    interface_version: '1.0.0',
+    fulfilment_request_id: row.fulfilment_request_id,
+    provider_ref: row.provider_ref,
+  });
+  await report(env, 'cancel', { request: row.fulfilment_request_id, outcome: 'cancelled', emitted: outcome.emitted });
+  return outcome;
+}
+
+/**
+ * The refusal outcome. A refused cancel that only returns `rejected` leaves
+ * the hub waiting the same way an unemitted success does.
+ */
+async function emitCancelRefused(
+  env: MockWarehouseEnv,
+  row: RequestRecord,
+  reason: string,
+): Promise<EmitOutcome> {
+  const outcome = await safeEmit(env, 'provider.order.cancel_refused', {
+    adapter_slug: ADAPTER_SLUG,
+    interface_version: '1.0.0',
+    fulfilment_request_id: row.fulfilment_request_id,
+    provider_ref: row.provider_ref,
+    reason,
+  });
+  await report(env, 'cancel', { request: row.fulfilment_request_id, outcome: 'refused', reason });
+  return outcome;
 }
 
 const STAGE_TO_STATUS: Record<RequestStage, string> = {
@@ -238,16 +297,17 @@ export async function advance(
   if (to === 'deliver') return deliver(env, deps, row);
 
   if (to === 'cancel') {
+    // Idempotent: cancel_order already emitted the outcome when it recorded
+    // the cancel, so re-emitting here would send the hub a second
+    // provider.order.cancelled for one cancellation. The lever stays for the
+    // path where a cancel was recorded some other way, and for a shakedown
+    // that wants the event on its own.
+    if (row.stage === 'cancelled') {
+      await report(env, 'advance', { request: row.fulfilment_request_id, to: 'cancelled', emitted: false });
+      return { ok: true, stage: 'cancelled', provider_ref: row.provider_ref, emitted };
+    }
     await setStage(deps, row, 'cancelled');
-    emitted.push(
-      await safeEmit(env, 'provider.order.cancelled', {
-        adapter_slug: ADAPTER_SLUG,
-        interface_version: '1.0.0',
-        fulfilment_request_id: row.fulfilment_request_id,
-        provider_ref: row.provider_ref,
-      }),
-    );
-    await report(env, 'advance', { request: row.fulfilment_request_id, to: 'cancelled' });
+    emitted.push(await emitCancelled(env, row));
     return { ok: true, stage: 'cancelled', provider_ref: row.provider_ref, emitted };
   }
 
@@ -473,7 +533,7 @@ export default {
   mock_warehouse_cancel_order: (
     args: { fulfilment_request_id: string; provider_ref?: string; reason?: string },
     env: MockWarehouseEnv,
-  ) => cancelOrder(depsFor(env), args),
+  ) => cancelOrder(env, depsFor(env), args),
   mock_warehouse_get_order_status: (
     args: { fulfilment_request_id: string; provider_ref?: string },
     env: MockWarehouseEnv,

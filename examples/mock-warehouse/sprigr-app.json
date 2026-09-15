@@ -5,7 +5,7 @@
   "metadata": {
     "name": "Mock Warehouse",
     "slug": "mock-warehouse",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "description": "Deterministic fulfilment-hub/fulfilment_provider implementer. Accepts every push, holds it until mock_warehouse_advance fires provider.order.accepted then provider.shipment.created, drives the carrier scans and the delivery through provider.shipment.event, and answers get_stock from a fixed fixture. The shakedown fixture for the hub, and the worked reference for a real warehouse adapter.",
     "author": {
       "name": "Sprigr Company",
@@ -300,7 +300,7 @@
     },
     {
       "name": "mock_warehouse_cancel_order",
-      "description": "Ask the mock warehouse to cancel a queued request. The outcome arrives as provider.order.cancelled or provider.order.cancel_refused.",
+      "description": "Cancel a queued or accepted request. Idempotent on the row. Emits the outcome immediately: provider.order.cancelled when the cancel is recorded, provider.order.cancel_refused with the reason when the request has already shipped or been delivered. The ack alone is not the answer - the hub closes its request on the event.",
       "handler": "src/handlers/provider.ts",
       "effects": "write",
       "input_schema": {
@@ -498,7 +498,7 @@
     },
     {
       "name": "mock_warehouse_advance",
-      "description": "Shakedown lever, not part of the interface. Moves one request forward and emits what a real warehouse callback would: provider.order.accepted, then provider.shipment.created. Call it with no `to` to do both. `to=scan` emits one provider.shipment.event; `to=deliver` emits the four a carrier reports between the warehouse door and the doorstep and records the delivery. Both refuse a request that has not shipped.",
+      "description": "Shakedown lever, not part of the interface. Moves one request forward and emits what a real warehouse callback would: provider.order.accepted, then provider.shipment.created. Call it with no `to` to do both. `to=scan` emits one provider.shipment.event; `to=deliver` emits the four a carrier reports between the warehouse door and the doorstep and records the delivery. Both refuse a request that has not shipped. `to=cancel` emits provider.order.cancelled unless the row is already cancelled, in which case cancel_order has emitted it and a second emit would double-report one cancellation.",
       "handler": "src/handlers/provider.ts",
       "effects": "write",
       "input_schema": {
@@ -865,7 +865,7 @@
       "tool_name": "mock_warehouse_cancel_order",
       "resource_type": "fulfilment",
       "action": "write",
-      "description": "Ask the mock warehouse to cancel a queued request. The outcome arrives as provider.order.cancelled or provider.order.cancel_refused.",
+      "description": "Cancel a queued or accepted request. Idempotent on the row. Emits the outcome immediately: provider.order.cancelled when the cancel is recorded, provider.order.cancel_refused with the reason when the request has already shipped or been delivered. The ack alone is not the answer - the hub closes its request on the event.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -1167,7 +1167,7 @@
       },
       {
         "name": "provider.order.cancelled",
-        "description": "A cancellation completed. Fired by mock_warehouse_advance with to=cancel.",
+        "description": "A cancellation completed. Fired by mock_warehouse_cancel_order the moment it records the cancel, because the hub keeps its request open until this arrives; mock_warehouse_advance with to=cancel fires it for a request cancelled some other way, and stays quiet on an already-cancelled row.",
         "scope": "per_install",
         "schema": {
           "type": "object",
@@ -1191,7 +1191,7 @@
       },
       {
         "name": "provider.order.cancel_refused",
-        "description": "The warehouse refused to cancel (already picked or shipped).",
+        "description": "The warehouse refused to cancel (already shipped or delivered). Fired by mock_warehouse_cancel_order alongside the rejected ack: a refusal the hub never hears leaves the request open the same way an unemitted success does.",
         "scope": "per_install",
         "schema": {
           "type": "object",
