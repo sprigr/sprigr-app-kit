@@ -17,14 +17,19 @@ Sprigr marketplace apps are Next.js apps that run isolated per install on the Sp
 | [docs/website-hosting.md](docs/website-hosting.md) | **Not building an app?** Host a website (static or Next.js) on Sprigr entirely from the CLI: create, deploy, env vars, custom domains, rollback. |
 | [examples/harvest](examples/harvest) | A complete reference app: OAuth against Harvest (time tracking), token refresh, agent tools, AI-facing docs, tests. |
 | [examples/showcase](examples/showcase) + [examples/showcase-consumer](examples/showcase-consumer) + [examples/static-badge](examples/static-badge) | Synthetic every-feature reference apps: `showcase` declares every manifest field and exercises every `env.SPRIGR.*` call; `showcase-consumer` shows the cross-app consumer side; `static-badge` is the minimal static-tier app. Indexed by the [capability cookbook](docs/capability-cookbook.md). |
-| [packages/](packages) | The shared packages. All of them publish to npm as `@sprigr/apps-*`; exact-pin them. `app-sdk` (state codec, crypto, retrying fetch, platform types), `oauth-utils` (code exchange, race-safe refresh), `d1-kv` (token/settings stores), `sync-cursor`, `dedup-latch`, `fetch-budget` (per-attempt cap + shared call deadline under the platform's 110s dispatch wall), `undo-journal` (before-image store for the platform undo layer), `webhook-registry`, `fleet-conventions` (Sprigr dev-fleet GitHub comment conventions: tech-lead verdict parsing and the odd/even issue shard rule, shared with sprigr-team), `faceted-search` (catalog search UI, [guide](docs/faceted-search.md)), `dashboard-kit` (admin dashboard design system), `timezone-picker` (IANA data + SSR `<TimezoneSelect>`). |
-| [tools/](tools) | `create-app.mjs` (scaffolder), `sync-vendor.mjs` (vendoring + drift check), `bump-version.mjs`, `check-migrations-immutable.mjs`. |
+| [docs/interfaces/fulfilment-hub-v1.md](docs/interfaces/fulfilment-hub-v1.md) | The fulfilment hub's two interfaces (`order_source`, `fulfilment_provider`) as one contract: canonical records, every op, every event, and the rules that make one adapter swappable for another. |
+| [examples/mock-warehouse](examples/mock-warehouse) + [examples/mock-order-source](examples/mock-order-source) | The two sides of that contract, implemented end to end and deterministic enough to be the hub's shakedown fixtures. The worked reference for a real warehouse or selling-system adapter. |
+| [packages/](packages) | The shared packages. All of them publish to npm as `@sprigr/apps-*`; exact-pin them. `app-sdk` (state codec, crypto, retrying fetch, platform types), `oauth-utils` (code exchange, race-safe refresh), `d1-kv` (token/settings stores), `sync-cursor`, `dedup-latch`, `fetch-budget` (per-attempt cap + shared call deadline under the platform's 110s dispatch wall), `undo-journal` (before-image store for the platform undo layer), `webhook-registry`, `fleet-conventions` (Sprigr dev-fleet GitHub comment conventions: tech-lead verdict parsing and the odd/even issue shard rule, shared with sprigr-team), `faceted-search` (catalog search UI, [guide](docs/faceted-search.md)), `dashboard-kit` (admin dashboard design system), `timezone-picker` (IANA data + SSR `<TimezoneSelect>`), `fulfilment-conformance` (drives every op of a [fulfilment-hub](docs/interfaces/fulfilment-hub-v1.md) adapter against the contract, plus a manifest check and a vitest binding). |
+| [tools/](tools) | `create-app.mjs` (scaffolder, with `--template fulfilment-provider` / `order-source` for a complete hub adapter), `sync-vendor.mjs` (vendoring + drift check), `bump-version.mjs`, `check-migrations-immutable.mjs`, `check-capability-coverage.mjs`. |
 
 ## Quick start
 
 ```bash
 pnpm install
 pnpm create:app my-crm          # scaffold apps/my-crm with OAuth plumbing
+# or, for a fulfilment-hub adapter that is green on `pnpm test` from the start:
+#   pnpm create:app acme-3pl --template fulfilment-provider
+#   pnpm create:app acme-shop --template order-source
 pnpm install                    # register the new workspace package
 # fill the printed TODOs (provider endpoints, manifest description, tools)
 pnpm -F my-crm typecheck && pnpm -F my-crm test && pnpm -F my-crm build

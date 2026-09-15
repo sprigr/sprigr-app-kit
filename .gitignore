@@ -4,5 +4,8 @@ node_modules/
 .turbo/
 *.tsbuildinfo
 dist/
+# scratch dirs the conformance package's scaffold test generates into (it has to
+# stay under the workspace root for vitest to transform the generated handlers)
+packages/fulfilment-conformance/.scaffold-*/
 .claude-worktrees/
 .claude/

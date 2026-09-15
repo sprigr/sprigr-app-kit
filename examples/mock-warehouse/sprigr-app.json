@@ -1,0 +1,1212 @@
+{
+  "sprigr_app": {
+    "version": "1"
+  },
+  "metadata": {
+    "name": "Mock Warehouse",
+    "slug": "mock-warehouse",
+    "version": "0.0.1",
+    "description": "Deterministic fulfilment-hub/fulfilment_provider implementer. Accepts every push, holds it until mock_warehouse_advance fires provider.order.accepted then provider.shipment.created, and answers get_stock from a fixed fixture. The shakedown fixture for the hub, and the worked reference for a real warehouse adapter.",
+    "author": {
+      "name": "Sprigr Company",
+      "email": "platform@sprigr.com"
+    },
+    "category": "operations",
+    "tags": [
+      "reference",
+      "fulfilment",
+      "interfaces",
+      "fixture"
+    ]
+  },
+  "kind": "tool",
+  "runtime": {
+    "entry": "src/app/page.tsx",
+    "tier": "ssr",
+    "framework": "next"
+  },
+  "permissions": {
+    "scopes": [
+      "tools:register"
+    ]
+  },
+  "migrations": [
+    {
+      "file": "migrations/0001_init.sql",
+      "version": 1,
+      "description": "The one table: the push_order idempotency record and its stage."
+    }
+  ],
+  "tools": [
+    {
+      "name": "mock_warehouse_describe",
+      "description": "Report this adapter slug and its capability block. The hub reads capabilities to choose a path and never infers a limit from error text.",
+      "handler": "src/handlers/provider.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "adapter_slug": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "supports_cancel": {
+                "type": "boolean"
+              },
+              "supports_split": {
+                "type": "boolean"
+              },
+              "supports_hold": {
+                "type": "boolean"
+              },
+              "tracking_mode": {
+                "type": "string",
+                "enum": [
+                  "push",
+                  "poll",
+                  "scrape"
+                ]
+              },
+              "stock_mode": {
+                "type": "string",
+                "enum": [
+                  "snapshot",
+                  "delta",
+                  "none"
+                ]
+              },
+              "countries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "supports_cancel",
+              "supports_split",
+              "supports_hold",
+              "tracking_mode",
+              "stock_mode",
+              "countries"
+            ]
+          }
+        },
+        "required": [
+          "adapter_slug",
+          "capabilities"
+        ]
+      }
+    },
+    {
+      "name": "mock_warehouse_list_warehouses",
+      "description": "List the warehouses the hub may route to. warehouse_key is the opaque id push_order takes.",
+      "handler": "src/handlers/provider.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "warehouses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "warehouse_key": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "country": {
+                  "type": "string"
+                },
+                "cutoff_local_time": {
+                  "type": "string"
+                },
+                "active": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "warehouse_key",
+                "name",
+                "country",
+                "active"
+              ]
+            }
+          }
+        },
+        "required": [
+          "warehouses"
+        ]
+      }
+    },
+    {
+      "name": "mock_warehouse_push_order",
+      "description": "Queue one fulfilment request at a mock warehouse. Idempotent on fulfilment_request_id: a repeat call returns the same provider_ref and does not reach the warehouse again. Acknowledges immediately; the outcome arrives as provider.order.accepted (or rejected / error).",
+      "handler": "src/handlers/provider.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "fulfilment_request_id": {
+            "type": "string",
+            "description": "The hub id. The idempotency key."
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "source_number": {
+            "type": "string"
+          },
+          "warehouse_key": {
+            "type": "string"
+          },
+          "ship_to": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "company": {
+                "type": "string"
+              },
+              "line1": {
+                "type": "string"
+              },
+              "line2": {
+                "type": "string"
+              },
+              "city": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "postcode": {
+                "type": "string"
+              },
+              "country": {
+                "type": "string",
+                "description": "ISO 3166-1 alpha-2."
+              },
+              "phone": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "line1",
+              "country"
+            ]
+          },
+          "customer_email": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "line_id": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "description": "Integer."
+                },
+                "unit_price_minor": {
+                  "type": "number",
+                  "description": "Integer minor units."
+                },
+                "currency": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "line_id",
+                "sku",
+                "quantity"
+              ]
+            }
+          },
+          "currency": {
+            "type": "string"
+          },
+          "total_minor": {
+            "type": "number",
+            "description": "Integer minor units."
+          },
+          "notes": {
+            "type": "string"
+          },
+          "callback_hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fulfilment_request_id",
+          "order_id",
+          "warehouse_key",
+          "lines"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "queued",
+              "rejected"
+            ],
+            "description": "Async ack. The outcome arrives as a provider.* event."
+          },
+          "provider_ref": {
+            "type": "string",
+            "description": "The warehouse's own id. Stable for a given fulfilment_request_id."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_warehouse_cancel_order",
+      "description": "Ask the mock warehouse to cancel a queued request. The outcome arrives as provider.order.cancelled or provider.order.cancel_refused.",
+      "handler": "src/handlers/provider.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "fulfilment_request_id": {
+            "type": "string"
+          },
+          "provider_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fulfilment_request_id",
+          "provider_ref",
+          "reason"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "queued",
+              "rejected"
+            ],
+            "description": "Async ack. The outcome arrives as a provider.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_warehouse_get_order_status",
+      "description": "Current provider-side status of one request, with tracking once it has shipped.",
+      "handler": "src/handlers/provider.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "fulfilment_request_id": {
+            "type": "string"
+          },
+          "provider_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fulfilment_request_id",
+          "provider_ref"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "provider_status_raw": {
+            "type": "string"
+          },
+          "tracking": {
+            "type": "object",
+            "properties": {
+              "carrier": {
+                "type": "string"
+              },
+              "tracking_number": {
+                "type": "string"
+              },
+              "tracking_url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "carrier",
+              "tracking_number",
+              "tracking_url"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_warehouse_get_stock",
+      "description": "Snapshot stock levels from the mock warehouse fixture. Integer quantities, ISO 8601 UTC snapshot_at.",
+      "handler": "src/handlers/provider.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "warehouse_key": {
+            "type": "string"
+          },
+          "skus": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider_adapter": {
+                  "type": "string"
+                },
+                "warehouse_key": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "on_hand": {
+                  "type": "number"
+                },
+                "reserved": {
+                  "type": "number"
+                },
+                "held": {
+                  "type": "number"
+                },
+                "snapshot_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provider_adapter",
+                "warehouse_key",
+                "sku",
+                "on_hand",
+                "reserved",
+                "held",
+                "snapshot_at"
+              ]
+            }
+          }
+        },
+        "required": [
+          "levels"
+        ]
+      }
+    },
+    {
+      "name": "mock_warehouse_health",
+      "description": "Credential and breaker state for this install. Always healthy: the mock has no upstream to fail.",
+      "handler": "src/handlers/provider.ts",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "credentials_ok": {
+            "type": "boolean"
+          },
+          "last_callback_at": {
+            "type": "string"
+          },
+          "breaker_open": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "credentials_ok",
+          "breaker_open"
+        ]
+      }
+    },
+    {
+      "name": "mock_warehouse_advance",
+      "description": "Shakedown lever, not part of the interface. Moves one request forward and emits what a real warehouse callback would: provider.order.accepted, then provider.shipment.created. Call it with no `to` to do both.",
+      "handler": "src/handlers/provider.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "fulfilment_request_id": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "ship",
+              "cancel"
+            ],
+            "description": "Omit to accept then ship in one call."
+          },
+          "carrier": {
+            "type": "string"
+          },
+          "tracking_number": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fulfilment_request_id"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "provider_ref": {
+            "type": "string"
+          },
+          "emitted": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      }
+    }
+  ],
+  "cross_tenant_tools": [
+    {
+      "tool_name": "mock_warehouse_describe",
+      "resource_type": "fulfilment",
+      "action": "read",
+      "description": "Report this adapter slug and its capability block. The hub reads capabilities to choose a path and never infers a limit from error text.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "adapter_slug": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "object",
+            "properties": {
+              "supports_cancel": {
+                "type": "boolean"
+              },
+              "supports_split": {
+                "type": "boolean"
+              },
+              "supports_hold": {
+                "type": "boolean"
+              },
+              "tracking_mode": {
+                "type": "string",
+                "enum": [
+                  "push",
+                  "poll",
+                  "scrape"
+                ]
+              },
+              "stock_mode": {
+                "type": "string",
+                "enum": [
+                  "snapshot",
+                  "delta",
+                  "none"
+                ]
+              },
+              "countries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "supports_cancel",
+              "supports_split",
+              "supports_hold",
+              "tracking_mode",
+              "stock_mode",
+              "countries"
+            ]
+          }
+        },
+        "required": [
+          "adapter_slug",
+          "capabilities"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/fulfilment_provider",
+        "op": "describe",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_warehouse_list_warehouses",
+      "resource_type": "fulfilment",
+      "action": "read",
+      "description": "List the warehouses the hub may route to. warehouse_key is the opaque id push_order takes.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "warehouses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "warehouse_key": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "country": {
+                  "type": "string"
+                },
+                "cutoff_local_time": {
+                  "type": "string"
+                },
+                "active": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "warehouse_key",
+                "name",
+                "country",
+                "active"
+              ]
+            }
+          }
+        },
+        "required": [
+          "warehouses"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/fulfilment_provider",
+        "op": "list_warehouses",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_warehouse_push_order",
+      "resource_type": "fulfilment",
+      "action": "write",
+      "description": "Queue one fulfilment request at a mock warehouse. Idempotent on fulfilment_request_id: a repeat call returns the same provider_ref and does not reach the warehouse again. Acknowledges immediately; the outcome arrives as provider.order.accepted (or rejected / error).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "fulfilment_request_id": {
+            "type": "string",
+            "description": "The hub id. The idempotency key."
+          },
+          "order_id": {
+            "type": "string"
+          },
+          "source_number": {
+            "type": "string"
+          },
+          "warehouse_key": {
+            "type": "string"
+          },
+          "ship_to": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "company": {
+                "type": "string"
+              },
+              "line1": {
+                "type": "string"
+              },
+              "line2": {
+                "type": "string"
+              },
+              "city": {
+                "type": "string"
+              },
+              "region": {
+                "type": "string"
+              },
+              "postcode": {
+                "type": "string"
+              },
+              "country": {
+                "type": "string",
+                "description": "ISO 3166-1 alpha-2."
+              },
+              "phone": {
+                "type": "string"
+              },
+              "email": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "line1",
+              "country"
+            ]
+          },
+          "customer_email": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "line_id": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "number",
+                  "description": "Integer."
+                },
+                "unit_price_minor": {
+                  "type": "number",
+                  "description": "Integer minor units."
+                },
+                "currency": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "line_id",
+                "sku",
+                "quantity"
+              ]
+            }
+          },
+          "currency": {
+            "type": "string"
+          },
+          "total_minor": {
+            "type": "number",
+            "description": "Integer minor units."
+          },
+          "notes": {
+            "type": "string"
+          },
+          "callback_hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fulfilment_request_id",
+          "order_id",
+          "warehouse_key",
+          "lines"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "queued",
+              "rejected"
+            ],
+            "description": "Async ack. The outcome arrives as a provider.* event."
+          },
+          "provider_ref": {
+            "type": "string",
+            "description": "The warehouse's own id. Stable for a given fulfilment_request_id."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/fulfilment_provider",
+        "op": "push_order",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_warehouse_cancel_order",
+      "resource_type": "fulfilment",
+      "action": "write",
+      "description": "Ask the mock warehouse to cancel a queued request. The outcome arrives as provider.order.cancelled or provider.order.cancel_refused.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "fulfilment_request_id": {
+            "type": "string"
+          },
+          "provider_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fulfilment_request_id",
+          "provider_ref",
+          "reason"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "queued",
+              "rejected"
+            ],
+            "description": "Async ack. The outcome arrives as a provider.* event."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/fulfilment_provider",
+        "op": "cancel_order",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_warehouse_get_order_status",
+      "resource_type": "fulfilment",
+      "action": "read",
+      "description": "Current provider-side status of one request, with tracking once it has shipped.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "fulfilment_request_id": {
+            "type": "string"
+          },
+          "provider_ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "fulfilment_request_id",
+          "provider_ref"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "provider_status_raw": {
+            "type": "string"
+          },
+          "tracking": {
+            "type": "object",
+            "properties": {
+              "carrier": {
+                "type": "string"
+              },
+              "tracking_number": {
+                "type": "string"
+              },
+              "tracking_url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "carrier",
+              "tracking_number",
+              "tracking_url"
+            ]
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/fulfilment_provider",
+        "op": "get_order_status",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_warehouse_get_stock",
+      "resource_type": "fulfilment",
+      "action": "read",
+      "description": "Snapshot stock levels from the mock warehouse fixture. Integer quantities, ISO 8601 UTC snapshot_at.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "warehouse_key": {
+            "type": "string"
+          },
+          "skus": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "provider_adapter": {
+                  "type": "string"
+                },
+                "warehouse_key": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "on_hand": {
+                  "type": "number"
+                },
+                "reserved": {
+                  "type": "number"
+                },
+                "held": {
+                  "type": "number"
+                },
+                "snapshot_at": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "provider_adapter",
+                "warehouse_key",
+                "sku",
+                "on_hand",
+                "reserved",
+                "held",
+                "snapshot_at"
+              ]
+            }
+          }
+        },
+        "required": [
+          "levels"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/fulfilment_provider",
+        "op": "get_stock",
+        "version": "1.0.0"
+      }
+    },
+    {
+      "tool_name": "mock_warehouse_health",
+      "resource_type": "fulfilment",
+      "action": "read",
+      "description": "Credential and breaker state for this install. Always healthy: the mock has no upstream to fail.",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "credentials_ok": {
+            "type": "boolean"
+          },
+          "last_callback_at": {
+            "type": "string"
+          },
+          "breaker_open": {
+            "type": "boolean"
+          },
+          "detail": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "credentials_ok",
+          "breaker_open"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/fulfilment_provider",
+        "op": "health",
+        "version": "1.0.0"
+      }
+    }
+  ],
+  "events": {
+    "emits": [
+      {
+        "name": "provider.order.accepted",
+        "description": "The mock warehouse accepted a queued request. Fired by mock_warehouse_advance.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "fulfilment_request_id": {
+              "type": "string"
+            },
+            "provider_ref": {
+              "type": "string"
+            },
+            "warehouse_key": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "fulfilment_request_id",
+            "provider_ref",
+            "warehouse_key"
+          ]
+        }
+      },
+      {
+        "name": "provider.order.rejected",
+        "description": "The warehouse refused the request outright. Not retryable. Declared because push_order acknowledges asynchronously, so this is where a refusal would arrive.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "fulfilment_request_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "fulfilment_request_id",
+            "reason"
+          ]
+        }
+      },
+      {
+        "name": "provider.order.error",
+        "description": "A transient failure pushing the request. Carries retryable.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "fulfilment_request_id": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "fulfilment_request_id",
+            "reason",
+            "retryable"
+          ]
+        }
+      },
+      {
+        "name": "provider.order.cancelled",
+        "description": "A cancellation completed. Fired by mock_warehouse_advance with to=cancel.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "fulfilment_request_id": {
+              "type": "string"
+            },
+            "provider_ref": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "fulfilment_request_id",
+            "provider_ref"
+          ]
+        }
+      },
+      {
+        "name": "provider.order.cancel_refused",
+        "description": "The warehouse refused to cancel (already picked or shipped).",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "fulfilment_request_id": {
+              "type": "string"
+            },
+            "provider_ref": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "fulfilment_request_id",
+            "provider_ref",
+            "reason"
+          ]
+        }
+      },
+      {
+        "name": "provider.shipment.created",
+        "description": "A shipment left the mock warehouse, with carrier and tracking. Fired by mock_warehouse_advance.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "fulfilment_request_id": {
+              "type": "string"
+            },
+            "provider_ref": {
+              "type": "string"
+            },
+            "shipment": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "fulfilment_request_id",
+            "provider_ref",
+            "shipment"
+          ]
+        }
+      }
+    ]
+  }
+}

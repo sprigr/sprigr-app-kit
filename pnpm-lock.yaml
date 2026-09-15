@@ -119,6 +119,92 @@ importers:
         specifier: ^4.110.0
         version: 4.114.0(@cloudflare/workers-types@5.20260724.1)
 
+  examples/mock-order-source:
+    dependencies:
+      '@opennextjs/cloudflare':
+        specifier: 1.20.2
+        version: 1.20.2(next@15.5.21(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(wrangler@4.114.0(@cloudflare/workers-types@5.20260724.1))
+      '@sprigr/apps-app-sdk':
+        specifier: 0.12.0
+        version: 0.12.0
+      next:
+        specifier: 15.5.21
+        version: 15.5.21(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
+      react:
+        specifier: 19.0.0
+        version: 19.0.0
+      react-dom:
+        specifier: 19.0.0
+        version: 19.0.0(react@19.0.0)
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260722.1
+        version: 5.20260724.1
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.17
+      '@vitest/coverage-v8':
+        specifier: 2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9))
+      esbuild:
+        specifier: ^0.24.0
+        version: 0.24.2
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
+      wrangler:
+        specifier: ^4.110.0
+        version: 4.114.0(@cloudflare/workers-types@5.20260724.1)
+
+  examples/mock-warehouse:
+    dependencies:
+      '@opennextjs/cloudflare':
+        specifier: 1.20.2
+        version: 1.20.2(next@15.5.21(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(wrangler@4.114.0(@cloudflare/workers-types@5.20260724.1))
+      '@sprigr/apps-app-sdk':
+        specifier: 0.12.0
+        version: 0.12.0
+      next:
+        specifier: 15.5.21
+        version: 15.5.21(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
+      react:
+        specifier: 19.0.0
+        version: 19.0.0
+      react-dom:
+        specifier: 19.0.0
+        version: 19.0.0(react@19.0.0)
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260722.1
+        version: 5.20260724.1
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.1
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.17
+      '@vitest/coverage-v8':
+        specifier: 2.1.9
+        version: 2.1.9(vitest@2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9))
+      esbuild:
+        specifier: ^0.24.0
+        version: 0.24.2
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
+      wrangler:
+        specifier: ^4.110.0
+        version: 4.114.0(@cloudflare/workers-types@5.20260724.1)
+
   examples/showcase:
     dependencies:
       '@opennextjs/cloudflare':
@@ -338,6 +424,15 @@ importers:
         version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
 
   packages/fleet-conventions:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
+
+  packages/fulfilment-conformance:
     devDependencies:
       typescript:
         specifier: ^5.6.0
@@ -2277,6 +2372,10 @@ packages:
 
   '@sprigr/apps-app-sdk@0.1.0':
     resolution: {integrity: sha512-lU9qWVkV7TO70ULtnV8OjwQb4tFSea9MJOz9KUc2ddzR5g55m5miyLs0xNgF1wo798hOqawbUz/PgBvPvzF68Q==}
+
+  '@sprigr/apps-app-sdk@0.12.0':
+    resolution: {integrity: sha512-ThXKiaxQCwCyl3hWPwO3EJIm+ahzOeN/dbspVpHpR53ZP2xImRKMpTWPooNQ/XqhmD+50IB1HxIfJbLPhMLFcw==}
+    hasBin: true
 
   '@sprigr/apps-d1-kv@0.2.0':
     resolution: {integrity: sha512-PNnvNs/CFqMls+LN4XZki8tcLgoZF3JTdxbFc/ONM8xtr/HJC36pJOtNHFTSw+nAwV8XELqJwBmSy4j0EG+edg==}
@@ -5501,6 +5600,8 @@ snapshots:
   '@speed-highlight/core@1.2.17': {}
 
   '@sprigr/apps-app-sdk@0.1.0': {}
+
+  '@sprigr/apps-app-sdk@0.12.0': {}
 
   '@sprigr/apps-d1-kv@0.2.0': {}
 

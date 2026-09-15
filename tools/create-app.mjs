@@ -13,12 +13,23 @@
  * Usage:
  *   pnpm create:app <slug> [--kind integration|tool|agent]
  *                          [--name "Display Name"] [--no-oauth]
+ *                          [--template default|fulfilment-provider|order-source]
+ *                          [--out-dir <dir>]
  *
  *   <slug>      kebab-case app directory + manifest slug (e.g. my-crm)
  *   --kind      manifest `kind` (default: integration)
  *   --name      display name (default: Title Case of the slug)
  *   --no-oauth  skip the OAuth files, manifest secrets, and oauth-utils
  *               vendor dependency (for apps with no third-party login)
+ *   --template  which skeleton to generate. `default` is the single-
+ *               integration starter this script has always produced.
+ *               `fulfilment-provider` and `order-source` generate a complete
+ *               fulfilment-hub v1 adapter: every op claimed with a `provides`
+ *               tag, handlers that already keep the contract, the events the
+ *               hub subscribes to, and a conformance test that is green from
+ *               the first `pnpm test`. See docs/interfaces/fulfilment-hub-v1.md.
+ *   --out-dir   where to write the app (default: apps/<slug>). Used by the
+ *               scaffolder's own tests to generate into a temp directory.
  *
  * After generating, the script prints the manual follow-up checklist
  * (manifest description/scopes, OAuth app registration, etc.). Shared
@@ -28,9 +39,15 @@
  * Like sync-vendor.mjs this is dependency-free (Node stdlib only).
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, isAbsolute, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import {
+  ADAPTER_TEMPLATES,
+  adapterFiles,
+  adapterManifest,
+  adapterNextSteps,
+} from "./templates/fulfilment-adapter.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const APPS_DIR = join(ROOT, "apps");
@@ -40,30 +57,48 @@ const APPS_DIR = join(ROOT, "apps");
 // ---------------------------------------------------------------------------
 
 const args = process.argv.slice(2);
-const positional = args.filter((a) => !a.startsWith("--"));
+/** Values that follow a flag are not positional, whatever they look like. */
+const VALUE_FLAGS = ["--kind", "--name", "--template", "--out-dir"];
+const positional = args.filter(
+  (a, i) => !a.startsWith("--") && !VALUE_FLAGS.includes(args[i - 1]),
+);
 const SLUG = positional[0];
-const NO_OAUTH = args.includes("--no-oauth");
 const kindIdx = args.indexOf("--kind");
-const KIND = kindIdx >= 0 ? args[kindIdx + 1] : "integration";
 const nameIdx = args.indexOf("--name");
+const templateIdx = args.indexOf("--template");
+const outDirIdx = args.indexOf("--out-dir");
+const TEMPLATE = templateIdx >= 0 ? args[templateIdx + 1] : "default";
+const IS_ADAPTER = ADAPTER_TEMPLATES.includes(TEMPLATE);
+// A fulfilment-hub adapter talks to its vendor and to the hub. Which auth the
+// vendor needs is the author's call, so the template does not presume OAuth;
+// add it from examples/harvest when the vendor wants it.
+const NO_OAUTH = args.includes("--no-oauth") || IS_ADAPTER;
+const KIND = kindIdx >= 0 ? args[kindIdx + 1] : IS_ADAPTER ? "tool" : "integration";
 
 function usage(msg) {
   if (msg) console.error(`[create-app] ERROR: ${msg}\n`);
   console.error(
-    'Usage: pnpm create:app <slug> [--kind integration|tool|agent] [--name "Display Name"] [--no-oauth]',
+    'Usage: pnpm create:app <slug> [--kind integration|tool|agent] [--name "Display Name"] [--no-oauth]\n' +
+      "                            [--template default|" + ADAPTER_TEMPLATES.join("|") + "] [--out-dir <dir>]",
   );
   process.exit(1);
 }
 
 if (!SLUG) usage("missing <slug>");
+if (!["default", ...ADAPTER_TEMPLATES].includes(TEMPLATE)) {
+  usage(`--template must be default|${ADAPTER_TEMPLATES.join("|")} (got "${TEMPLATE}")`);
+}
 if (!/^[a-z][a-z0-9]*(-[a-z0-9]+)*$/.test(SLUG)) {
   usage(`slug "${SLUG}" must be kebab-case: lowercase letters, digits, single hyphens`);
 }
 if (!["integration", "tool", "agent"].includes(KIND)) {
   usage(`--kind must be integration|tool|agent (got "${KIND}")`);
 }
-const APP_DIR = join(APPS_DIR, SLUG);
-if (existsSync(APP_DIR)) usage(`apps/${SLUG} already exists`);
+const OUT_ROOT = outDirIdx >= 0 ? args[outDirIdx + 1] : APPS_DIR;
+const APP_DIR = join(isAbsolute(OUT_ROOT) ? OUT_ROOT : join(process.cwd(), OUT_ROOT), SLUG);
+/** How the app dir is spelled in the log, relative to the repo when it is inside it. */
+const APP_LABEL = APP_DIR.startsWith(ROOT) ? relative(ROOT, APP_DIR) : APP_DIR;
+if (existsSync(APP_DIR)) usage(`${APP_LABEL} already exists`);
 
 const SLUG_U = SLUG.replace(/-/g, "_"); // table + tool name segment
 const PASCAL = SLUG.split("-").map((w) => w[0].toUpperCase() + w.slice(1)).join("");
@@ -97,7 +132,7 @@ const KIT_DEP_VERSIONS = {
   "d1-kv": "0.2.0",
 };
 
-const manifest = {
+const defaultManifest = {
   sprigr_app: { version: "1" },
   metadata: {
     name: NAME,
@@ -208,6 +243,11 @@ const manifest = {
   ],
 };
 
+/** `default` keeps the historical starter; an adapter template replaces it wholesale. */
+const manifest = IS_ADAPTER
+  ? adapterManifest({ slug: SLUG, slugU: SLUG_U, name: NAME, template: TEMPLATE })
+  : defaultManifest;
+
 const packageJson = {
   name: SLUG,
   version: "0.0.1",
@@ -238,6 +278,10 @@ const packageJson = {
     esbuild: "^0.24.0",
     typescript: "^5.6.0",
     vitest: "^2.0.0",
+    // The fulfilment-hub conformance harness: drives every op of the
+    // interface against this app's handler map and manifest. Exact-pinned
+    // like every other kit package.
+    ...(IS_ADAPTER ? { "@sprigr/apps-fulfilment-conformance": "0.1.0" } : {}),
     // Declared explicitly so the marketplace build-runner's no-lockfile npm
     // install never has to auto-pick wrangler as OpenNext's peer: the
     // auto-pick is engine-filtered by the BUILDER's node version and has
@@ -796,11 +840,15 @@ function put(relPath, content) {
   const abs = join(APP_DIR, relPath);
   mkdirSync(dirname(abs), { recursive: true });
   writeFileSync(abs, content);
-  console.log(`[create-app]   apps/${SLUG}/${relPath}`);
+  console.log(`[create-app]   ${APP_LABEL}/${relPath}`);
 }
 
-console.log(`[create-app] scaffolding apps/${SLUG} (kind=${KIND}, oauth=${!NO_OAUTH})`);
+console.log(
+  `[create-app] scaffolding ${APP_LABEL} (template=${TEMPLATE}, kind=${KIND}, oauth=${!NO_OAUTH})`,
+);
 
+// Shared by every template: the build, test and runtime wiring is the same
+// whatever the app does.
 put("sprigr-app.json", JSON.stringify(manifest, null, 2) + "\n");
 put("package.json", JSON.stringify(packageJson, null, 2) + "\n");
 put("tsconfig.json", JSON.stringify(tsconfig, null, 2) + "\n");
@@ -810,25 +858,53 @@ put("wrangler.jsonc", wranglerJsonc);
 put("vitest.config.ts", vitestConfigTs);
 put(".gitignore", gitignore);
 put("next-env.d.ts", nextEnvDts);
-put("README.md", readme);
-put("migrations/0001_init.sql", migration);
-put("src/lib/env.ts", envTs);
-put("src/lib/store.ts", storeTs);
-put("src/app/layout.tsx", layoutTsx);
-put("src/app/page.tsx", pageTsx);
-put(`src/handlers/${SLUG}-tool.ts`, toolHandler);
-put("__tests__/smoke.test.ts", smokeTest);
-if (!NO_OAUTH) {
-  put("src/lib/oauth.ts", oauthTs);
-  put("src/app/oauth/start/route.ts", oauthStartRoute);
-  put("src/handlers/oauth-callback.ts", oauthCallbackHandler);
+
+if (IS_ADAPTER) {
+  // The adapter templates own every source file, the README and the
+  // migration: a fulfilment-hub adapter's shape is decided by the interface,
+  // not by the generic starter.
+  const files = adapterFiles({
+    slug: SLUG,
+    slugU: SLUG_U,
+    name: NAME,
+    pascal: PASCAL,
+    template: TEMPLATE,
+  });
+  for (const [relPath, content] of Object.entries(files)) put(relPath, content);
+} else {
+  put("README.md", readme);
+  put("migrations/0001_init.sql", migration);
+  put("src/lib/env.ts", envTs);
+  put("src/lib/store.ts", storeTs);
+  put("src/app/layout.tsx", layoutTsx);
+  put("src/app/page.tsx", pageTsx);
+  put(`src/handlers/${SLUG}-tool.ts`, toolHandler);
+  put("__tests__/smoke.test.ts", smokeTest);
+  if (!NO_OAUTH) {
+    put("src/lib/oauth.ts", oauthTs);
+    put("src/app/oauth/start/route.ts", oauthStartRoute);
+    put("src/handlers/oauth-callback.ts", oauthCallbackHandler);
+  }
 }
 
 // Mirror the declared vendor packages into the new app.
 console.log(`[create-app] kit deps (exact-pinned): ${KIT_DEPS.map((p) => `@sprigr/apps-${p}@${KIT_DEP_VERSIONS[p]}`).join(", ")}`);
 
+if (IS_ADAPTER) {
+  console.log(adapterNextSteps({ slug: SLUG, name: NAME, template: TEMPLATE }));
+  console.log(`Publish with:
+  sprigr app validate --dir ${APP_LABEL}
+  sprigr app publish  --dir ${APP_LABEL}
+The hub publishes the interface definitions, so an adapter's provides tags
+only bind once the hub is published; publishing first is harmless.
+Subsequent releases need a version bump first (pnpm bump ${SLUG});
+see docs/build-guide.md (publishing).
+`);
+  process.exit(0);
+}
+
 console.log(`
-[create-app] done. apps/${SLUG} scaffolded. Next steps:
+[create-app] done. ${APP_LABEL} scaffolded. Next steps:
 
   1. pnpm install                      # register the new workspace package
   2. Fill in sprigr-app.json TODOs     # description, category, tags, scopes,
@@ -848,8 +924,8 @@ console.log(`
   Then: pnpm -F ${SLUG} typecheck && pnpm -F ${SLUG} test && pnpm -F ${SLUG} build
 
 Publish with:
-  sprigr app validate --dir apps/${SLUG}
-  sprigr app publish  --dir apps/${SLUG}
+  sprigr app validate --dir ${APP_LABEL}
+  sprigr app publish  --dir ${APP_LABEL}
 Subsequent releases need a version bump first (pnpm bump ${SLUG});
 see docs/build-guide.md (publishing).
 `);
