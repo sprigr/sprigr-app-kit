@@ -28,7 +28,7 @@ Events: adapters emit through `env.SPRIGR.emit` with the names below; the hub su
 
 ## 2. Canonical records (the hub's collections)
 
-All on the decision 0030 field types (`string | number | date | boolean`). The hub owns them as `env.SPRIGR.collections` under names prefixed `fh_` (the hub's reserved segment; adapters never write them). Adapters SEND these shapes in op results and event payloads; the hub STORES them.
+All on the decision 0030 field types (`string | number | date | boolean`). The hub owns them as `env.SPRIGR.collections` under names prefixed `fh-` (the hub's reserved segment; adapters never write them; the platform's collection `name_suffix` rule forbids underscores, so it is `fh-order`, `fh-order-line`, and so on). Adapters SEND these shapes in op results and event payloads; the hub STORES them.
 
 ### `order`
 | field | type | notes |
@@ -244,3 +244,5 @@ The rest were added with the conformance harness (`@sprigr/apps-fulfilment-confo
 13. **Declaring outcome events is part of claiming a write op** (an addition, not a reading). Every write op acknowledges asynchronously, so the hub only ever learns the outcome from an event, and the platform drops an emit the manifest does not declare. The harness therefore requires: claiming `push_order` means declaring `provider.order.accepted`, `.rejected` and `.error` in `events.emits[]`; claiming `cancel_order` means declaring `provider.order.cancelled` and `.cancel_refused`; and any `order_source` adapter declares `source.order.created` and `source.request.submitted`. Declaring an event the adapter does not yet emit is fine and expected; emitting one it has not declared is not possible.
 
 14. **The dispatch budget the harness enforces is 20 s**, against the 25 s section 1 allows, so an op that only just fits in CI is caught before it only just fails in production. Callers can raise or lower it with `opts.timeBudgetMs`.
+15. **Collection names are `fh-*`** (`fh-order`, `fh-order-line`, `fh-fulfilment-request`, `fh-shipment`, `fh-shipment-event`, `fh-stock-level`, `fh-exception`, `fh-location`): the platform's collection `name_suffix` rule forbids underscores. The record names in section 2 are the logical names; the hub keeps the logical-to-suffix map in one file.
+16. **`set_stock_level.on_hand` means "the quantity the selling system should treat as available to sell at that location".** The hub computes it as the provider's `on_hand` minus the hub's own `held`, and NOT minus the provider's `reserved`: the selling system's committed count already covers open orders, so subtracting reserved too double-counts and undersells (the ASCS brand app's v1.21.2 precedent). An order-source adapter writes that number as the source's available quantity without adding anything back.
