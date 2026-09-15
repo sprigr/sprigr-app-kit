@@ -510,6 +510,23 @@
         "type": "object",
         "properties": {}
       }
+    },
+    {
+      "name": "showcase_lookup_contact",
+      "description": "Resolve one cached Acme CRM contact by id (the handler behind the cross-tenant tool of the same name, and the showcase implementation of showcase/contact_lookup op lookup_contact). Internal: agents use the `showcase` dispatcher; other apps reach this through their interface binding.",
+      "handler": "src/handlers/data-and-collections.ts",
+      "internal": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "contact_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "contact_id"
+        ]
+      }
     }
   ],
   "interfaces": [
