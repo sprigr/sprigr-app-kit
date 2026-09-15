@@ -301,11 +301,15 @@ describe('mock_warehouse_advance to=deliver', () => {
     expect(JSON.parse((await deps.store.get('fr_1'))!.scans_json)).toHaveLength(5);
   });
 
-  it('refuses to cancel a delivered request', async () => {
+  it('refuses to cancel a delivered request, and says so on the wire', async () => {
     await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'ship' });
     await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'deliver' });
-    const ack = await cancelOrder(deps, { fulfilment_request_id: 'fr_1' });
+    env.recorded.length = 0;
+
+    const ack = await cancelOrder(env, deps, { fulfilment_request_id: 'fr_1' });
     expect(ack).toEqual({ status: 'rejected', reason: 'already delivered' });
+    expect(env.recorded.map((e) => e.event)).toEqual(['provider.order.cancel_refused']);
+    expect(env.recorded[0]!.payload.reason).toBe('already delivered');
   });
 
   it('records a failed emit rather than turning the lever into an exception', async () => {
@@ -315,5 +319,85 @@ describe('mock_warehouse_advance to=deliver', () => {
     expect(result.ok).toBe(true);
     expect(result.emitted).toHaveLength(4);
     expect(result.emitted?.every((e) => e.emitted === false)).toBe(true);
+  });
+});
+
+/**
+ * The cancel outcome, which the hub learns ONLY from an event.
+ *
+ * Measured on staging 2026-09-15 23:09Z: the hub called cancel_order, got
+ * `accepted`, the mock's row moved to cancelled, and the hub's own request
+ * sat at `pushed` under a cancelled order forever, because the only emit was
+ * behind the advance lever and nothing advances a cancelled request.
+ */
+describe('mock_warehouse_cancel_order', () => {
+  let env: ReturnType<typeof fakeEnv>;
+  let deps: ReturnType<typeof freshDeps>;
+
+  beforeEach(async () => {
+    env = fakeEnv();
+    deps = freshDeps(() => '2026-09-15T00:00:00Z');
+    await pushOrder(deps, push('fr_1'));
+  });
+
+  it('emits provider.order.cancelled from the op, not from a later advance', async () => {
+    const ack = await cancelOrder(env, deps, { fulfilment_request_id: 'fr_1', reason: 'customer changed mind' });
+    expect(ack).toEqual({ status: 'accepted' });
+    expect(env.recorded.map((e) => e.event)).toEqual(['provider.order.cancelled']);
+    expect(env.recorded[0]!.payload).toEqual({
+      adapter_slug: 'mock-warehouse',
+      interface_version: '1.0.0',
+      fulfilment_request_id: 'fr_1',
+      provider_ref: 'mw_fr_1',
+    });
+    expect((await deps.store.get('fr_1'))?.stage).toBe('cancelled');
+  });
+
+  it('emits provider.order.cancel_refused with the reason when the request has shipped', async () => {
+    await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'ship' });
+    env.recorded.length = 0;
+
+    const ack = await cancelOrder(env, deps, { fulfilment_request_id: 'fr_1' });
+    expect(ack).toEqual({ status: 'rejected', reason: 'already shipped' });
+    expect(env.recorded.map((e) => e.event)).toEqual(['provider.order.cancel_refused']);
+    expect(env.recorded[0]!.payload).toEqual({
+      adapter_slug: 'mock-warehouse',
+      interface_version: '1.0.0',
+      fulfilment_request_id: 'fr_1',
+      provider_ref: 'mw_fr_1',
+      reason: 'already shipped',
+    });
+    expect((await deps.store.get('fr_1'))?.stage).toBe('shipped');
+  });
+
+  it('refuses an unknown request without an event, having nothing to attribute it to', async () => {
+    const ack = await cancelOrder(env, deps, { fulfilment_request_id: 'nope' });
+    expect(ack).toEqual({ status: 'rejected', reason: 'no request nope' });
+    expect(env.recorded).toHaveLength(0);
+  });
+
+  it('records a failed emit rather than turning the ack into an exception', async () => {
+    const hostile = { SPRIGR: { emit: async () => { throw new Error('is not available in sprigr app dev'); } } };
+    const ack = await cancelOrder(hostile, deps, { fulfilment_request_id: 'fr_1' });
+    expect(ack).toEqual({ status: 'accepted' });
+    expect((await deps.store.get('fr_1'))?.stage).toBe('cancelled');
+  });
+
+  it('does not emit a second time when the advance lever follows the op', async () => {
+    await cancelOrder(env, deps, { fulfilment_request_id: 'fr_1' });
+    const result = await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'cancel' });
+
+    expect(result).toMatchObject({ ok: true, stage: 'cancelled', emitted: [] });
+    expect(env.recorded.map((e) => e.event)).toEqual(['provider.order.cancelled']);
+  });
+
+  it('still lets the advance lever emit the outcome for a request cancelled some other way', async () => {
+    const result = await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'cancel' });
+    expect(result.emitted?.map((e) => e.event)).toEqual(['provider.order.cancelled']);
+    expect(env.recorded.map((e) => e.event)).toEqual(['provider.order.cancelled']);
+
+    // And a second lever call on the now-cancelled row stays quiet.
+    await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'cancel' });
+    expect(env.recorded.map((e) => e.event)).toEqual(['provider.order.cancelled']);
   });
 });

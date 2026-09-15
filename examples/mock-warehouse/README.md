@@ -11,6 +11,7 @@ A deterministic implementer of **`fulfilment-hub/fulfilment_provider` v1.0.0** (
 - **Idempotency is a read, not a lock.** `push_order` reads `mock_warehouse_requests` by `fulfilment_request_id` and returns the stored `provider_ref` on a hit, so neither the vendor nor D1 is touched twice. The hub's outbox is at-least-once; without this a redelivery ships the order again.
 - **`provider_ref` is `mw_<fulfilment_request_id>`.** Deterministic on purpose: a shakedown can predict every id it will see, and an assertion that reads `mw_fr_01J...` is stable across runs.
 - **One D1 table, written on a miss.** No per-event audit rows. Advancing a request rewrites the one row and reports through `env.SPRIGR.log()`.
+- **Every write op emits its outcome, and the ack is not the outcome.** The hub holds its request open until the event arrives, so an op that acknowledges and emits nothing strands it. `cancel_order` therefore emits `provider.order.cancelled` the moment it records the cancel, and `provider.order.cancel_refused` (with the reason) when the request has already shipped or been delivered - not only a `rejected` ack. The mock is deterministic and knows the answer inside the op; a real adapter emits when the warehouse confirms, which is why the outcome is an event at all. `push_order` is the exception that proves the rule: it cannot know, so its outcome waits for the advance lever.
 - **Every event payload carries `adapter_slug` and `interface_version`**, so the hub can attribute a row to a binding.
 
 ## Driving it
@@ -26,6 +27,10 @@ mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'deliver' }  -> fo
                                                                              then delivered on the row
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'cancel' }   -> provider.order.cancelled
 ```
+
+`to: 'cancel'` is for a request cancelled some other way. `mock_warehouse_cancel_order` already emits the
+outcome itself, so the lever stays quiet on a row that is already cancelled rather than double-reporting
+one cancellation to the hub.
 
 **The carrier half.** `provider.shipment.event` is the only way the hub learns a parcel moved, so
 without a lever for it the hub's scan handler, its `delivered_at` and its transit and delivery KPIs
@@ -54,6 +59,6 @@ are unreachable from a shakedown.
 pnpm -F mock-warehouse test
 ```
 
-`__tests__/conformance.test.ts` runs the full [`@sprigr/apps-fulfilment-conformance`](../../packages/fulfilment-conformance) suite against this app's real handler map plus its manifest. `__tests__/advance.test.ts` covers what the harness cannot reach: the advance lever's event sequence, the carrier-scan levers (sequence, dedup refs, the refusal before ship), and the idempotency record underneath `push_order`.
+`__tests__/conformance.test.ts` runs the full [`@sprigr/apps-fulfilment-conformance`](../../packages/fulfilment-conformance) suite against this app's real handler map plus its manifest. `__tests__/advance.test.ts` covers what the harness cannot reach: the advance lever's event sequence, the carrier-scan levers (sequence, dedup refs, the refusal before ship), the cancel outcome on both paths (and that the lever does not re-emit it), and the idempotency record underneath `push_order`.
 
 There is no `DB` binding in a unit test, so `depsFor(env)` hands the handlers an in-memory store and a call-counting stand-in vendor. On the platform `env.DB` is always bound and the same handlers run against per-install D1; the fallback is unreachable in production.
