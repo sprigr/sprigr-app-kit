@@ -31,12 +31,68 @@ const REFRESH_BUFFER_MS = 5 * 60 * 1000;
 const RETRY_JITTER_MIN_MS = 200;
 const RETRY_JITTER_MAX_MS = 600;
 
+// Issue sprigr/sprigr-team#8134: `classifyOAuthError` classifies a
+// bare/unmatched-description invalid_grant as transient on purpose — it's
+// the only signature a genuine concurrent-rotation race has, and that
+// self-heal is pinned by tests/errors.test.ts:20-22. But some providers
+// (Google's "Bad Request") use that exact shape for a real revoked/terminal
+// grant too, and the description text can't tell the two apart. Repetition
+// can: a rotation race resolves on the very next refresh (this store's
+// `refresh_token` was just rotated by a sibling), while a truly revoked
+// grant fails the same way every time. So we let the description-based
+// verdict stand on each individual failure, and only escalate to terminal
+// once the same install has failed on invalid_grant this many refresh
+// cycles IN A ROW with no intervening success.
+const INVALID_GRANT_STREAK_ESCALATE_AFTER = 3;
+
 const ACCESS_TOKEN_KEY = 'access_token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 const EXPIRES_AT_KEY = 'expires_at';
+const INVALID_GRANT_STREAK_KEY = 'invalid_grant_streak';
 
 function key(prefix: string, suffix: string): string {
   return prefix ? `${prefix}${suffix}` : suffix;
+}
+
+/**
+ * Called once per external `refreshAndPersist` call, only when that call is
+ * about to finally give up on a transient `invalid_grant` (i.e. after the
+ * in-function rotation-race retry has already been tried and failed too, or
+ * wasn't eligible). Reads/bumps the per-install consecutive-failure counter
+ * and, once it crosses the threshold, returns a new `OAuthError` with
+ * `terminal: true` so the caller is finally told to prompt for
+ * reconnection instead of hearing "transient" forever.
+ *
+ * Below the threshold, returns `err` unchanged — the description-based
+ * verdict from `classifyOAuthError` still governs a first/second occurrence,
+ * so a real rotation race (which resolves on the next refresh cycle, at the
+ * latest) never gets flagged.
+ */
+async function escalateInvalidGrantStreak(
+  store: TokenStore,
+  prefix: string,
+  err: OAuthError,
+): Promise<OAuthError> {
+  const streakKey = key(prefix, INVALID_GRANT_STREAK_KEY);
+  const prevRaw = await store.get(streakKey);
+  const prev = prevRaw ? parseInt(prevRaw, 10) || 0 : 0;
+  const streak = prev + 1;
+
+  if (streak >= INVALID_GRANT_STREAK_ESCALATE_AFTER) {
+    await store.put(streakKey, '0');
+    return new OAuthError(
+      err.provider,
+      /* terminal */ true,
+      'revoked',
+      err.status,
+      `${err.message} (escalated: invalid_grant failed on ${streak} consecutive refresh cycles for this ` +
+        `install with no intervening success — no longer treating as a rotation race, needs reconnection)`,
+      err.errorCode,
+    );
+  }
+
+  await store.put(streakKey, String(streak));
+  return err;
 }
 
 /**
@@ -75,6 +131,7 @@ export async function refreshOAuthToken(
       info.reason,
       response.status,
       describeOAuthFailure(config.provider, 'token refresh', response.status, info),
+      info.errorCode,
     );
   }
 
@@ -151,6 +208,9 @@ export async function refreshAndPersist(
       await new Promise((resolve) => setTimeout(resolve, jitter));
       return refreshAndPersist(config, store, prefix, /* isRetry */ true);
     }
+    if (err instanceof OAuthError && !err.terminal && err.errorCode === 'invalid_grant') {
+      throw await escalateInvalidGrantStreak(store, prefix, err);
+    }
     throw err;
   }
 
@@ -165,6 +225,15 @@ export async function refreshAndPersist(
   }
   await store.put(key(prefix, ACCESS_TOKEN_KEY), result.accessToken);
   await store.put(key(prefix, EXPIRES_AT_KEY), String(expiresAt));
+
+  // A successful refresh proves this install's grant is good again — clear
+  // any invalid_grant streak so a later, unrelated failure starts counting
+  // from zero rather than inheriting an old run (sprigr/sprigr-team#8134).
+  // Ordered after the token writes above: those three are the write-order-
+  // sensitive ones (KV isn't transactional; losing the streak counter to a
+  // mid-write crash just costs one extra transient-classified cycle, not a
+  // bricked install), so this stays last.
+  await store.put(key(prefix, INVALID_GRANT_STREAK_KEY), '0');
 
   return result.accessToken;
 }
