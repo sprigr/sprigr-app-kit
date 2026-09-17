@@ -119,6 +119,90 @@ describe('refreshAndPersist', () => {
   });
 });
 
+/**
+ * Issue sprigr/sprigr-team#8134: Google's invalid_grant carries
+ * `error_description: "Bad Request"`, which classifyOAuthError has never
+ * matched (the regex was written against Procore's shapes) and falls
+ * through to `terminal: false, reason: 'transient'` forever — so a
+ * genuinely revoked grant was retried indefinitely and no install was ever
+ * flagged as needing reconnection. Fix keeps the description-based verdict
+ * authoritative per-occurrence (a real rotation race must still self-heal
+ * silently, see 'retries once on bare invalid_grant' above) and only
+ * escalates once the same install fails on invalid_grant across several
+ * refresh cycles in a row with no intervening success.
+ */
+describe('invalid_grant streak escalation (sprigr/sprigr-team#8134)', () => {
+  const BAD_REQUEST_BODY = JSON.stringify({ error: 'invalid_grant', error_description: 'Bad Request' });
+
+  it('stays transient for the first two refreshAndPersist calls, escalates to terminal on the third', async () => {
+    const store = makeStore({ refresh_token: 'rt' });
+    globalThis.fetch = vi.fn(
+      async () => new Response(BAD_REQUEST_BODY, { status: 400 }),
+    ) as unknown as typeof fetch;
+
+    const first = await refreshAndPersist(config, store, '', false).catch((e: unknown) => e);
+    expect(first).toMatchObject({ name: 'OAuthError', terminal: false, reason: 'transient' });
+
+    const second = await refreshAndPersist(config, store, '', false).catch((e: unknown) => e);
+    expect(second).toMatchObject({ name: 'OAuthError', terminal: false, reason: 'transient' });
+
+    // Today (pre-fix) this throws terminal: false forever.
+    const third = await refreshAndPersist(config, store, '', false).catch((e: unknown) => e);
+    expect(third).toMatchObject({ name: 'OAuthError', terminal: true });
+  });
+
+  it('resets the streak after an intervening success, so a later failure starts back at transient', async () => {
+    const store = makeStore({ refresh_token: 'rt' });
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls += 1;
+      // Calls 1-4 are the two failed refreshAndPersist attempts (each
+      // burns 2 fetch calls: the initial POST + the in-function
+      // rotation-race retry). Call 5 succeeds. Calls 6+ fail again.
+      if (calls === 5) {
+        return new Response(
+          JSON.stringify({ access_token: 'at', refresh_token: 'rt-2', expires_in: 3600 }),
+          { status: 200 },
+        );
+      }
+      return new Response(BAD_REQUEST_BODY, { status: 400 });
+    }) as unknown as typeof fetch;
+
+    await refreshAndPersist(config, store, '', false).catch((e: unknown) => e); // streak 1
+    await refreshAndPersist(config, store, '', false).catch((e: unknown) => e); // streak 2
+    const tok = await refreshAndPersist(config, store, '', false); // success, resets streak
+    expect(tok).toBe('at');
+
+    const next = await refreshAndPersist(config, store, '', false).catch((e: unknown) => e);
+    expect(next).toMatchObject({ name: 'OAuthError', terminal: false, reason: 'transient' });
+  });
+
+  it('does not escalate a genuine rotation race that self-heals on every occurrence', async () => {
+    // Must-not-regress: a sibling worker rotating the token concurrently
+    // fails the odd-numbered POST and succeeds on the in-function retry
+    // (the even-numbered POST) every single time. The external streak
+    // counter must never see two failures in a row, so it should never
+    // reach the escalate threshold no matter how many refresh cycles run.
+    const store = makeStore({ refresh_token: 'rt-old' });
+    let calls = 0;
+    globalThis.fetch = vi.fn(async () => {
+      calls += 1;
+      if (calls % 2 === 1) {
+        return new Response(JSON.stringify({ error: 'invalid_grant' }), { status: 400 });
+      }
+      return new Response(
+        JSON.stringify({ access_token: 'at', refresh_token: 'rt-new', expires_in: 3600 }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    for (let i = 0; i < 5; i++) {
+      const tok = await refreshAndPersist(config, store, '', false);
+      expect(tok).toBe('at');
+    }
+  });
+});
+
 describe('getValidAccessToken', () => {
   it('cache-hit: returns cached access_token without hitting the wire', async () => {
     const store = makeStore({

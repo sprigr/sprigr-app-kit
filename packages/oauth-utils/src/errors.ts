@@ -24,6 +24,16 @@ export class OAuthError extends Error {
     public readonly reason: OAuthErrorReason,
     public readonly status: number,
     message: string,
+    /**
+     * The body's `error` code, e.g. `invalid_grant`. '' when absent or not
+     * applicable (e.g. the "no refresh token stored" terminal error has no
+     * provider body at all). Optional + trailing so every existing call
+     * site across the consuming apps keeps compiling unchanged. Added for
+     * sprigr/sprigr-team#8134: refresh.ts needs this to tell "transient
+     * because of a 5xx" apart from "transient because of an unmatched
+     * invalid_grant description" without re-parsing `message`.
+     */
+    public readonly errorCode: string = '',
   ) {
     super(message);
   }
