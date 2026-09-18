@@ -6,6 +6,32 @@
  * vars from tokens.css. Import order: tokens.css first, then this file.
  */
 
+/*
+ * Clickable things look clickable.
+ *
+ * Tailwind v4 dropped the preflight rule that gave `button` a pointer cursor,
+ * so from v4 onwards every control that is not a `.btn` renders with the
+ * default arrow: the icon buttons, the copy-reference buttons, the drawer
+ * close, the tabs, the table row actions. `.btn` sets its own cursor below and
+ * always looked right, which is why this went unnoticed.
+ *
+ * Scoped to things that are genuinely interactive, and it defers to anything
+ * disabled or aria-disabled so a dead control does not invite a click.
+ */
+button:not(:disabled):not([aria-disabled='true']),
+[role='button']:not([aria-disabled='true']),
+summary,
+label[for],
+select:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled,
+button[aria-disabled='true'],
+[role='button'][aria-disabled='true'] {
+  cursor: not-allowed;
+}
+
 /* Buttons */
 .btn {
   display: inline-flex;
