@@ -156,7 +156,16 @@ export function checkAdapterManifest(
   }
 
   const allowUnclaimed = new Set(opts.allowUnclaimedOps ?? []);
-  const missing = contractOpNames.filter((n) => !claimed.has(n) && !allowUnclaimed.has(n));
+  // An op added after 1.0.0 (`optionalSince`) cannot be required of an adapter
+  // written before it existed, so it is never "missing" here. The consumer
+  // gates on the matching `describe` capability; an adapter that claims the
+  // binding is still held to the op's shape and behaviour everywhere else.
+  const addedLater = new Set(
+    contractOps.filter((o) => typeof o.optionalSince === 'string').map((o) => o.name),
+  );
+  const missing = contractOpNames.filter(
+    (n) => !claimed.has(n) && !allowUnclaimed.has(n) && !addedLater.has(n),
+  );
   checks.add(
     'provides.covers_every_op',
     missing.length === 0,
