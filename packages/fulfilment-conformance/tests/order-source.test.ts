@@ -145,6 +145,59 @@ describe('runOrderSourceConformance', () => {
     expect(failed(report).sort()).toEqual(['set_stock_level.matches_capability', 'split.matches_capability']);
   });
 
+  // update_address is `optionalSince: '1.4.0'`: an adapter written against
+  // 1.3.0 has no handler for it and must stay conformant, and one that CLAIMS
+  // the capability must actually implement it. Both directions, because the
+  // hub decides whether to offer an operator an address form on the strength
+  // of that flag alone.
+  it('leaves a pre-1.4.0 adapter conformant: no update_address handler, no capability, no failure', async () => {
+    const { handlers } = makeOrderSourceAdapter({});
+    const report = await runOrderSourceConformance(handlers, { slug: 'tiny-src', env: () => ({}) });
+    expect(failed(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name.startsWith('update_address.'))).toBe(false);
+  });
+
+  it('fails an adapter that claims supports_address_update and answers "unsupported"', async () => {
+    const { handlers } = makeOrderSourceAdapter({
+      tiny_src_describe: () => ({
+        adapter_slug: 'tiny-src',
+        channel: 'shopify',
+        capabilities: {
+          supports_hold: true,
+          supports_split: true,
+          supports_cancel: true,
+          supports_stock_write: true,
+          supports_address_update: true,
+          request_model: 'fulfilment_orders',
+        },
+      }),
+      tiny_src_update_address: () => ({ status: 'rejected', reason: 'unsupported' }),
+    });
+    const report = await runOrderSourceConformance(handlers, { slug: 'tiny-src', env: () => ({}) });
+    expect(failed(report)).toEqual(['update_address.matches_capability']);
+  });
+
+  it('passes an adapter that claims supports_address_update and implements it', async () => {
+    const { handlers } = makeOrderSourceAdapter({
+      tiny_src_describe: () => ({
+        adapter_slug: 'tiny-src',
+        channel: 'shopify',
+        capabilities: {
+          supports_hold: true,
+          supports_split: true,
+          supports_cancel: true,
+          supports_stock_write: true,
+          supports_address_update: true,
+          request_model: 'fulfilment_orders',
+        },
+      }),
+      tiny_src_update_address: () => ({ status: 'accepted' }),
+    });
+    expect(
+      failed(await runOrderSourceConformance(handlers, { slug: 'tiny-src', env: () => ({}) })),
+    ).toEqual([]);
+  });
+
   it('fails a describe whose adapter_slug is not the install slug', async () => {
     const { handlers } = makeOrderSourceAdapter({
       tiny_src_describe: () => ({

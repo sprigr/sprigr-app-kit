@@ -175,6 +175,22 @@ export interface OpSpec {
   readonly ackStatuses: readonly string[];
   /** Output field that must be a non-empty string when the ack is not `rejected`. */
   readonly ackRefField?: string;
+  /**
+   * Set on an op added AFTER 1.0.0, naming the version that added it.
+   *
+   * Clarification 9 says an op is never absent: a capability an adapter lacks
+   * is a refusal, not a missing binding. That holds for the 1.0.0 baseline,
+   * which every adapter was written against. It cannot hold retroactively for
+   * an op added later, because the adapters that predate it cannot have
+   * claimed a binding that did not exist — requiring it would fail every one
+   * of them the day the op lands and make a minor version a breaking change.
+   *
+   * So an op with `optionalSince` is exempt from `provides.covers_every_op`,
+   * and the consumer gates on the matching `describe` capability instead. An
+   * adapter that DOES claim it is held to the full behaviour: that is what
+   * the capability-agreement checks in the driver are for.
+   */
+  readonly optionalSince?: string;
 }
 
 const PROVIDER_ACK = { status: { enum: FULFILMENT_PROVIDER_ACK_STATUSES } } as const;
@@ -187,6 +203,16 @@ export const ORDER_SOURCE_CAPABILITIES_SPEC: ObjectSpec = {
     supports_cancel: 'boolean',
     supports_stock_write: 'boolean',
     request_model: { enum: ['fulfilment_orders', 'orders'] },
+  },
+  optional: {
+    /**
+     * 1.4.0. The source accepts `update_address`, so an operator can correct
+     * a ship-to in the hub and have the selling system corrected with it.
+     * OPTIONAL on the spec, and absent reads as false, because every adapter
+     * written against 1.3.0 predates the op: a hub that treated absence as
+     * unsupported-but-required would fail conformance for every one of them.
+     */
+    supports_address_update: 'boolean',
   },
 };
 
@@ -310,6 +336,34 @@ export const ORDER_SOURCE_OPS: readonly OpSpec[] = [
   },
   {
     name: 'add_note',
+    effects: 'write',
+    ack: true,
+    ackStatuses: ORDER_SOURCE_ACK_STATUSES,
+    output: { required: SOURCE_ACK, optional: { reason: 'string' } },
+  },
+  {
+    /**
+     * 1.4.0. Correct an order's ship-to in the selling system.
+     *
+     * `{ source_ref, ship_to: address, reason? }`. A PARTIAL update: only the
+     * address fields the caller supplies change, so a hub correcting one
+     * mistyped street number does not have to re-send (and risk clobbering) a
+     * name and postcode it never touched.
+     *
+     * The op is about the SHIPPING address only. `address.email` is carried
+     * for the warehouse's benefit and is not a shipping-address field in any
+     * selling system we target, so a source is free to ignore it; the hub
+     * keeps the customer email on its own record either way.
+     *
+     * A source that cannot do this at all answers
+     * `{ status: 'rejected', reason: 'unsupported' }` and reports
+     * `supports_address_update: false` (or omits it) from `describe`. A
+     * source that CAN, but not for this order any more (already dispatched,
+     * already invoiced), answers `rejected` with its own reason: that is a
+     * refusal of this order, not of the op, and the hub surfaces the text.
+     */
+    name: 'update_address',
+    optionalSince: '1.4.0',
     effects: 'write',
     ack: true,
     ackStatuses: ORDER_SOURCE_ACK_STATUSES,
