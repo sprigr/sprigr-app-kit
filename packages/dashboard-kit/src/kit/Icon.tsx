@@ -6,11 +6,12 @@
  * them, or drop a lucide component in directly where a one-off is simpler.
  */
 import {
-  Activity, ArrowRight, ArrowUp, Bell, Box, Boxes, Building2, ChartColumn, Check, CheckCheck,
-  ChevronDown, ChevronRight, CircleCheck, CircleX, Clock, Code2, Copy, Database, DollarSign,
-  ExternalLink, FastForward, Gauge, History, Inbox, Info, KeyRound, Lock, Minus, Moon,
+  Activity, ArrowLeft, ArrowRight, ArrowUp, Bell, Box, Boxes, Building2, Calendar, ChartColumn, Check, CheckCheck,
+  ChevronDown, ChevronLeft, ChevronRight, ChevronUp, CircleCheck, CircleX, Clock, Code2, Copy, Database, DollarSign,
+  Download, ExternalLink, Eye, FastForward, FileText, FlaskConical, Gauge, History, Inbox, Info, KeyRound,
+  LayoutDashboard, Lock, Megaphone, Minus, Moon,
   PackageCheck, Pause, Pencil, Phone, Play, Plus, RefreshCw, RotateCw, Route, Search,
-  Settings, ShieldCheck, SlidersHorizontal, Sparkles, Sun, TrendingDown, TrendingUp, Truck,
+  Settings, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Target, Trash2, TrendingDown, TrendingUp, Truck,
   TriangleAlert, Undo2, User, Wind, Workflow, X,
   type LucideIcon,
 } from 'lucide-react';
@@ -74,7 +75,30 @@ const ICONS: Record<string, LucideIcon> = {
   moon: Moon,
   sparkle: Sparkles,
   cog: Settings,
+  // Added 2026-09-20 after a census of every `<Icon name>` / `icon:` across the
+  // sprigr-apps and sprigr-private-apps dashboards found these eleven names in
+  // use with no glyph behind them, each rendering as the fallback dot: a pager
+  // whose "previous" button was a grey circle, a Reports tab with no icon, an
+  // Export button with a dot. `external-link` is an alias of `external`.
+  'arrow-left': ArrowLeft,
+  'chevron-left': ChevronLeft,
+  'chevron-up': ChevronUp,
+  calendar: Calendar,
+  download: Download,
+  eye: Eye,
+  'external-link': ExternalLink,
+  'file-text': FileText,
+  'flask-conical': FlaskConical,
+  'layout-dashboard': LayoutDashboard,
+  megaphone: Megaphone,
+  target: Target,
+  trash: Trash2,
 };
+
+/** Names every screen may rely on; a test pins them so a rename here is loud. */
+export const ICON_NAMES: readonly string[] = Object.freeze(Object.keys(ICONS));
+
+const warnedUnknown = new Set<string>();
 
 export interface IconProps {
   name: string;
@@ -87,6 +111,14 @@ export interface IconProps {
 export function Icon({ name, size = 16, className, strokeWidth = 1.75, style }: IconProps) {
   const Cmp = ICONS[name];
   if (!Cmp) {
+    // The dot keeps the layout intact, but on its own it hides the defect: a
+    // pager's "previous" chevron shipped as a grey circle for weeks because
+    // nothing said the name was unknown. Say so once per name, in the console
+    // where the developer building the screen is looking.
+    if (!warnedUnknown.has(name)) {
+      warnedUnknown.add(name);
+      if (typeof console !== 'undefined') console.warn(`[dashboard-kit] <Icon name="${name}"> has no glyph; add it to ICONS in Icon.tsx (rendering a placeholder dot)`);
+    }
     return (
       <span
         aria-hidden
