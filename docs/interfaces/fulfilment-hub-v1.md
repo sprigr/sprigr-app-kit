@@ -150,11 +150,13 @@ All on the decision 0030 field types (`string | number | date | boolean`). The h
 
 ## 3. `fulfilment-hub/order_source` v1.0.0
 
+**1.4.0 adds `update_address`.** An operator looking at a wrong ship-to in the hub can correct it and have the selling system corrected with it, which is what the ASCS operator connector's `edit_routing_address` did before the hub existed. It is a PARTIAL update: only the address fields supplied change, so correcting a street number cannot clobber a name. `address.email` is not a shipping-address field in the selling systems we target, so a source may ignore it; the hub keeps the customer email on its own record. A source that cannot implement the op answers `{ status: 'rejected', reason: 'unsupported' }` and reports `supports_address_update: false` (or omits the flag, which reads the same); a source that can, but not for this order any longer, answers `rejected` with its own reason, and the hub shows that text to the operator. Per clarification 9 the refusal must be an ACK, never a throw.
+
 `consumers: any`. Every op takes and returns JSON objects; `input_schema` / `output_schema` in the manifest are the source of truth for shapes.
 
 | op | effects | input | output |
 |---|---|---|---|
-| `describe` | read | `{}` | `{ adapter_slug, channel, capabilities: { supports_hold, supports_split, supports_cancel, supports_stock_write, request_model: 'fulfilment_orders' \| 'orders' } }` |
+| `describe` | read | `{}` | `{ adapter_slug, channel, capabilities: { supports_hold, supports_split, supports_cancel, supports_stock_write, supports_address_update?, request_model: 'fulfilment_orders' \| 'orders' } }` |
 | `list_locations` | read | `{}` | `{ locations: [{ source_location_ref, name, country, active }] }` |
 | `register_location` | write | `{ warehouse_key, name, country, address? }` | `{ status, source_location_ref?, reason? }` |
 | `get_order` | read | `{ source_ref }` | `{ found, order?, lines?: order_line[] }` (canonical shapes, `order_id` empty: the hub assigns it) |
@@ -167,6 +169,7 @@ All on the decision 0030 field types (`string | number | date | boolean`). The h
 | `split` | write | `{ source_request_ref, lines: [{ source_line_ref, quantity }] }` | `{ status, new_source_request_ref?, reason? }` |
 | `set_stock_level` | write | `{ source_location_ref, sku, on_hand }` | `{ status, reason? }` |
 | `add_note` | write | `{ source_ref, note, tags?: string[] }` | `{ status }` |
+| `update_address` | write | `{ source_ref, ship_to: address, reason? }` | `{ status, reason? }` (1.4.0; PARTIAL update, only supplied fields change) |
 
 Events (the adapter emits; the hub subscribes):
 

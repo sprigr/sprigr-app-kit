@@ -188,6 +188,16 @@ export const ORDER_SOURCE_CAPABILITIES_SPEC: ObjectSpec = {
     supports_stock_write: 'boolean',
     request_model: { enum: ['fulfilment_orders', 'orders'] },
   },
+  optional: {
+    /**
+     * 1.4.0. The source accepts `update_address`, so an operator can correct
+     * a ship-to in the hub and have the selling system corrected with it.
+     * OPTIONAL on the spec, and absent reads as false, because every adapter
+     * written against 1.3.0 predates the op: a hub that treated absence as
+     * unsupported-but-required would fail conformance for every one of them.
+     */
+    supports_address_update: 'boolean',
+  },
 };
 
 export const FULFILMENT_PROVIDER_CAPABILITIES_SPEC: ObjectSpec = {
@@ -310,6 +320,33 @@ export const ORDER_SOURCE_OPS: readonly OpSpec[] = [
   },
   {
     name: 'add_note',
+    effects: 'write',
+    ack: true,
+    ackStatuses: ORDER_SOURCE_ACK_STATUSES,
+    output: { required: SOURCE_ACK, optional: { reason: 'string' } },
+  },
+  {
+    /**
+     * 1.4.0. Correct an order's ship-to in the selling system.
+     *
+     * `{ source_ref, ship_to: address, reason? }`. A PARTIAL update: only the
+     * address fields the caller supplies change, so a hub correcting one
+     * mistyped street number does not have to re-send (and risk clobbering) a
+     * name and postcode it never touched.
+     *
+     * The op is about the SHIPPING address only. `address.email` is carried
+     * for the warehouse's benefit and is not a shipping-address field in any
+     * selling system we target, so a source is free to ignore it; the hub
+     * keeps the customer email on its own record either way.
+     *
+     * A source that cannot do this at all answers
+     * `{ status: 'rejected', reason: 'unsupported' }` and reports
+     * `supports_address_update: false` (or omits it) from `describe`. A
+     * source that CAN, but not for this order any more (already dispatched,
+     * already invoiced), answers `rejected` with its own reason: that is a
+     * refusal of this order, not of the op, and the hub surfaces the text.
+     */
+    name: 'update_address',
     effects: 'write',
     ack: true,
     ackStatuses: ORDER_SOURCE_ACK_STATUSES,

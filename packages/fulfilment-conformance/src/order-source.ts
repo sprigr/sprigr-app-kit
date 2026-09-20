@@ -184,5 +184,38 @@ export async function runOrderSourceConformance(
     tags: ['fulfilment-hub'],
   });
 
+  // 7. the ship-to correction (1.4.0). Driven against the fixture order, and
+  // the capability check is the point: an adapter that says it supports the
+  // op must not answer `rejected: unsupported`, and one that does not claim
+  // it must refuse CLEANLY rather than erroring, because the hub's operator
+  // is standing in front of a form waiting for an answer either way.
+  const addressed = await driveOp(ctx, op('update_address'), {
+    source_ref: sourceRef,
+    ship_to: { line1: '1 Conformance Way', city: 'Brisbane', country: 'AU', postcode: '4000' },
+    reason: 'fulfilment hub conformance address correction',
+  });
+  if (addressed) {
+    const claims = caps.supports_address_update === true;
+    const unsupported =
+      addressed.status === 'rejected' && String(addressed.reason ?? '').includes('unsupported');
+    if (claims) {
+      checks.add(
+        'update_address.matches_capability',
+        !unsupported,
+        unsupported
+          ? 'capabilities say supports_address_update:true but update_address answered "unsupported"'
+          : 'capabilities say supports_address_update:true and update_address is implemented',
+      );
+    } else {
+      checks.add(
+        'update_address.refuses_cleanly',
+        addressed.status === 'rejected',
+        addressed.status === 'rejected'
+          ? 'no supports_address_update and update_address refuses cleanly'
+          : `no supports_address_update but update_address answered "${String(addressed.status)}"; the hub would offer an address edit that silently does nothing`,
+      );
+    }
+  }
+
   return checks.report();
 }
