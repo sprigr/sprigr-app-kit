@@ -627,6 +627,45 @@ Common failure modes:
 - **`state.installId='unknown'`** → the install was built before `env.INSTALL_ID` was bound. Bump the app version and upgrade the install.
 - **CSRF mismatch on callback** → the state's `csrf` isn't matching the install D1's `oauth_csrf` setting. Usually happens when you start two OAuth flows in parallel (each clobbers the other). Retry from scratch.
 
+## 6b. Routes anonymous visitors must reach - the `/api/public/` opt-in
+
+Your install's site is **private by default**. Per-install sites are created with `visibility: 'internal'`, so every request needs a Sprigr session belonging to the install's company. Sprigr's `website-serve` gate exempts exactly two path shapes, and nothing else:
+
+| Path shape | Methods | For |
+|---|---|---|
+| `/api/webhook/*` | `POST` only | Third-party webhook receivers arriving with their own signature or bearer scheme |
+| `/api/public/*` | any | Anything else a visitor with no Sprigr session must reach |
+
+**Anything outside those two 302s an anonymous visitor to `team.sprigr.com/login`.** That redirect is the whole failure mode: it looks like a broken link to the person you sent it to, and it will not show up in your own testing, because you are signed in and your session sails straight through.
+
+So put the route under `/api/public/` whenever its audience is **not** a Sprigr user. Typical cases:
+
+- A consent or approval link you email to someone outside the workspace - a customer's IT administrator approving a tenant-wide OAuth grant, say.
+- A provider's post-install landing page, where the merchant's browser arrives before any Sprigr session exists.
+- A machine-to-machine read or write from an ops script that authenticates with its own bearer token.
+
+Do **not** reach for it reflexively. `/oauth/start` and friends belong behind the gate: they bind tokens to an actor read from the platform-verified viewer header, so they are meaningless without a session, and a signed-in-only route gets the gate's protection for free.
+
+### A route under `/api/public/` owns its own front door
+
+The prefix buys exactly one thing: the request will not be redirected to portal login. It reaches your handler with `userId='anonymous'`, `role='anonymous'`, and the install's `companyId`. Everything else is yours:
+
+- **Authenticate the caller yourself** where the route does anything privileged. A webhook verifies its HMAC; an ops route checks a publisher secret and fails closed (503) when unseeded. A route that merely redirects a human onward to a provider's own consent screen may need no gate at all - but say so in the file, and say why.
+- **Bound anything you write.** There is no platform rate limit in front of these routes. A handler that writes a row per request is an unmetered write amplifier on a tenant's D1, billed per row and retained for whatever TTL you chose. If the route must write (an OAuth CSRF row, for example), cap the table and evict the oldest rather than refusing over the cap - refusing hands any caller an easy way to lock the tenant out of the very flow the route exists to serve. Index whatever column your sweep filters on, or the sweep gets more expensive with every junk row.
+- **Assume the URL is public.** Never put a secret in the path or the query string, and never let the route echo install data back to an unauthenticated caller.
+
+### Getting it wrong is silent
+
+Nothing fails at publish time, no test catches it, and the route works perfectly for you. The first report is a customer saying the link you sent them asks for a login they do not have. `microsoft-365`'s tenant-wide admin-consent link shipped at `/oauth/admin-consent/start` and sat there broken for its entire audience - a route whose own header said "the approving admin need not be a Sprigr user" - until someone ran a `curl` with no cookies:
+
+```
+$ curl -s -o /dev/null -w "%{http_code} %{redirect_url}" --max-redirs 0 \
+    https://<slug>-<id>.apps.sprigr.com/oauth/admin-consent/start
+302 https://team.sprigr.com/login?returnTo=...
+```
+
+**Make that curl part of shipping any route meant for an outside visitor.** No cookies, no redirects followed, look at the `Location`. A `302` to `team.sprigr.com/login` means the path is gated; anything else means the route is reachable. Reference implementations: `apps/shopify/src/app/api/public/custom-app-landing/route.ts` (a provider's post-install landing) and `apps/microsoft-365/src/app/api/public/admin-consent/start/route.ts` (an emailed approval link), both in `sprigr-apps`.
+
 ## 7. Local dev
 
 The kit's CLI dev harness (`sprigr app dev --dir apps/<slug>`, CLI >= 0.2.0, Node >= 22.5) runs your **tool handlers and the entire OAuth callback loop** against a local SQLite-backed copy of your per-install D1 - before any publish, no Sprigr account needed. What it **cannot** run is the platform host object: every `env.SPRIGR.*` method throws locally, and webhook/schedule dispatch plus the build pipeline only exist on the platform. So the final shakedown is still: publish, install, click through.
@@ -678,6 +717,7 @@ Test plan:
 5. If OAuth: click Connect, follow the redirect, log into the provider, confirm `state.installId` decodes to your install id (not `unknown`).
 6. Confirm tokens land in your per-install D1's `<slug>_secrets` table.
 7. Exercise a tool through an agent chat and confirm it fires.
+8. If any route is meant for a visitor who is **not** a Sprigr user, curl it with no cookies and confirm it does not `302` to `team.sprigr.com/login` (see §6b). Your own browser session hides this.
 
 ## 10. Further reading in this kit
 
