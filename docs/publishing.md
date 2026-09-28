@@ -11,6 +11,7 @@ Every package under `packages/` publishes to npm, so apps (internal and external
 | `@sprigr/apps-dedup-latch` | |
 | `@sprigr/apps-fleet-conventions` | Pure functions, no runtime deps. Shared with sprigr-team's `@sprigr/team-shared`. |
 | `@sprigr/apps-fetch-budget` | |
+| `@sprigr/apps-acl-identity-link` | Structural types, no runtime deps. |
 | `@sprigr/apps-undo-journal` | |
 | `@sprigr/apps-webhook-registry` | |
 | `@sprigr/apps-faceted-search` | React; peer deps react/react-dom >= 18. Extra `./embed` entry. |
