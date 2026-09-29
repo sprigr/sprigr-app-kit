@@ -13,7 +13,7 @@
  * each indexing run calls it, so existing connections backfill on their next
  * run. A per-isolate memo keeps a hot isolate from re-asking every tick.
  */
-import type { AclIdentityEnv, AclOwner, AclActor } from './types';
+import type { AclIdentityEnv, AclOwner, AclActor, AclIdentityLinkResult } from './types';
 
 /** The platform owner for a connection's actor: the human if there is one. */
 export function aclOwnerForActor(actor: AclActor): AclOwner | null {
@@ -23,37 +23,66 @@ export function aclOwnerForActor(actor: AclActor): AclOwner | null {
 }
 
 const linkedThisIsolate = new Set<string>();
+const ownerNotFoundThisIsolate = new Set<string>();
 
-/** Test hook: forget what this isolate already linked. */
+/** Test hook: forget what this isolate already linked or was refused. */
 export function resetAclIdentityLinkMemoForTests(): void {
   linkedThisIsolate.clear();
+  ownerNotFoundThisIsolate.clear();
+}
+
+// `env.SPRIGR.acl.linkIdentity` failed: 404 owner_not_found. Matches the
+// bridge's thrown message when the build-runner doesn't yet carry `err.code`
+// (sprigr-team#9075 step 0). Prefer `err.code` when it's present.
+const OWNER_NOT_FOUND_MESSAGE = /\b404 owner_not_found\b/;
+
+function isOwnerNotFound(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'code' in err && (err as { code?: unknown }).code === 'owner_not_found') {
+    return true;
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return OWNER_NOT_FOUND_MESSAGE.test(message);
 }
 
 /**
- * Record that `actor`'s connection belongs to `email`. Best-effort: a failure
- * only means the owner keeps seeing public files until the next run, so it
- * logs and never fails the indexing run. A no-op when the platform bridge
- * predates `env.SPRIGR.acl` (an older build-runner).
+ * Record that `actor`'s connection belongs to `email`. Best-effort in the
+ * sense that it never throws: on failure it logs and returns a result the
+ * caller can act on (or ignore, unchanged from before). A no-op when the
+ * platform bridge predates `env.SPRIGR.acl` (an older build-runner), or when
+ * there's nothing to link, which reports `{ ok: false, reason: 'unavailable' }`.
+ *
+ * A platform refusal of `owner_not_found` is terminal for the current owner
+ * (sprigr-team decision 0118: an unknown or inactive owner never collects a
+ * link) — repeating the exact same call every tick wastes a round trip and
+ * spams the warn log, so a per-isolate negative memo skips it until the next
+ * cold start.
  */
 export async function recordAclIdentityLink(
   env: AclIdentityEnv,
   actor: AclActor,
   email: string | null | undefined,
-): Promise<void> {
+): Promise<AclIdentityLinkResult> {
   const acl = env.SPRIGR?.acl;
   const owner = aclOwnerForActor(actor);
   const address = typeof email === 'string' ? email.trim().toLowerCase() : '';
-  if (!acl?.linkIdentity || !owner || !address) return;
+  if (!acl?.linkIdentity || !owner || !address) return { ok: false, reason: 'unavailable' };
   const memoKey = `${owner.kind}:${owner.id}|${address}`;
-  if (linkedThisIsolate.has(memoKey)) return;
+  if (linkedThisIsolate.has(memoKey)) return { ok: true };
+  if (ownerNotFoundThisIsolate.has(memoKey)) return { ok: false, reason: 'owner_not_found' };
   try {
     await acl.linkIdentity(owner, address);
     linkedThisIsolate.add(memoKey);
+    return { ok: true };
   } catch (err) {
     console.warn(
       `[acl-identity-link] linkIdentity failed for ${owner.kind} ${owner.id}:`,
       err instanceof Error ? err.message : String(err),
     );
+    if (isOwnerNotFound(err)) {
+      ownerNotFoundThisIsolate.add(memoKey);
+      return { ok: false, reason: 'owner_not_found' };
+    }
+    return { ok: false, reason: 'failed' };
   }
 }
 
@@ -73,6 +102,11 @@ export async function removeAclIdentityLink(
   for (const key of [...linkedThisIsolate]) {
     if (key.startsWith(`${owner.kind}:${owner.id}|`) && (!address || key.endsWith(`|${address}`))) {
       linkedThisIsolate.delete(key);
+    }
+  }
+  for (const key of [...ownerNotFoundThisIsolate]) {
+    if (key.startsWith(`${owner.kind}:${owner.id}|`) && (!address || key.endsWith(`|${address}`))) {
+      ownerNotFoundThisIsolate.delete(key);
     }
   }
   try {

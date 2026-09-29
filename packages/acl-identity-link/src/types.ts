@@ -22,3 +22,12 @@ export interface AclIdentityBridge {
 export interface AclIdentityEnv {
   SPRIGR?: { acl?: AclIdentityBridge };
 }
+
+/**
+ * Outcome of `recordAclIdentityLink`. Never thrown — a caller that wants to
+ * react to a terminal refusal (e.g. back off retrying) reads this; a caller
+ * that doesn't care can keep ignoring the return value, as before.
+ */
+export type AclIdentityLinkResult =
+  | { ok: true }
+  | { ok: false; reason: 'owner_not_found' | 'failed' | 'unavailable' };
