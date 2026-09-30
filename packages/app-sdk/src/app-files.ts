@@ -158,12 +158,38 @@ export function putAppFile(env: AppFilesEnv, args: PutAppFileArgs): Promise<PutA
   });
 }
 
+const STREAM_PUT_MAX_ATTEMPTS = 3;
+const STREAM_PUT_BASE_DELAY_MS = 500;
+
+/**
+ * Same transient-R2-fault signature the platform's own `r2PutWithRetry`
+ * matches (sprigr-team `packages/shared/src/utils/r2-retry.ts`): a generic
+ * internal error carrying code 10001 or 10043, or a 503.
+ */
+function isTransientPutStreamFailure(status: number, message: string): boolean {
+  if (status === 503) return true;
+  if (status !== 502) return false;
+  const msg = message.toLowerCase();
+  return msg.includes('(10001)') || msg.includes('(10043)');
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Store bytes by streaming the raw body straight into the app's contained
  * R2 namespace. Unlike `putAppFile`, this never base64-encodes the bytes
  * and (with a `ReadableStream` body) never buffers them whole in the
  * isolate — pipe a source `Response.body` directly through for multi-MB
  * blobs. Metadata travels in headers; the body is opaque bytes.
+ *
+ * The platform's put-stream route cannot retry a transient R2 fault itself
+ * (its body is spent once read), so a resendable body — `ArrayBuffer` /
+ * `Uint8Array` already in hand, not a `ReadableStream` — gets a bounded
+ * retry here instead. The key is deterministic, so a retry is a full
+ * overwrite, exactly the argument the platform's buffered `put` route makes
+ * for its own retry (wfp-files.ts, sprigr-team).
  */
 export async function putAppFileStream(
   env: AppFilesEnv,
@@ -180,14 +206,35 @@ export async function putAppFileStream(
   if (typeof args.contentLength === 'number' && Number.isFinite(args.contentLength)) {
     headers['x-app-file-length'] = String(args.contentLength);
   }
-  const res = await fetch(`${platformBase(env)}/internal/wfp/file/put-stream`, {
-    method: 'POST',
-    headers,
-    body: args.body,
-    // Required by the Workers runtime when sending a streaming request body.
-    ...(args.body instanceof ReadableStream ? { duplex: 'half' } : {}),
-  } as RequestInit & { duplex?: 'half' });
-  return parseResult<PutAppFileResult>(res, 'put-stream');
+
+  const resendable = !(args.body instanceof ReadableStream);
+  const attempts = resendable ? STREAM_PUT_MAX_ATTEMPTS : 1;
+
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const res = await fetch(`${platformBase(env)}/internal/wfp/file/put-stream`, {
+      method: 'POST',
+      headers,
+      body: args.body,
+      // Required by the Workers runtime when sending a streaming request body.
+      ...(args.body instanceof ReadableStream ? { duplex: 'half' } : {}),
+    } as RequestInit & { duplex?: 'half' });
+    try {
+      return await parseResult<PutAppFileResult>(res, 'put-stream');
+    } catch (err) {
+      lastErr = err;
+      if (
+        !resendable ||
+        attempt === attempts ||
+        !(err instanceof AppFilesError) ||
+        !isTransientPutStreamFailure(err.status, err.message)
+      ) {
+        throw err;
+      }
+      await sleep(STREAM_PUT_BASE_DELAY_MS * 2 ** (attempt - 1));
+    }
+  }
+  throw lastErr;
 }
 
 /** Mint a signed, time-limited download URL for an app file. */
