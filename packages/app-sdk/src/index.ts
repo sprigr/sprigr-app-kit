@@ -405,6 +405,12 @@ export interface SprigrDataApi {
  * URL the upstream deletes after a short retention window) so the URL your
  * app hands back keeps resolving.
  *
+ * Per-user storage (sprigr-team#9621): keys under the manifest's
+ * `actor_scoped_storage_prefixes` are stored and resolved per CALLER by the
+ * platform, from the signed actor the wrapper forwards on every call. Keep
+ * using app-relative keys; never add your own owner tag. A call with no actor
+ * may only `list` / `delete` there (maintenance), never read.
+ *
  * This is the in-isolate bridge surface, injected on `env.SPRIGR` for
  * `/__sprigr/*` tool / webhook / event handlers. The standalone
  * `putAppFileStream` / `appFileUrl` helpers in this package call the same
@@ -435,6 +441,67 @@ export interface SprigrFilesApi {
     key: string,
     opts?: { expiresIn?: number },
   ): Promise<{ ok: boolean; url: string; expires_at: number; key: string }>;
+  /**
+   * Buffered put of base64 bytes (cap 10 MB); prefer `putStream` for anything
+   * large. Optional: absent on wrapper builds before sprigr-team#9621, so
+   * feature-detect. Throws with `err.code` / `err.status` on a refusal.
+   */
+  put?(
+    key: string,
+    base64: string,
+    opts?: { contentType?: string; filename?: string },
+  ): Promise<{ ok: boolean; key: string; bytes: number; contentType: string }>;
+  /** Read a stored object back as base64. Throws `err.code === 'not_found'`
+   *  (404) when absent. Optional: see `put`. */
+  get?(key: string): Promise<{
+    ok: boolean;
+    key: string;
+    base64: string;
+    contentType: string;
+    filename?: string;
+    bytes: number;
+  }>;
+  /**
+   * List stored keys under an app-relative prefix, 1000 per page; pass the
+   * returned `cursor` for the next page. On a call with no actor (a schedule,
+   * webhook or event handler), a prefix under `actor_scoped_storage_prefixes`
+   * lists EVERY user's copies, each entry carrying an opaque `owner_ref`
+   * (`owner_scope: 'all_owners'`); with `ownerless: true` it lists the copies
+   * written there before the prefix was declared (`owner_scope: 'ownerless'`).
+   * Optional: see `put`.
+   */
+  list?(
+    prefix?: string,
+    opts?: { cursor?: string; ownerless?: boolean },
+  ): Promise<SprigrFilesListResult>;
+  /**
+   * Delete a stored key. On a call with no actor, a per-user key needs the
+   * `owner_ref` (or `ownerless: true`) a maintenance `list` returned; on a call
+   * made for a user both are ignored and that user's own copy is deleted.
+   * Optional: see `put`.
+   */
+  delete?(key: string, opts?: { owner_ref?: string; ownerless?: boolean }): Promise<{ ok: boolean; key: string }>;
+}
+
+/** One entry of `env.SPRIGR.files.list`. `owner_ref` / `ownerless` appear only
+ *  on a maintenance listing of a per-user prefix (sprigr-team#9621). */
+export interface SprigrFilesListItem {
+  key: string;
+  bytes: number;
+  uploaded?: string;
+  filename?: string;
+  contentType?: string;
+  owner_ref?: string;
+  ownerless?: boolean;
+}
+
+/** Result of `env.SPRIGR.files.list`. */
+export interface SprigrFilesListResult {
+  ok: boolean;
+  files: SprigrFilesListItem[];
+  truncated: boolean;
+  cursor?: string;
+  owner_scope?: 'all_owners' | 'ownerless';
 }
 
 /**
