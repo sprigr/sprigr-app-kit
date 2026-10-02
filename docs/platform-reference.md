@@ -400,7 +400,7 @@ Tool / event / webhook handlers also get an injected `env.SPRIGR` host object. E
 | `integrations.invoke(req)` / `invoke(tool, args)` | Call a built-in integration / cross-tenant tool |
 | `run_workflow(id, opts)` | Synchronously run a tenant workflow (Decision Points) |
 | `inbox.append(args)` / `registerChannel(...)` / `usage.report(...)` | Inbox mirror, shared-channel routing, usage metering |
-| `files.{putStream,url}` | Durable app-scoped file storage in Sprigr R2 + signed download URLs (see below) |
+| `files.{putStream,url,put,get,list,delete}` | Durable app-scoped file storage in Sprigr R2 + signed download URLs, per user under `actor_scoped_storage_prefixes` (see below) |
 | `log(entry \| entry[])` | Durable app log rows in the platform's `system_logs` (Analytics Engine, 90 days); replaces per-webhook / per-tick D1 audit rows (see below) |
 | `jobs.{start,get,signal,cancel,list}` | Durable, resumable multi-step jobs (declare in manifest `jobs[]`; needs `sprigr.jobs`) |
 | `store.{get,put,delete,list}` | Company/publisher-scoped KV (needs `sprigr.jobs`; publisher scope needs `sprigr.jobs:publisher`) |
@@ -569,6 +569,8 @@ The fallback is opt-in per call site so the weaker path is visible in review rat
 - **`url(key, opts?)` -> `{ ok, url, expires_at, key }`** mints a signed download URL for a stored `key`. `opts.expiresIn` is seconds, clamped server-side (default 24h, min 60s, max ~10y). The URL expires, so re-mint on demand rather than caching it.
 
 **Isolation + caps.** Every `key` is app-relative; the platform confines it server-side to a per-install prefix (`_apps/{installId}/...`), so an app can only ever touch its own files, never another install's or an agent's. A single `putStream` object caps at **200 MB**. Keys with `..` or absolute segments are rejected, not silently rewritten.
+
+**Per-user storage (`actor_scoped_storage_prefixes`).** The install namespace is one per COMPANY, so a copy of one user's data (a Drive read, a mail attachment, an edited document) is visible to every colleague who can name its key. Declare the prefixes where you keep such copies, e.g. `"actor_scoped_storage_prefixes": ["drive/reads/", "edited/", "created/"]`, and the platform stores every key under them per verified caller (`_apps/{installId}/~u/{ownerHash}/...`, the hash derived server-side from the signed actor the wrapper forwards on every `env.SPRIGR.files` call: the bound user, else the agent). Keep using app-relative keys and never add your own owner tag: user B asking for user A's key simply gets B's own object (`not_found`). Without an actor (schedule, webhook, event) a per-user key is refused (`actor_required`) except for maintenance: `files.list(prefix)` returns every user's copies with an opaque `owner_ref` for `files.delete(key, { owner_ref })`, and `files.list(prefix, { ownerless: true })` / `files.delete(key, { ownerless: true })` sweep copies written before the prefix was declared, which nothing can read any more. A `files.edit` of a per-user file must write under a declared prefix (declare `edited/`, or pass an `output_key` under one), else `output_not_owner_scoped`. Agents' `read_file` / `generate_url` open a per-user key only for its owner. Use `env.SPRIGR.files` for this, not the standalone HTTP helpers below, which carry no actor. Platform side: sprigr-team decision `0140-marketplace-app-files-under-declared-prefixes-are-stored-per-verified-caller`.
 
 Re-host a provider's expiring asset, mirroring Motion's `persistVideo` (`apps/motion/src/handlers/motion-tool.ts`):
 
