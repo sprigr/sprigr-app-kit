@@ -20,7 +20,11 @@
  *   --kind      manifest `kind` (default: integration)
  *   --name      display name (default: Title Case of the slug)
  *   --no-oauth  skip the OAuth files, manifest secrets, and oauth-utils
- *               vendor dependency (for apps with no third-party login)
+ *               vendor dependency (for apps with no third-party login).
+ *               With OAuth on (the default) the connection is install-wide,
+ *               so the generated /oauth/start route and the settings page's
+ *               Connect/Reconnect controls are owner or admin only
+ *               (src/lib/viewer.ts, sprigr-apps#2357).
  *   --template  which skeleton to generate. `default` is the single-
  *               integration starter this script has always produced.
  *               `fulfilment-provider` and `order-source` generate a complete
@@ -122,12 +126,16 @@ const KIT_DEPS = NO_OAUTH ? ["app-sdk", "d1-kv"] : ["app-sdk", "oauth-utils", "d
 // Pinned per package, because they do not move together. d1-kv 0.2.0 is the
 // first version with the required `encryption` option this scaffolder emits;
 // pinning 0.1.0 alongside that code would not compile.
-// NOTE: app-sdk and oauth-utils are left on the version this file has always
-// pinned. Both are behind their published latest (app-sdk 0.8.x, oauth-utils
-// 0.2.0) and that predates this change, so bumping them belongs in its own
-// PR with its own verification rather than riding along here.
+// app-sdk 0.9.0 is the first version that exports `resolveViewerContext`,
+// which the generated src/lib/viewer.ts gates the install-wide connection on
+// (sprigr-apps#2357); 0.12.0 is the current release and what the adapter
+// examples already run. The scaffold's own test typechecks a generated app
+// against this exact pin, so a pin without that export fails there.
+// NOTE: oauth-utils is left on the version this file has always pinned. It is
+// behind its published latest (0.2.x), and bumping it belongs in its own PR
+// with its own verification rather than riding along here.
 const KIT_DEP_VERSIONS = {
-  "app-sdk": "0.1.0",
+  "app-sdk": "0.12.0",
   "oauth-utils": "0.1.0",
   "d1-kv": "0.2.0",
 };
@@ -369,6 +377,10 @@ const vitestConfigTs = `/**
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  // tsconfig sets \`jsx: "preserve"\` for Next's compiler, which would leave
+  // JSX untransformed here. A test that imports src/app/page.tsx (the
+  // scaffolded connection-admin test does) needs the automatic runtime.
+  esbuild: { jsx: 'automatic' },
   test: {
     include: ['__tests__/**/*.test.ts'],
     exclude: ['__tests__/__helpers__/**', '**/node_modules/**', '**/dist/**'],
@@ -443,6 +455,7 @@ const envTs = `/**
  * The marketplace runtime binds these onto the per-install WFP script:
  *   - DB          - per-install D1 (always)
  *   - INSTALL_ID / COMPANY_ID / APP_SLUG - runtime-injected identifiers
+ *   - SPRIGR_VIEWER_SECRET - verifies the signed viewer context
  *   - SPRIGR_INSTALL_TOKEN / SPRIGR_PLATFORM_BASE - platform API access${
    NO_OAUTH
      ? ""
@@ -472,6 +485,11 @@ export interface ${PASCAL}Env {
   COMPANY_ID?: string;
   /** Optional - only present when the runtime injects it. */
   APP_SLUG?: string;
+  /** Per-install key the platform derives and binds so the app can verify
+   *  the signed \`X-Sprigr-Viewer\` context (resolveViewerContext in
+   *  @sprigr/apps-app-sdk). Absent where the platform has no signing key
+   *  configured; the viewer then arrives on the platform-stamped headers. */
+  SPRIGR_VIEWER_SECRET?: string;
   /** Anything else CloudflareEnv has - keeps the type assignable to
    *  the OpenNext-cloudflare CloudflareEnv constraint. */
   [key: string]: unknown;
@@ -624,7 +642,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 }
 `;
 
-const pageTsx = `/**
+const pageTsx = NO_OAUTH
+  ? `/**
  * ${NAME} - per-install settings UI (SSR).
  *
  * This is the manifest \`runtime.entry\`: what a tenant sees when they
@@ -638,17 +657,68 @@ export default async function Page() {
   return (
     <main>
       <h1>${NAME}</h1>
-      <p>TODO: replace with the real per-install settings UI.</p>${
-        NO_OAUTH
-          ? ""
-          : `
-      <p>
-        <a href="oauth/start">Connect ${NAME}</a>
-      </p>`
-      }
+      <p>TODO: replace with the real per-install settings UI.</p>
     </main>
   );
 }
+`
+  : `/**
+ * ${NAME} - per-install settings UI (SSR).
+ *
+ * This is the manifest \`runtime.entry\`: what a tenant sees when they
+ * open the app from the Sprigr portal. Replace with the real settings
+ * surface (connection status, configuration, sync history, ...).
+ *
+ * The ${NAME} connection is install-wide, so only a company owner or admin
+ * sees the Connect and Reconnect controls; everyone else gets a read-only
+ * note. The routes behind those controls check the role themselves (see
+ * lib/viewer.ts); hiding them here only keeps a member from walking into a
+ * 403. Put any control you add that changes the install-wide connection
+ * (an account, site or workspace picker) behind \`canManage\` too.
+ */
+
+import { headers } from 'next/headers';
+import { getCloudflareContext } from '@opennextjs/cloudflare';
+import { canManageConnection, resolveViewer } from '../lib/viewer';
+
+export const dynamic = 'force-dynamic';
+
+/** Is the viewer a company owner or admin? Fails closed to false. */
+async function viewerCanManage(): Promise<boolean> {
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    const h = await headers();
+    return canManageConnection(await resolveViewer(new Headers(Array.from(h.entries())), env));
+  } catch {
+    // headers() throws outside a request scope (for example at prerender).
+    return false;
+  }
+}
+
+export default async function Page() {
+  const canManage = await viewerCanManage();
+  return (
+    <main>
+      <h1>${NAME}</h1>
+      <p>TODO: replace with the real per-install settings UI.</p>
+      {canManage ? (
+        <>
+          <p>
+            <a href="oauth/start">Connect ${NAME}</a>
+          </p>
+          <p>
+            <a href="oauth/start?reconnect=1">Reconnect ${NAME}</a>
+          </p>
+        </>
+      ) : (
+        <p>{ADMIN_ONLY}</p>
+      )}
+    </main>
+  );
+}
+
+const ADMIN_ONLY =
+  ${JSON.stringify(`Only a company owner or admin can connect or reconnect ${NAME}, because every agent in the company uses this one connection.`)};
 `;
 
 const oauthStartRoute = `/**
@@ -658,6 +728,11 @@ const oauthStartRoute = `/**
  * callback can verify), packs install_id + CSRF into \`state\`, and
  * redirects the user to ${NAME}'s authorize URL with the publisher-
  * shared bouncer as redirect_uri.
+ *
+ * Owner or admin only. The connection is install-wide: whoever completes
+ * this flow decides which ${NAME} account every agent in the company acts
+ * as, so a member gets a 403 before anything is read or written. See
+ * lib/viewer.ts.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -666,11 +741,16 @@ import { buildAuthorizeUrl } from '../../../lib/oauth';
 import { setSetting } from '../../../lib/store';
 import { encodeState, randomHex } from '@sprigr/apps-app-sdk';
 import { requireClientId } from '../../../lib/env';
+import { requireConnectionAdmin } from '../../../lib/viewer';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const { env } = await getCloudflareContext({ async: true });
+  // First, before any D1 read or write: a refused member must not even
+  // re-arm oauth_csrf.
+  const gate = await requireConnectionAdmin(req.headers, env);
+  if (!gate.ok) return gate.response;
   const url = new URL(req.url);
   const returnTo = url.searchParams.get('return_to') ?? undefined;
   const installId = env.INSTALL_ID ?? 'unknown';
@@ -715,6 +795,97 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   });
 
   return NextResponse.redirect(authorizeUrl);
+}
+`;
+
+const viewerTs = `/**
+ * ${NAME} - who may change the install-wide connection.
+ *
+ * This app keeps ONE ${NAME} connection per install (one token set in
+ * ${SLUG_U}_secrets) that every agent in the company uses. The install's
+ * pages are served to every signed-in company member, so a route that
+ * starts or restarts that connection (\`GET /oauth/start\`, first connect
+ * and \`?reconnect=1\`), or re-pins other install-wide state (a selected
+ * account, site or workspace), must check the viewer's company role itself.
+ * Without the check any member could authorize the install with their own
+ * ${NAME} account, and every agent would then act as that member
+ * (sprigr-apps#2312, #2357). Call \`requireConnectionAdmin\` FIRST in every
+ * such route you add.
+ *
+ * The viewer comes from the SDK's \`resolveViewerContext\`: the signed
+ * \`X-Sprigr-Viewer\` token first, then the platform-stamped
+ * \`x-sprigr-role\` header where the install has no \`SPRIGR_VIEWER_SECRET\`
+ * binding (the platform only binds it where its signing key is configured).
+ * website-serve overwrites those headers on every forward and the app has no
+ * other ingress, so a browser cannot supply its own role. Never take a role
+ * from a query param, form field or cookie.
+ *
+ * Fails CLOSED: no viewer, a signed-out viewer, or a viewer with no role is
+ * refused. Only \`owner\` and \`admin\` pass; \`manager\` is a team-level role,
+ * not a company admin.
+ *
+ * A per-user connection (each member links their own ${NAME} account, keyed
+ * by the viewer's \`platformUserId\`) is a different shape and does not take
+ * this gate: there every signed-in member connects for themselves.
+ */
+
+import { NextResponse } from 'next/server';
+import { resolveViewerContext, type ViewerContext } from '@sprigr/apps-app-sdk';
+import type { ${PASCAL}Env } from './env';
+
+/** Roles allowed to connect, reconnect or re-pin the install-wide connection. */
+export const CONNECTION_ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);
+
+/** The resolved viewer, or null when there is none (or it cannot be read). */
+export async function resolveViewer(headers: Headers, env: ${PASCAL}Env): Promise<ViewerContext | null> {
+  return resolveViewerContext(headers, env, { allowTransportFallback: true }).catch(() => null);
+}
+
+/** May this viewer change the install-wide connection? */
+export function canManageConnection(viewer: ViewerContext | null): boolean {
+  if (!viewer || !viewer.platformUserId || !viewer.role) return false;
+  return CONNECTION_ADMIN_ROLES.has(viewer.role.toLowerCase());
+}
+
+export type ConnectionAdminGate =
+  | { ok: true; viewer: ViewerContext; platformUserId: string }
+  | { ok: false; response: NextResponse };
+
+/**
+ * Gate a route that changes the install-wide connection. Call it FIRST,
+ * before any D1 read or write, and return \`response\` when \`ok\` is false:
+ * 401 when there is no signed-in viewer, 403 when the viewer is not an
+ * owner or admin.
+ */
+export async function requireConnectionAdmin(headers: Headers, env: ${PASCAL}Env): Promise<ConnectionAdminGate> {
+  const viewer = await resolveViewer(headers, env);
+  if (!viewer || !viewer.platformUserId) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          ok: false,
+          error: 'not_authenticated',
+          hint: 'No verified viewer on this request. Open this install from the Sprigr portal while signed in.',
+        },
+        { status: 401 },
+      ),
+    };
+  }
+  if (!canManageConnection(viewer)) {
+    return {
+      ok: false,
+      response: NextResponse.json(
+        {
+          ok: false,
+          error: 'admin_required',
+          hint: ${JSON.stringify(`Only a company owner or admin can connect or reconnect ${NAME}, because every agent in the company uses this one connection.`)},
+        },
+        { status: 403 },
+      ),
+    };
+  }
+  return { ok: true, viewer, platformUserId: viewer.platformUserId };
 }
 `;
 
@@ -831,6 +1002,196 @@ describe('env guards', () => {
 `
 }`;
 
+const connectionAdminTest = `/**
+ * Only a company owner or admin can start or restart the install-wide
+ * ${NAME} connection (sprigr-apps#2357).
+ *
+ * The install's pages are served to every signed-in company member, and the
+ * connection is one token set that every agent uses. This drives the real
+ * \`GET /oauth/start\` route and the settings page with the viewer arriving
+ * both ways the platform sends it: the signed \`X-Sprigr-Viewer\` token
+ * (checked against SPRIGR_VIEWER_SECRET) and the platform-stamped headers.
+ *
+ * Keep it as the app grows: add every route that changes the install-wide
+ * connection (an account, site or workspace picker) to it.
+ */
+import { createHmac } from 'node:crypto';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { NextRequest } from 'next/server';
+
+const ctx = vi.hoisted(() => ({ env: null as unknown, headers: new Headers() }));
+vi.mock('@opennextjs/cloudflare', () => ({
+  getCloudflareContext: async () => ({ env: ctx.env }),
+}));
+vi.mock('next/headers', () => ({
+  headers: async () => ctx.headers,
+}));
+
+import { GET as startRoute } from '../src/app/oauth/start/route';
+import Page from '../src/app/page';
+import { AUTHORIZE_URL } from '../src/lib/oauth';
+
+const INSTALL = 'inst_test';
+const VIEWER_SECRET = 'viewer-secret-for-tests';
+
+function b64url(bytes: Buffer | string): string {
+  return Buffer.from(bytes).toString('base64').replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
+}
+
+/** A signed X-Sprigr-Viewer token, the shape website-serve mints. */
+function viewerToken(role: string, platformUserId = \`usr_\${role}\`, secret = VIEWER_SECRET): string {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = b64url(
+    JSON.stringify({
+      install_id: INSTALL,
+      company_id: 'comp_test',
+      user_id: \`u_\${role}\`,
+      platform_user_id: platformUserId,
+      role,
+      issued_at: now - 5,
+      expires_at: now + 120,
+    }),
+  );
+  const mac = b64url(createHmac('sha256', secret).update(\`svc1.\${payload}\`).digest());
+  return \`svc1.\${payload}.\${mac}\`;
+}
+
+type Viewer = Record<string, string>;
+const signed = (role: string): Viewer => ({ 'x-sprigr-viewer': viewerToken(role) });
+/** The platform-stamped headers, for an install without its viewer secret. */
+const transport = (role: string): Viewer => ({ 'x-sprigr-platform-user-id': \`usr_\${role}\`, 'x-sprigr-role': role });
+const NO_VIEWER: Viewer = {};
+
+/** A D1 stand-in that records every statement prepared and every write. */
+function fakeDb() {
+  const statements: string[] = [];
+  const writes: unknown[][] = [];
+  const db = {
+    prepare(sql: string) {
+      statements.push(sql);
+      return {
+        bind: (...args: unknown[]) => ({
+          first: async () => null,
+          all: async () => ({ results: [] }),
+          run: async () => {
+            writes.push(args);
+            return { success: true };
+          },
+        }),
+      };
+    },
+  };
+  return { db, statements, writes };
+}
+
+let d1: ReturnType<typeof fakeDb>;
+
+beforeEach(() => {
+  d1 = fakeDb();
+  ctx.env = {
+    DB: d1.db,
+    INSTALL_ID: INSTALL,
+    SPRIGR_VIEWER_SECRET: VIEWER_SECRET,
+    ${ENV_PREFIX}_TOKEN_KEK: 'test-kek',
+    ${ENV_PREFIX}_CLIENT_ID: 'client-id',
+    ${ENV_PREFIX}_CLIENT_SECRET: 'client-secret',
+  };
+  ctx.headers = new Headers();
+});
+
+function start(viewer: Viewer, query = '?reconnect=1') {
+  return startRoute(new NextRequest(\`https://\${INSTALL}.example.com/oauth/start\${query}\`, { headers: viewer }));
+}
+
+const csrfArmed = () => d1.writes.some((args) => args[0] === 'oauth_csrf');
+
+describe('GET /oauth/start is owner or admin only', () => {
+  it.each([
+    ['a member, signed context', signed('member')],
+    ['a member, platform-stamped headers', transport('member')],
+    ['a manager', signed('manager')],
+  ])('%s gets a 403 and D1 is never touched', async (_label, viewer) => {
+    const res = await start(viewer);
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ ok: false, error: 'admin_required' });
+    expect(d1.statements).toEqual([]);
+  });
+
+  it('a member cannot make the first connect either', async () => {
+    const res = await start(signed('member'), '');
+
+    expect(res.status).toBe(403);
+    expect(d1.statements).toEqual([]);
+  });
+
+  it.each([
+    ['no viewer at all', NO_VIEWER],
+    ['a signed-out viewer', { 'x-sprigr-viewer': viewerToken('anonymous', 'anonymous') }],
+    ['a token signed with the wrong key and no fallback headers', { 'x-sprigr-viewer': viewerToken('owner', 'usr_owner', 'wrong-secret') }],
+    ['a role header with no viewer id', { 'x-sprigr-role': 'owner' }],
+  ])('%s fails closed with a 401 and D1 is never touched', async (_label, viewer) => {
+    const res = await start(viewer);
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toMatchObject({ ok: false, error: 'not_authenticated' });
+    expect(d1.statements).toEqual([]);
+  });
+
+  it('a signed member context outranks a transport header claiming owner', async () => {
+    const res = await start({ ...signed('member'), ...transport('owner') });
+
+    expect(res.status).toBe(403);
+    expect(d1.statements).toEqual([]);
+  });
+
+  it.each([
+    ['an owner, signed context', signed('owner')],
+    ['an admin, signed context', signed('admin')],
+    ['an admin, platform-stamped headers', transport('admin')],
+  ])('%s is redirected to ${NAME} with a csrf armed', async (_label, viewer) => {
+    const res = await start(viewer);
+
+    expect(res.status).toBe(307);
+    const location = new URL(res.headers.get('location') ?? '');
+    const authorize = new URL(AUTHORIZE_URL);
+    expect(location.origin + location.pathname).toBe(authorize.origin + authorize.pathname);
+    expect(csrfArmed()).toBe(true);
+  });
+});
+
+/** Every href in a rendered element tree, read without a DOM. */
+function hrefs(node: unknown): string[] {
+  if (Array.isArray(node)) return node.flatMap(hrefs);
+  if (!node || typeof node !== 'object') return [];
+  const props = (node as { props?: { href?: unknown; children?: unknown } }).props;
+  if (!props) return [];
+  return [...(typeof props.href === 'string' ? [props.href] : []), ...hrefs(props.children)];
+}
+
+async function renderPage(viewer: Viewer): Promise<string[]> {
+  ctx.headers = new Headers(viewer);
+  return hrefs(await Page());
+}
+
+describe('the settings page shows the connection controls only to an owner or admin', () => {
+  it.each([
+    ['a member', signed('member')],
+    ['a member, platform-stamped headers', transport('member')],
+    ['no viewer', NO_VIEWER],
+  ])('%s sees no Connect or Reconnect link', async (_label, viewer) => {
+    expect(await renderPage(viewer)).toEqual([]);
+  });
+
+  it.each([
+    ['an owner', signed('owner')],
+    ['an admin, platform-stamped headers', transport('admin')],
+  ])('%s sees Connect and Reconnect', async (_label, viewer) => {
+    expect(await renderPage(viewer)).toEqual(['oauth/start', 'oauth/start?reconnect=1']);
+  });
+});
+`;
+
 // ---------------------------------------------------------------------------
 // Write everything
 // ---------------------------------------------------------------------------
@@ -882,8 +1243,10 @@ if (IS_ADAPTER) {
   put("__tests__/smoke.test.ts", smokeTest);
   if (!NO_OAUTH) {
     put("src/lib/oauth.ts", oauthTs);
+    put("src/lib/viewer.ts", viewerTs);
     put("src/app/oauth/start/route.ts", oauthStartRoute);
     put("src/handlers/oauth-callback.ts", oauthCallbackHandler);
+    put("__tests__/connection-admin.test.ts", connectionAdminTest);
   }
 }
 
@@ -919,7 +1282,11 @@ console.log(`
        https://staging-oauth-bouncer.sprigr.com/${SLUG}/oauth/callback
   5. Seed publisher secrets after first publish:
        sprigr app set-publisher-secrets ${SLUG} \\
-         --secrets '{"${ENV_PREFIX}_CLIENT_ID":"...","${ENV_PREFIX}_CLIENT_SECRET":"..."}'`
+         --secrets '{"${ENV_PREFIX}_CLIENT_ID":"...","${ENV_PREFIX}_CLIENT_SECRET":"..."}'
+  6. The connection is install-wide, so Connect/Reconnect are owner or admin
+     only (src/lib/viewer.ts). Call requireConnectionAdmin first in any route
+     you add that changes it (account/site/workspace pickers), and extend
+     __tests__/connection-admin.test.ts to cover that route.`
   }
   Then: pnpm -F ${SLUG} typecheck && pnpm -F ${SLUG} test && pnpm -F ${SLUG} build
 

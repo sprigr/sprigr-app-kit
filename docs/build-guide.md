@@ -101,7 +101,7 @@ pnpm create:app <slug> --kind tool --no-oauth  # pure tool app, no OAuth
 pnpm install                                   # register the new workspace package
 ```
 
-The scaffolder generates the full skeleton: manifest, `package.json` with the kit packages exact-pinned, `migrations/0001_init.sql` (settings + secrets key-value tables), `src/lib/env.ts` (typed bindings with the required `CloudflareEnv` global augmentation), `src/lib/store.ts`, `src/lib/oauth.ts` stub, `src/app/oauth/start/route.ts` (environment-aware bouncer URL, CSRF minting), `src/handlers/oauth-callback.ts` (csrf verification + token exchange), a tool handler stub, a settings page, and a smoke test. It runs the vendor sync and prints a TODO checklist.
+The scaffolder generates the full skeleton: manifest, `package.json` with the kit packages exact-pinned, `migrations/0001_init.sql` (settings + secrets key-value tables), `src/lib/env.ts` (typed bindings with the required `CloudflareEnv` global augmentation), `src/lib/store.ts`, `src/lib/oauth.ts` stub, `src/lib/viewer.ts` (`requireConnectionAdmin`: only a company owner or admin may change the install-wide connection), `src/app/oauth/start/route.ts` (owner or admin gate, environment-aware bouncer URL, CSRF minting), `src/handlers/oauth-callback.ts` (csrf verification + token exchange), a tool handler stub, a settings page that shows Connect and Reconnect only to owners and admins, a smoke test, and `__tests__/connection-admin.test.ts` (drives the route and the page as member, admin and owner). It runs the vendor sync and prints a TODO checklist.
 
 Don't hand-copy the harvest example into a new app; scaffold, then use harvest to see how each TODO was filled for a real provider.
 
@@ -137,7 +137,7 @@ Validation gotchas that reject a publish (details: reference §2):
 | Provider shape | Pattern |
 |---|---|
 | One connection per install, standard refresh tokens | Install-level: the scaffold default and the harvest example. Start here. |
-| Each user/agent connects their own account | Per-actor: same primitives, but the token table keys rows by actor id, and `/oauth/start` carries the actor in the state. |
+| Each user/agent connects their own account | Per-actor: same primitives, but the token table keys rows by actor id, and `/oauth/start` carries the actor in the state. Every signed-in member connects for themselves, so the scaffold's owner-or-admin gate does not apply to the per-user connect route. |
 | Short-lived access tokens with single-use rotating refresh tokens | The kit's `oauth-utils` already persists the rotated refresh token first and retries once on a stale-token race; keep your own writes in that order too. |
 | Non-expiring access token, no refresh token at all (Todoist, GitHub OAuth apps) | Pass `allowNoRefreshToken: true` to `exchangeAndPersist`; it stores `expires_at = 'never'` and `getValidAccessToken` serves the cached token without a refresh cycle. No refresh cron needed. If the provider revokes the token, API calls 401: surface a reconnect. |
 | Incremental scope expansion | Track granted scopes per connection (persist `AuthCodeResponse.scope`); pass the provider's incremental-consent param on reconnect. |
@@ -189,6 +189,7 @@ The scaffolder generates all four with TODOs; the harvest example shows them fil
 
 **3. `src/app/oauth/start/route.ts`** ([harvest](../examples/harvest/src/app/oauth/start/route.ts)): already complete from the scaffold. What it does and why:
 
+- Calls `requireConnectionAdmin` from `src/lib/viewer.ts` first, before any D1 read or write. The connection is install-wide and the install's pages are served to every company member, so whoever completes this flow decides which provider account every agent acts as. A viewer who is not a company owner or admin gets a 403 (401 with no signed-in viewer). The role comes from `resolveViewerContext` in `@sprigr/apps-app-sdk`, never from a query param, form field or cookie. Gate every route you add that changes the install-wide connection (an account, site or workspace picker) the same way, and add it to `__tests__/connection-admin.test.ts`.
 - Reads `env.INSTALL_ID` and packs it into the state: this is how the bouncer finds the install.
 - Refuses to restart when already connected unless `?reconnect=1` (a drive-by GET must not clobber a pending CSRF).
 - Mints a CSRF (`randomHex(16)`), stores it in D1 as `oauth_csrf`, includes it in the state.
@@ -230,7 +231,7 @@ Each `tools[]` entry points at a handler in `src/handlers/` whose default export
 
 ## 8. Step 6: settings UI and local verification
 
-`src/app/page.tsx`: show connection status, a Connect button to `/oauth/start` (and a `?reconnect=1` variant), and provider-specific pickers. Wrap the initial load in try/catch: on a cold install the migrations may not have run yet. For a filterable catalog UI over your app's search index (listings, products, jobs), use `@sprigr/apps-faceted-search` instead of hand-rolling one: see [faceted-search.md](faceted-search.md).
+`src/app/page.tsx`: show connection status, a Connect button to `/oauth/start` (and a `?reconnect=1` variant), and provider-specific pickers. The scaffolded page shows Connect and Reconnect only to a company owner or admin (`canManageConnection`); keep any picker that changes the install-wide connection behind the same check. The routes enforce the role themselves, so hiding a control only spares a member a 403. Wrap the initial load in try/catch: on a cold install the migrations may not have run yet. For a filterable catalog UI over your app's search index (listings, products, jobs), use `@sprigr/apps-faceted-search` instead of hand-rolling one: see [faceted-search.md](faceted-search.md).
 
 Inline routes get env via `const { env } = await getCloudflareContext({ async: true })`. Do NOT pass a generic type parameter (it is not for env); typing comes from the scaffolded global `CloudflareEnv` augmentation in `src/lib/env.ts`.
 
