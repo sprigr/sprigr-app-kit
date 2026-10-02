@@ -279,6 +279,17 @@ export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts {
    * missing target is counted in `skippedMissing` instead of being written.
    */
   createIfNotExists?: boolean;
+  /**
+   * Re-stamp `acl_principals` on rows already in the app's `-acl-files`
+   * index without rewriting the rest of each row. Every object must be
+   * exactly `{ objectID, acl_principals }` with a non-empty, valid principal
+   * list; `createIfNotExists` and `index` are refused alongside it. Use it
+   * when the source changes who may see an item without reporting the item
+   * as changed (OneDrive's delta omits sharing-only changes). Needs a
+   * platform with sprigr/sprigr-team#9843; older wrappers drop the flag,
+   * which `partialUpdateData` detects and throws on.
+   */
+  withAcl?: boolean;
 }
 
 /** Reply of `env.SPRIGR.data.partialUpdate` (`POST /internal/wfp/data/partial-update`). */
