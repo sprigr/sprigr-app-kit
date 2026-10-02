@@ -231,6 +231,12 @@ const defaultManifest = {
             name: `${SLUG_U}_oauth_callback`,
             description: `Dispatched by the publisher-shared OAuth bouncer after ${NAME} redirects with a code. Exchanges the code and persists tokens to per-install D1.`,
             handler: "src/handlers/oauth-callback.ts",
+            // Only the bouncer calls this. `internal: true` keeps it off the
+            // agent tool list (the bouncer still dispatches it), and `state`
+            // is required because the bouncer always sends it: an agent that
+            // could call this with no state could bind the install-wide
+            // connection to another provider account (sprigr-apps#2442).
+            internal: true,
             input_schema: {
               type: "object",
               properties: {
@@ -239,12 +245,12 @@ const defaultManifest = {
                 state: {
                   type: "string",
                   description:
-                    "Raw encoded state from /oauth/start; decode and verify csrf against the stored oauth_csrf.",
+                    "Raw encoded state from /oauth/start; decode and verify csrf against the stored oauth_csrf. A call without it is refused.",
                 },
                 environment: { type: "string" },
                 installId: { type: "string" },
               },
-              required: ["code", "redirectUri"],
+              required: ["code", "redirectUri", "state"],
             },
           },
         ]),
@@ -897,34 +903,46 @@ const oauthCallbackHandler = `/**
  * { code, state, redirectUri, environment, installId }. Verifies the
  * csrf from \`state\`, then exchanges the code and persists tokens to
  * per-install D1.
+ *
+ * A call with no \`state\` is refused before anything is exchanged. The
+ * bouncer always sends one, so a stateless call can only come from
+ * something else, and waving it through would let that caller exchange a
+ * code minted for its own ${NAME} account and rebind the install-wide
+ * connection to it (sprigr-apps#2442). The manifest also declares this
+ * tool \`internal: true\`, which keeps it off the agent tool list; keep
+ * both, so dropping either one alone does not reopen the hole.
  */
 
 import { completeOAuthCallback } from '../lib/oauth';
 import { requireClientId, requireClientSecret } from '../lib/env';
 import { getSetting, deleteSetting } from '../lib/store';
-import { decodeState } from '@sprigr/apps-app-sdk';
+import { constantTimeEqual, decodeState } from '@sprigr/apps-app-sdk';
 import type { ${PASCAL}Env } from '../lib/env';
 
 interface CallbackArgs {
   code: string;
   redirectUri: string;
-  state?: string;
+  /** Raw encoded state from /oauth/start. Required: the bouncer always sends it. */
+  state: string;
 }
 
 type CallbackResult = { ok: true } | { ok: false; reason: string; error?: string };
 
 export async function runOAuthCallback(env: ${PASCAL}Env, args: CallbackArgs): Promise<CallbackResult> {
   try {
-    // Verify the csrf minted at /oauth/start. A stale or replayed consent
-    // link must fail loudly; the bouncer surfaces \`error\` to the user.
-    if (args.state) {
-      const { csrf } = decodeState(args.state) as { csrf?: string };
-      const expected = await getSetting(env.DB, 'oauth_csrf');
-      if (!expected || !csrf || csrf !== expected) {
-        return { ok: false, reason: 'csrf mismatch', error: 'expired_or_unknown_csrf' };
-      }
-      await deleteSetting(env.DB, 'oauth_csrf');
+    // Verify the csrf minted at /oauth/start before anything else. A
+    // missing, stale or replayed state must fail loudly; the bouncer
+    // surfaces \`error\` to the user.
+    if (typeof args.state !== 'string' || args.state === '') {
+      return { ok: false, reason: 'missing state', error: 'expired_or_unknown_csrf' };
     }
+    const { csrf } = decodeState(args.state) as { csrf?: unknown };
+    const expected = await getSetting(env.DB, 'oauth_csrf');
+    if (!expected || typeof csrf !== 'string' || !constantTimeEqual(csrf, expected)) {
+      return { ok: false, reason: 'csrf mismatch', error: 'expired_or_unknown_csrf' };
+    }
+    // Burn it before the exchange: one state completes at most one connect.
+    await deleteSetting(env.DB, 'oauth_csrf');
     await completeOAuthCallback({
       env,
       clientId: requireClientId(env),
@@ -1192,6 +1210,154 @@ describe('the settings page shows the connection controls only to an owner or ad
 });
 `;
 
+const oauthCallbackTest = `/**
+ * The OAuth callback only completes a connect that /oauth/start began on
+ * this install (sprigr-apps#2442).
+ *
+ * The bouncer always forwards \`state\`, so a call without one, or with a
+ * csrf this install never minted, is somebody else trying to bind the
+ * install-wide ${NAME} connection to their own ${NAME} account. Both are
+ * refused before ${NAME}'s token endpoint is called and before any token is
+ * written. The bouncer's own call, carrying the csrf /oauth/start stored,
+ * still connects.
+ */
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { encodeState } from '@sprigr/apps-app-sdk';
+import { runOAuthCallback } from '../src/handlers/oauth-callback';
+import { TOKEN_URL } from '../src/lib/oauth';
+import { getSetting, setSetting, tokens } from '../src/lib/store';
+
+type Env = Parameters<typeof runOAuthCallback>[0];
+
+const CSRF = 'csrf-minted-by-oauth-start';
+const REDIRECT_URI = 'https://oauth-bouncer.sprigr.com/${SLUG}/oauth/callback';
+
+/** A D1 stand-in: one Map per table, enough for the d1-kv stores. */
+function fakeDb() {
+  const tables = new Map<string, Map<string, string>>();
+  const rowsOf = (sql: string) => {
+    const name = /(?:FROM|INTO)\\s+(\\w+)/i.exec(sql)?.[1] ?? '';
+    let rows = tables.get(name);
+    if (!rows) tables.set(name, (rows = new Map()));
+    return rows;
+  };
+  return {
+    prepare(sql: string) {
+      const rows = rowsOf(sql);
+      return {
+        bind: (...args: unknown[]) => ({
+          first: async () => {
+            const value = rows.get(String(args[0]));
+            return value === undefined ? null : { value };
+          },
+          all: async () => ({ results: [...rows].map(([key, value]) => ({ key, value })) }),
+          run: async () => {
+            if (/^\\s*DELETE/i.test(sql)) rows.delete(String(args[0]));
+            else rows.set(String(args[0]), String(args[1]));
+            return { success: true };
+          },
+        }),
+      };
+    },
+  };
+}
+
+/** ${NAME}'s token endpoint, answering every exchange with a fresh token set. */
+const tokenEndpoint = vi.fn(
+  async (_url: string, _init?: RequestInit) =>
+    new Response(JSON.stringify({ access_token: 'access-new', refresh_token: 'refresh-new', expires_in: 3600 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }),
+);
+
+let env: Env;
+
+beforeEach(async () => {
+  env = {
+    DB: fakeDb() as never,
+    INSTALL_ID: 'inst_test',
+    ${ENV_PREFIX}_TOKEN_KEK: Buffer.alloc(32, 7).toString('base64'),
+    ${ENV_PREFIX}_CLIENT_ID: 'client-id',
+    ${ENV_PREFIX}_CLIENT_SECRET: 'client-secret',
+  };
+  // The install is already connected to the owner's own account, and the
+  // owner has just started a reconnect, so /oauth/start armed a csrf.
+  await tokens(env).put('access_token', 'access-owner');
+  await tokens(env).put('refresh_token', 'refresh-owner');
+  await setSetting(env.DB, 'oauth_csrf', CSRF);
+  tokenEndpoint.mockClear();
+  vi.stubGlobal('fetch', tokenEndpoint);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+const stateWith = (csrf: string) => encodeState({ installId: 'inst_test', csrf, iat: Date.now() });
+
+async function storedTokens() {
+  const store = tokens(env);
+  return { access: await store.get('access_token'), refresh: await store.get('refresh_token') };
+}
+
+const OWNER_TOKENS = { access: 'access-owner', refresh: 'refresh-owner' };
+
+describe('${SLUG_U}_oauth_callback refuses a call /oauth/start did not begin', () => {
+  it.each([
+    ['no state at all', undefined],
+    ['an empty state', ''],
+  ])('%s: refused, the token endpoint is never called, the tokens are unchanged', async (_label, state) => {
+    const res = await runOAuthCallback(env, {
+      code: 'attacker-code',
+      redirectUri: REDIRECT_URI,
+      state: state as string,
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'missing state', error: 'expired_or_unknown_csrf' });
+    expect(tokenEndpoint).not.toHaveBeenCalled();
+    expect(await storedTokens()).toEqual(OWNER_TOKENS);
+  });
+
+  it('a csrf this install never minted: refused, and the pending csrf survives', async () => {
+    const res = await runOAuthCallback(env, {
+      code: 'attacker-code',
+      redirectUri: REDIRECT_URI,
+      state: stateWith('forged-csrf'),
+    });
+
+    expect(res).toMatchObject({ ok: false, reason: 'csrf mismatch', error: 'expired_or_unknown_csrf' });
+    expect(tokenEndpoint).not.toHaveBeenCalled();
+    expect(await storedTokens()).toEqual(OWNER_TOKENS);
+    expect(await getSetting(env.DB, 'oauth_csrf')).toBe(CSRF);
+  });
+});
+
+describe('the bouncer path still connects', () => {
+  it('with the csrf /oauth/start stored: exchanges the code once, persists the tokens, burns the csrf', async () => {
+    const res = await runOAuthCallback(env, { code: 'owner-code', redirectUri: REDIRECT_URI, state: stateWith(CSRF) });
+
+    expect(res).toEqual({ ok: true });
+    expect(tokenEndpoint).toHaveBeenCalledTimes(1);
+    const [url, init] = tokenEndpoint.mock.calls[0] ?? [];
+    expect(url).toBe(TOKEN_URL);
+    expect(new URLSearchParams(String(init?.body)).get('code')).toBe('owner-code');
+    expect(await storedTokens()).toEqual({ access: 'access-new', refresh: 'refresh-new' });
+    expect(await getSetting(env.DB, 'oauth_csrf')).toBeNull();
+  });
+
+  it('the same state a second time is refused: one state completes one connect', async () => {
+    await runOAuthCallback(env, { code: 'owner-code', redirectUri: REDIRECT_URI, state: stateWith(CSRF) });
+    tokenEndpoint.mockClear();
+
+    const replay = await runOAuthCallback(env, { code: 'owner-code', redirectUri: REDIRECT_URI, state: stateWith(CSRF) });
+
+    expect(replay).toMatchObject({ ok: false, reason: 'csrf mismatch' });
+    expect(tokenEndpoint).not.toHaveBeenCalled();
+  });
+});
+`;
+
 // ---------------------------------------------------------------------------
 // Write everything
 // ---------------------------------------------------------------------------
@@ -1247,6 +1413,7 @@ if (IS_ADAPTER) {
     put("src/app/oauth/start/route.ts", oauthStartRoute);
     put("src/handlers/oauth-callback.ts", oauthCallbackHandler);
     put("__tests__/connection-admin.test.ts", connectionAdminTest);
+    put("__tests__/oauth-callback.test.ts", oauthCallbackTest);
   }
 }
 
@@ -1286,7 +1453,10 @@ console.log(`
   6. The connection is install-wide, so Connect/Reconnect are owner or admin
      only (src/lib/viewer.ts). Call requireConnectionAdmin first in any route
      you add that changes it (account/site/workspace pickers), and extend
-     __tests__/connection-admin.test.ts to cover that route.`
+     __tests__/connection-admin.test.ts to cover that route.
+  7. Keep ${SLUG_U}_oauth_callback \`internal: true\` with \`state\` required:
+     only the bouncer calls it, and the handler refuses a call without a
+     matching state before any exchange (__tests__/oauth-callback.test.ts).`
   }
   Then: pnpm -F ${SLUG} typecheck && pnpm -F ${SLUG} test && pnpm -F ${SLUG} build
 

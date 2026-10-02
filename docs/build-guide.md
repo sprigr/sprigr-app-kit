@@ -114,7 +114,7 @@ Open `apps/<slug>/sprigr-app.json`. Full schema: reference §2. Always touch:
 - `metadata`: description, category, tags. Agents and the marketplace listing read these.
 - `permissions.network_domains`: every host you call, including the OAuth login host. Declarative (not a runtime firewall), but the platform's inbound-OAuth SSRF guard and agent sandbox read it.
 - `secrets[]`: `<PREFIX>_CLIENT_ID`, `<PREFIX>_CLIENT_SECRET`, plus an `INTERNAL_TRIGGER_SECRET` if you add internal trigger routes (the scaffolder does not generate either).
-- `tools[]`: one entry per agent-callable tool plus the `<slug>_oauth_callback` entry. Write real descriptions; agents pick tools by them.
+- `tools[]`: one entry per agent-callable tool plus the `<slug>_oauth_callback` entry. Write real descriptions; agents pick tools by them. Keep the callback `"internal": true` with `state` in its `required` list, as generated: only the bouncer calls it, and its handler refuses a call without a matching state before any exchange (sprigr-apps#2442).
 - `schedules[]`: the scaffolder does NOT generate one; for refresh-token providers, declare a token-refresh cron yourself (snippet in step 6d). Non-expiring-token providers skip it.
 - `docs[]`: AI-facing doc JSON files (see [examples/harvest/docs/tools.json](../examples/harvest/docs/tools.json)); the platform ingests them into a per-app search index so agents learn your tools. Authoring rules and caps: reference §2b. Validation split: `sprigr app validate` checks the declaration shape and that each file exists and parses; the content caps (object count, content length, objectID casing) are enforced server-side at publish, so self-check them against §2b before your first publish.
 
