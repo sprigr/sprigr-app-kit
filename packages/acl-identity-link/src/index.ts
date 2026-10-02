@@ -4,4 +4,4 @@ export {
   removeAclIdentityLink,
   resetAclIdentityLinkMemoForTests,
 } from './acl-identity-link';
-export type { AclActor, AclIdentityBridge, AclIdentityEnv, AclOwner } from './types';
+export type { AclActor, AclIdentityBridge, AclIdentityEnv, AclIdentityLinkResult, AclOwner } from './types';
