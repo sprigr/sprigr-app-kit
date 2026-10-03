@@ -7,6 +7,7 @@
 
 import type { Deadline } from '@sprigr/apps-fetch-budget';
 import { capText } from './content';
+import { isContentFillToken } from './content-fill';
 import { importFileObjects, partitionValidObjects } from './import';
 import { EXTRACTION_DRAIN_BUDGET_MS, MIN_ITEM_BUDGET_MS, remainingBudgetMs } from './tick-budget';
 import type { FileIndexingEnv, FileIndexingStore, IndexedFileObject } from './types';
@@ -106,6 +107,10 @@ export async function drainPendingExtractions(
     console.warn(`${label} pending-extraction drain: listing failed; skipping this run:`, err instanceof Error ? err.message : String(err));
     return 0;
   }
+  // A content-fill row (sprigr-apps#2702) is not a platform job: polling its
+  // token would answer not_found and drop it. createD1FileIndexingStore never
+  // lists them here; this guards a store with its own listing SQL.
+  pending = pending.filter((row) => !isContentFillToken(row.job_token));
   let backfilled = 0;
   let deferred = 0;
   for (const [i, row] of pending.entries()) {
@@ -167,4 +172,37 @@ export async function drainPendingExtractions(
   if (backfilled > 0) console.log(`${label} pending-extraction drain: backfilled ${backfilled} record(s)`);
   if (deferred > 0) console.warn(`${label} pending-extraction drain: deferred ${deferred} row(s) at its budget; they stay queued`);
   return backfilled;
+}
+
+/**
+ * Bring the principals on waiting rows' stored records in line with a
+ * permission re-stamp (0.1.2). A pending row's record is what its drain
+ * imports whole; without this, a narrowing the daily re-stamp wrote to the
+ * index would be undone when the row's text landed (the #2291 class, through
+ * the re-stamp instead of the walk). Covers extraction jobs and content fills.
+ * Throws on a store failure; the caller decides whether that is fatal.
+ */
+export async function syncPendingRecordPrincipals(
+  store: FileIndexingStore,
+  patches: Array<{ objectID: string; acl_principals: string[] }>,
+): Promise<number> {
+  if (patches.length === 0) return 0;
+  const byId = new Map(patches.map((p) => [p.objectID, p.acl_principals]));
+  const rows = await store.listPendingExtractionsFor([...byId.keys()]);
+  let synced = 0;
+  for (const row of rows) {
+    const principals = byId.get(row.object_id);
+    if (!principals) continue;
+    let record: IndexedFileObject;
+    try {
+      record = JSON.parse(row.record_json) as IndexedFileObject;
+    } catch {
+      continue;
+    }
+    if (JSON.stringify(record.acl_principals) === JSON.stringify(principals)) continue;
+    record.acl_principals = principals;
+    await store.refreshPendingExtractionRecord(row.object_id, JSON.stringify(record));
+    synced++;
+  }
+  return synced;
 }

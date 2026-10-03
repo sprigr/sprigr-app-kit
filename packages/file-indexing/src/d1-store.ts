@@ -20,6 +20,8 @@
  *                                              sp_auto_at, sp_walk_next (0016)
  *
  * The walk-seen and pending-extraction tables are identical in both apps.
+ * Content fills (0.1.2, sprigr-apps#2702) live in the pending-extraction table
+ * too, under a `content-fill:<walkKey>` job token, so they need no migration.
  * App-only columns stay readable on `row.raw` and writable by the app's own
  * queries; `enable` takes `extra` values for them (microsoft-365's tenant_id).
  *
@@ -30,6 +32,7 @@
  */
 
 import { actorKey, type D1Like } from '@sprigr/apps-app-sdk';
+import { CONTENT_FILL_TOKEN_PREFIX, contentFillToken } from './content-fill';
 import { actorOfFileRow } from './indexer';
 import type { FileIndexingRow, FileIndexingScope, FileIndexingStore, PendingExtractionRow } from './types';
 
@@ -90,6 +93,8 @@ export function defaultRedact(text: string): string {
 const WALK_SEEN_INSERT_CHUNK = 30;
 /** Ids per pending-row lookup or delete (one parameter each). */
 const PENDING_LOOKUP_CHUNK = 90;
+/** Rows per content-fill upsert (6 parameters each, under D1's 100). */
+const CONTENT_FILL_UPSERT_CHUNK = 16;
 
 export function createD1FileIndexingStore(
   db: D1Like,
@@ -203,6 +208,10 @@ export function createD1FileIndexingStore(
       const extra = opts.extra ?? {};
       for (const k of Object.keys(extra)) ident(k, 'enable extra column');
       await store.remove(scope);
+      // A fresh row starts a full walk that records its own content fills; a
+      // previous enablement's queue would only double-count (sprigr-apps#2702).
+      const key = store.walkKey(scope);
+      if (key) await store.deletePendingContentFills!(contentFillToken(key));
       const now = clock();
       const user = scope.actor.platformUserId ?? null;
       const agent = user && !storeAgentIdForUsers ? null : (scope.actor.agentId ?? null);
@@ -362,21 +371,23 @@ export function createD1FileIndexingStore(
     },
 
     async listPendingExtractions(limit) {
+      // Content fills are not extraction jobs (sprigr-apps#2702): left out so
+      // a fill backlog can never starve the job polls.
       const res = await db
-        .prepare(`SELECT * FROM ${PENDING} ORDER BY created_at ASC LIMIT ?`)
-        .bind(limit)
+        .prepare(`SELECT * FROM ${PENDING} WHERE substr(job_token, 1, ?) != ? ORDER BY created_at ASC LIMIT ?`)
+        .bind(CONTENT_FILL_TOKEN_PREFIX.length, CONTENT_FILL_TOKEN_PREFIX, limit)
         .all<PendingExtractionRow>();
       return res.results;
     },
 
     async listPendingExtractionsFor(objectIds) {
-      const out: Array<Pick<PendingExtractionRow, 'object_id' | 'record_json'>> = [];
+      const out: Array<Pick<PendingExtractionRow, 'object_id' | 'record_json' | 'job_token'>> = [];
       for (let i = 0; i < objectIds.length; i += PENDING_LOOKUP_CHUNK) {
         const chunk = objectIds.slice(i, i + PENDING_LOOKUP_CHUNK);
         const res = await db
-          .prepare(`SELECT object_id, record_json FROM ${PENDING} WHERE object_id IN (${chunk.map(() => '?').join(', ')})`)
+          .prepare(`SELECT object_id, job_token, record_json FROM ${PENDING} WHERE object_id IN (${chunk.map(() => '?').join(', ')})`)
           .bind(...chunk)
-          .all<Pick<PendingExtractionRow, 'object_id' | 'record_json'>>();
+          .all<Pick<PendingExtractionRow, 'object_id' | 'record_json' | 'job_token'>>();
         out.push(...res.results);
       }
       return out;
@@ -408,6 +419,48 @@ export function createD1FileIndexingStore(
           .bind(...chunk)
           .run();
       }
+    },
+
+    async upsertPendingContentFills(rows) {
+      const now = clock();
+      for (let i = 0; i < rows.length; i += CONTENT_FILL_UPSERT_CHUNK) {
+        const chunk = rows.slice(i, i + CONTENT_FILL_UPSERT_CHUNK);
+        const binds: unknown[] = [];
+        for (const r of chunk) binds.push(r.objectId, r.jobToken, r.recordJson, r.format, now, now);
+        await db
+          .prepare(
+            `INSERT INTO ${PENDING} (object_id, job_token, record_json, format, attempts, created_at, updated_at)
+               VALUES ${chunk.map(() => '(?, ?, ?, ?, 0, ?, ?)').join(', ')}
+             ON CONFLICT(object_id) DO UPDATE SET
+               job_token = excluded.job_token,
+               record_json = excluded.record_json,
+               format = excluded.format,
+               attempts = 0,
+               updated_at = excluded.updated_at`,
+          )
+          .bind(...binds)
+          .run();
+      }
+    },
+
+    async listPendingContentFills(jobToken, limit) {
+      const res = await db
+        .prepare(`SELECT * FROM ${PENDING} WHERE job_token = ? ORDER BY updated_at ASC, object_id ASC LIMIT ?`)
+        .bind(jobToken, limit)
+        .all<PendingExtractionRow>();
+      return res.results;
+    },
+
+    async countPendingContentFills(jobToken) {
+      const row = await db
+        .prepare(`SELECT COUNT(*) AS n FROM ${PENDING} WHERE job_token = ?`)
+        .bind(jobToken)
+        .first<{ n: number }>();
+      return Number(row?.n ?? 0);
+    },
+
+    async deletePendingContentFills(jobToken) {
+      await db.prepare(`DELETE FROM ${PENDING} WHERE job_token = ?`).bind(jobToken).run();
     },
   };
   return store;

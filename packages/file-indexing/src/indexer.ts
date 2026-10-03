@@ -18,10 +18,18 @@ import { actorKey, partialUpdateData, type Actor } from '@sprigr/apps-app-sdk';
 import { recordAclIdentityLink, removeAclIdentityLink } from '@sprigr/apps-acl-identity-link';
 import { isFetchBudgetTimeout, type Deadline } from '@sprigr/apps-fetch-budget';
 import { enrichObjectsWithContent, type ExtractionBudget } from './content';
-import { stampedPrincipalsValid, userPrincipal } from './doc-acl';
+import {
+  CONTENT_FILL_BUDGET_MS,
+  contentFillToken,
+  drainContentFills,
+  storeSupportsContentFills,
+  type ContentFillOutcome,
+} from './content-fill';
+import { stampedPrincipalsValid } from './doc-acl';
+import { ownerPrincipalOf, stampEntries } from './stamp';
 import { emitFileEvents, fileEventNames, type FileEvent } from './events';
 import { importFileObjects, MAX_OBJECTS_PER_IMPORT } from './import';
-import { forgetPendingExtractions, refreshPendingExtractions } from './pending';
+import { forgetPendingExtractions, refreshPendingExtractions, syncPendingRecordPrincipals } from './pending';
 import { EMIT_BUDGET_MS, budgetBelow, deadlinePassed } from './tick-budget';
 import type {
   ChangePage,
@@ -34,7 +42,6 @@ import type {
   FileSourceAdapter,
   IndexedFileObject,
   RemovedFile,
-  ResolvedPrincipals,
 } from './types';
 
 /** Pages per pass of the main walk (both apps' MAX_DELTA_PAGES). */
@@ -71,6 +78,12 @@ export interface IndexActorFilesBudget {
   emitBudgetMs?: number;
   /** Override MAX_UNRESOLVED_HOLD_MS. */
   maxUnresolvedHoldMs?: number;
+  /** The content-fill drain's slice at the end of the pass (default
+   *  CONTENT_FILL_BUDGET_MS; 0 turns the drain off for this pass). The pass
+   *  deadline bounds it as well, so it never runs a pass past its deadline. */
+  contentFillBudgetMs?: number;
+  /** Rows the content-fill drain reads this pass (default MAX_CONTENT_FILLS_PER_PASS). */
+  maxContentFills?: number;
 }
 
 export interface FileIndexingOutcome {
@@ -94,6 +107,15 @@ export interface FileIndexingOutcome {
   purgePending?: boolean;
   /** Adapter-specific fields from the extra-scope plan's finish(). */
   extra?: Record<string, unknown>;
+  /** 0.1.2 (sprigr-apps#2702): files this pass imported without their text
+   *  and queued for a content fill (deadline, extraction cap, 429, failure). */
+  contentDeferred?: number;
+  /** Queued files whose text this pass's content-fill drain imported. */
+  contentFilled?: number;
+  /** Files of this scope still searchable by name only, waiting for their
+   *  text, after this pass. Absent when the store cannot count them. Show it
+   *  (describeContentPending) instead of a bare "ok" while it is above 0. */
+  contentPending?: number;
   error?: string;
 }
 
@@ -151,49 +173,6 @@ export function buildContext<TEnv extends FileIndexingEnv>(
     ...(opts.deadline ? { deadline: opts.deadline } : {}),
     now: opts.now ?? Date.now,
   };
-}
-
-function ownerPrincipalOf<TEnv extends FileIndexingEnv>(
-  adapter: FileSourceAdapter<any, TEnv>,
-  ctx: FileIndexingContext<TEnv>,
-): string | null {
-  if (adapter.ownerPrincipal) return adapter.ownerPrincipal(ctx);
-  return ctx.ownerEmail ? userPrincipal(ctx.ownerEmail) : null;
-}
-
-/** Stamp a batch: resolve, apply the owner, validate, map. */
-async function stampEntries<TEntry, TEnv extends FileIndexingEnv>(
-  adapter: FileSourceAdapter<TEntry, TEnv>,
-  ctx: FileIndexingContext<TEnv>,
-  entries: TEntry[],
-): Promise<{ objects: IndexedFileObject[]; mimes: Array<[string, string]>; skipped: number; unresolved: number }> {
-  const objects: IndexedFileObject[] = [];
-  const mimes: Array<[string, string]> = [];
-  let skipped = 0;
-  let unresolved = 0;
-  if (entries.length === 0) return { objects, mimes, skipped, unresolved };
-  const resolved = await adapter.resolvePrincipals(entries, ctx);
-  const owner = ownerPrincipalOf(adapter, ctx);
-  for (const entry of entries) {
-    const r: ResolvedPrincipals | undefined = resolved.get(adapter.objectIdOf(entry, ctx));
-    if (r === undefined || r === 'unresolved') {
-      unresolved++;
-      continue;
-    }
-    if (r === 'denied') {
-      skipped++;
-      continue;
-    }
-    const principals = owner && !r.includes(owner) ? [...r, owner] : r;
-    if (!stampedPrincipalsValid(principals)) {
-      skipped++;
-      continue;
-    }
-    const obj = adapter.toObject(entry, principals, ctx);
-    mimes.push([obj.objectID, adapter.mimeTypeOf ? adapter.mimeTypeOf(entry) : String(obj.mimeType ?? '')]);
-    objects.push(obj);
-  }
-  return { objects, mimes, skipped, unresolved };
 }
 
 interface PageRecord {
@@ -436,7 +415,9 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
   // ── content (best-effort, bounded) ──
   const extractBudget: ExtractionBudget = { extracted: 0, deferred: 0 };
   const throttled = new Set<string>();
-  await enrichObjectsWithContent(adapter, store, ctx, objects, { mimeByObjectId, budget: extractBudget, throttled });
+  const enriched = await enrichObjectsWithContent(adapter, store, ctx, objects, { mimeByObjectId, budget: extractBudget, throttled });
+  let contentDeferred = enriched.recorded;
+  let fillRecordFailed = enriched.recordFailed;
 
   // ── extra scopes (re-listed whole each pass; no cursor, no events) ──
   let extraScopesWalked = 0;
@@ -465,11 +446,13 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
           // skipped this pass and read again on the next one.
           skipped += stamped.skipped + stamped.unresolved;
           for (const [id, mime] of stamped.mimes) mimeByObjectId.set(id, mime);
-          await enrichObjectsWithContent(adapter, store, ctx, stamped.objects, {
+          const scopeEnriched = await enrichObjectsWithContent(adapter, store, ctx, stamped.objects, {
             mimeByObjectId,
             budget: extractBudget,
             throttled,
           });
+          contentDeferred += scopeEnriched.recorded;
+          fillRecordFailed ??= scopeEnriched.recordFailed;
           objects.push(...stamped.objects);
           result.walked.push(sc.id);
         } catch (err) {
@@ -504,6 +487,13 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
     ...(extraScopesDeferred > 0 ? { extraScopesDeferred } : {}),
     ...(Object.keys(extra).length > 0 ? { extra } : {}),
   });
+
+  // ── a content gap nothing would come back for keeps the cursor (sprigr-apps#2702) ──
+  if (fillRecordFailed !== undefined) {
+    const detail = `content_fill_record_failed: ${fillRecordFailed}`;
+    await store.recordError(scope, detail);
+    return { ...base(), error: detail };
+  }
 
   // ── import BEFORE the cursor ──
   let indexed = 0;
@@ -664,15 +654,55 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
   const error = problems.length > 0 ? problems.join('; ') : undefined;
   if (error) await store.recordError(scope, error);
 
+  // ── content fills: after the cursor, inside what is left of the deadline ──
+  const fill = await runContentFills(adapter, store, ctx, budget, { budget: extractBudget, throttled, label });
+
   return {
     ...base(),
     indexed,
+    ...(contentDeferred > 0 ? { contentDeferred } : {}),
+    ...(fill.filled > 0 ? { contentFilled: fill.filled } : {}),
+    ...(fill.pending !== undefined ? { contentPending: fill.pending } : {}),
     ...(reconciled !== undefined ? { reconciled } : {}),
     ...(eventsEmitted !== undefined ? { eventsEmitted } : {}),
     ...(cut ? { cut: true } : {}),
     ...(held ? { held: true } : {}),
     ...(error ? { error } : {}),
   };
+}
+
+/**
+ * The end-of-pass content-fill step: count this scope's waiting rows, drain a
+ * bounded batch if there are any, and report what is left. Never throws: a
+ * store failure here only leaves the count unknown.
+ */
+async function runContentFills<TEntry, TEnv extends FileIndexingEnv>(
+  adapter: FileSourceAdapter<TEntry, TEnv>,
+  store: FileIndexingStore,
+  ctx: FileIndexingContext<TEnv>,
+  budget: IndexActorFilesBudget,
+  shared: { budget: ExtractionBudget; throttled: Set<string>; label: string },
+): Promise<{ filled: number; pending?: number }> {
+  if (!storeSupportsContentFills(store) || !ctx.walkKey || !store.countPendingContentFills) return { filled: 0 };
+  const token = contentFillToken(ctx.walkKey);
+  let pending: number;
+  try {
+    pending = await store.countPendingContentFills(token);
+  } catch (err) {
+    console.warn(`${shared.label} content-fill count failed for ${ctx.walkKey}:`, errMsg(err));
+    return { filled: 0 };
+  }
+  const sliceMs = budget.contentFillBudgetMs ?? CONTENT_FILL_BUDGET_MS;
+  if (pending === 0 || sliceMs <= 0) return { filled: 0, pending };
+  const out: ContentFillOutcome = await drainContentFills(adapter, store, ctx, {
+    ...(ctx.deadline ? { deadline: ctx.deadline } : {}),
+    budgetMs: sliceMs,
+    ...(budget.maxContentFills !== undefined ? { maxFills: budget.maxContentFills } : {}),
+    budget: shared.budget,
+    throttled: shared.throttled,
+    label: shared.label,
+  });
+  return { filled: out.filled, pending: Math.max(0, pending - out.filled - out.converted - out.dropped) };
 }
 
 /**
@@ -938,6 +968,16 @@ export async function purgeActor<TEntry, TEnv extends FileIndexingEnv>(
   } catch (err) {
     result.errors.push(`walk_state: ${errMsg(err)}`);
   }
+  // The scope's content fills go whatever happened to the rows: with indexing
+  // off nothing drains them, and a shared prefix keeps the OTHER actors' rows,
+  // whose fills carry their own walk keys (sprigr-apps#2702).
+  if (ctx.walkKey && store.deletePendingContentFills) {
+    try {
+      await store.deletePendingContentFills(contentFillToken(ctx.walkKey));
+    } catch (err) {
+      result.errors.push(`content_fills: ${errMsg(err)}`);
+    }
+  }
   return result;
 }
 
@@ -1085,9 +1125,15 @@ async function runAclRefresh<TEntry, TEnv extends FileIndexingEnv>(
           patches.push({ objectID: id, acl_principals: principals });
         }
         for (let i = 0; i < patches.length; i += MAX_OBJECTS_PER_IMPORT) {
-          const written = await restamp(env, patches.slice(i, i + MAX_OBJECTS_PER_IMPORT));
+          const chunk = patches.slice(i, i + MAX_OBJECTS_PER_IMPORT);
+          const written = await restamp(env, chunk);
           out.restamped += written.updated;
           out.missing += written.skippedMissing;
+          // A waiting extraction or content fill imports its stored record
+          // whole: give it the principals just written, or its text would
+          // land under the old ones (0.1.2). A failure stops the pass here,
+          // so this page is re-stamped (and re-synced) next time.
+          await syncPendingRecordPrincipals(store, chunk);
         }
       }
       if (!page.hasMore || !page.cursor) {
