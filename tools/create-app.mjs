@@ -131,10 +131,10 @@ const KIT_DEPS = NO_OAUTH ? ["app-sdk", "d1-kv"] : ["app-sdk", "oauth-utils", "d
 // (sprigr-apps#2357); 0.15.1 adds the putAppFileStream transient-R2 retry.
 // oauth-utils 0.3.0 adds the opt-in `timeoutMs` refresh bound and
 // `allowNoRefreshToken`, and builds OAuthError messages without the raw
-// provider body (0.2.0). Verified by scaffolding an OAuth and a no-OAuth app
-// against these exact pins from npm and running typecheck and the generated
-// tests; the in-repo scaffold tests resolve the workspace packages instead,
-// so they do not check the pins.
+// provider body (0.2.0). packages/fulfilment-conformance's
+// scaffold-connection-gate test typechecks a generated app against these exact
+// pins by borrowing them from a workspace member that installed them, so
+// examples/harvest pins the same versions; bump both together.
 const KIT_DEP_VERSIONS = {
   "app-sdk": "0.15.1",
   "oauth-utils": "0.3.0",
