@@ -99,7 +99,8 @@ Single source of truth. Validated server-side at publish.
     "description": "Connect My CRM for contact sync, deals, ...",
     "author": { "name": "Your Company", "email": "you@example.com" },
     "category": "crm",
-    "tags": ["crm", "contacts", "..."]
+    "tags": ["crm", "contacts", "..."],
+    "agent_routing": "Contact lookups and deal updates: my_crm; bulk contact sync: my_crm_sync_contacts."  // optional, see below
   },
   "kind": "integration",                     // 'integration' | 'tool' | 'agent'
   "runtime": {
@@ -197,6 +198,94 @@ Typical candidates: `*_or_create_*` composites, `sync_*`, `reconcile_*`, and any
 - **A value other than `"write"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
 
 In TypeScript the field is on `ManifestToolLike` in `@sprigr/apps-app-sdk`, typed `AppToolEffectsDeclaration`.
+
+### Telling agents which of your tools to use (`metadata.agent_routing`)
+
+**`metadata.agent_routing`** (optional string). One plain sentence telling agents which of THIS app's tools answer which requests. At most 300 characters after trimming; blank counts as absent. It is shown under your app's namespace in the code_mode tool catalog of every agent in every company that installs the app, as `Routing (from the app): <text>`, so agents pick your tools over generic platform tools before they ever call `tools.describe`.
+
+The Dropbox app's line (sprigr-apps `apps/dropbox/sprigr-app.json`):
+
+```jsonc
+"metadata": {
+  "slug": "dropbox",
+  "agent_routing": "For a file in the user's Dropbox, work in place: new Word or Excel files with dropbox_create_document, conversions with dropbox_convert_file, scanned text with dropbox_ocr, camera and EXIF details with dropbox_extract_file_metadata; never download it into the sandbox first."
+}
+```
+
+Publish refuses a value that:
+
+- is not a string;
+- has a line break, control character or invisible character;
+- contains a backtick, `<`, `>`, `{`, `}`, or call syntax like `x.y(`;
+- contains a URL, `www.`, a domain name, an IP address or an email address (file extensions such as `.docx` or `.pdf` are fine);
+- or contains a snake_case name that is not a tool declared in this manifest's `tools[]` (matched case-insensitively).
+
+`sprigr app validate` runs the same check from the first CLI release after 0.3.6; the published 0.3.6 predates it, so until then only publish catches a bad value. A value is refused, never cut. Name only your own tools, and describe what to avoid in words, not by naming platform tools: the Dropbox line says "never download it into the sandbox first" rather than naming the platform's file tools, which would be refused as undeclared names. Takes effect when an install picks up the version that declares it. Platform side: sprigr-team decision 0153 (sprigr-team#10093).
+
+### Shared webhooks: one delivery URL for the whole app (`webhooks[].shared`)
+
+Some providers allow exactly one webhook URL per developer app, set by hand in their developer portal: Xero, Intuit QuickBooks, Dropbox. Every install of your app then delivers to that one URL, which the per-install receiver (`/webhook/marketplace/<installId>/<path>`) cannot serve. Mark the webhook `shared` and the platform gives your app one URL, verifies each delivery once, and fans it out per tenant:
+
+```
+https://webhooks.sprigr.com/webhook/marketplace/app/<slug>/<path without its leading slash>
+```
+
+The Dropbox declaration (sprigr-apps `apps/dropbox/sprigr-app.json`, `webhooks`):
+
+```jsonc
+"secrets": [
+  { "key": "DROPBOX_APP_SECRET", "label": "Dropbox app secret", "type": "secret",
+    "required": true, "publisher_provides": true }
+],
+"webhooks": [{
+  "path": "/notify",
+  "handler_tool": "dropbox_handle_webhook",
+  "signature": {
+    "type": "hmac",
+    "header": "X-Dropbox-Signature",
+    "algorithm": "sha256",
+    "encoding": "hex",                     // required with shared: the platform re-signs in this encoding
+    "secret_ref": "DROPBOX_APP_SECRET"     // must be a publisher_provides secret
+  },
+  "shared": {
+    "events_path": "list_folder.accounts", // where the events array is
+    "tenant_key": "$",                     // each event IS the tenant id
+    "challenge_query": "challenge",        // answer Dropbox's GET ?challenge=<token>
+    "omit_paths": ["delta"]                // drop a field that lists every tenant's ids
+  }
+}]
+```
+
+| `shared` field | Required | Meaning |
+|---|---|---|
+| `events_path` | yes | Dot-path to the events array in the delivered body (Xero: `events`), or `$` when the body itself is the array (Intuit CloudEvents posts a bare JSON array). The per-tenant body your handler gets keeps the same shape. |
+| `tenant_key` | yes | Dot-path within one event to its tenant id (Xero: `tenantId`; QuickBooks: `intuitaccountid`), or `$` when the event itself is the tenant id. Dropbox delivers `{ "list_folder": { "accounts": ["dbid:...", ...] } }`, so with `events_path: "list_folder.accounts"` every event is a bare string and `tenant_key: "$"` routes on the string. An event with no non-empty string tenant id is skipped, and the skip is logged. |
+| `challenge_query` | no | Query parameter that carries the provider's GET verification challenge (Dropbox: `challenge`). A GET on the shared URL with this parameter is answered 200 with the parameter's value as a `text/plain` body plus `X-Content-Type-Options: nosniff`; nothing is dispatched and nothing is written. A GET without the parameter, or on a shared webhook that does not declare one, gets 404. Must match `^[A-Za-z0-9_]{1,32}$`. |
+| `omit_paths` | no | 1 to 8 dot-paths (segments of `[A-Za-z0-9_-]`) removed from each per-tenant body before it is re-signed, for fields outside `events_path` that list ids for every tenant in the delivery and so cannot be split per tenant. Dropbox: `["delta"]`, whose `delta.users` carries the legacy numeric user ids of every account in the batch; without it each install would see the other tenants' ids. Not valid with `events_path: "$"` (a bare-array body has no other fields), and no entry may equal, contain or sit inside `events_path`. |
+
+Publish also requires `signature.type: "hmac"` (the default), `signature.encoding` set to `"hex"` or `"base64"`, and a `secret_ref` naming a `publisher_provides` secret, because there is no install to scope the key to. Seed it once with `sprigr app set-publisher-secrets <slug>`; until it is seeded every delivery is refused with 401. The receiver reads the `shared` block from your app's latest approved version, not from each install's pinned version.
+
+**What the platform does with a POST.** It verifies the signature header once over the raw body (missing header, unseeded secret or bad digest: 401, nothing dispatched). If `events_path` holds no events, as in a provider's intent-to-receive check, it answers 200 and dispatches nothing. Otherwise it answers the provider 200 at once and fans out in the background: it groups the events by tenant id, looks up the installs that registered each tenant, builds a per-tenant body (the delivered body minus `omit_paths`, with only that tenant's events at `events_path`), re-signs it with the same publisher secret in your declared algorithm and encoding, and dispatches it to each install's `handler_tool`. Every response to the provider is status-only (Xero rejects a webhook response that has a body), except the challenge echo.
+
+**What your handler receives.** `args.body` is the per-tenant JSON (Dropbox: `{"list_folder":{"accounts":["dbid:..."]}}`), not the provider's original bytes. Verify the platform's signature over `args.body` with the same publisher secret before trusting a byte of it, the way a direct delivery would be verified. The signature is in your declared header, lowercased (`args.headers['x-dropbox-signature']`), and mirrored in `args.headers['x-sprigr-webhook-signature']`. Those two and `content-type` are the only headers a fan-out dispatch carries; `forward_headers` has no effect on it.
+
+**A failed handler is not retried by the provider.** The provider was acked before your handler ran. The platform logs a rejected or failed dispatch (`shared_app_webhook.handler_rejected`, `shared_app_webhook.dispatch_failed`), but those events are not redelivered, so keep a schedule that catches up from the provider's own cursor. Dropbox keeps its 15-minute schedule as that backstop.
+
+**Registering tenants.** The platform only routes a tenant whose id an install has registered:
+
+```ts
+// at connect, once you know the provider's tenant id, and again periodically
+await env.SPRIGR.registerWebhookTenant(accountId, { path: '/notify' }); // -> { ok: true }
+```
+
+- Call it at connect and again on a schedule (Dropbox re-registers each account at most once a day from its token schedule), so a lost mapping heals itself. It is idempotent.
+- The install's pinned manifest must declare a shared webhook, at `path` when you pass one, or the call fails with `400 webhook_not_shared`. An uninstalled or inactive install gets `404 install_not_found_or_inactive`. Any non-2xx throws.
+- The mapping is per app and tenant id, not per path: `path` only narrows that check.
+- Several installs may register the same tenant, and each gets its own copy of that tenant's events. An event for a tenant no install registered is dropped and logged.
+- There is no unregister call. Uninstall removes the install's mappings. After a disconnect, have the handler ignore tenants with no live connection.
+- `registerWebhookTenant` is not in `@sprigr/apps-app-sdk`'s types and is absent on older wrapper builds: declare it as optional on your env type and feature-detect it (`typeof env.SPRIGR?.registerWebhookTenant === 'function'`), as the Dropbox app does.
+
+Platform side: sprigr-team#10043 (`challenge_query`, `tenant_key: "$"`, `omit_paths`), on top of the original Xero receiver. Runnable sample: `examples/showcase` `onShared` / `registerSharedTenant` (see the [capability cookbook](capability-cookbook.md)).
 
 ## 2b. Shipping AI-facing docs (`docs[]`)
 

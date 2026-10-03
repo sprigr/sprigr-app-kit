@@ -111,7 +111,7 @@ Don't hand-copy the harvest example into a new app; scaffold, then use harvest t
 
 Open `apps/<slug>/sprigr-app.json`. Full schema: reference §2. Always touch:
 
-- `metadata`: description, category, tags. Agents and the marketplace listing read these.
+- `metadata`: description, category, tags. Agents and the marketplace listing read these. Add `metadata.agent_routing` when agents should reach for your tools over generic platform ones: one plain sentence, at most 300 characters, naming only your own tools (rules: [marketplace-app-development.md](marketplace-app-development.md#telling-agents-which-of-your-tools-to-use-metadataagent_routing)).
 - `permissions.network_domains`: every host you call, including the OAuth login host. Declarative (not a runtime firewall), but the platform's inbound-OAuth SSRF guard and agent sandbox read it.
 - `secrets[]`: `<PREFIX>_CLIENT_ID`, `<PREFIX>_CLIENT_SECRET`, plus an `INTERNAL_TRIGGER_SECRET` if you add internal trigger routes (the scaffolder does not generate either).
 - `tools[]`: one entry per agent-callable tool plus the `<slug>_oauth_callback` entry. Write real descriptions; agents pick tools by them. Keep the callback `"internal": true` with `state` in its `required` list, as generated: only the bouncer calls it, and its handler refuses a call without a matching state before any exchange (sprigr-apps#2442).
