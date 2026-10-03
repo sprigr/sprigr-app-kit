@@ -41,3 +41,22 @@ want it in a console log, which is not a durable store.
 
 Ported from sprigr/sprigr-apps#560 (PR sprigr/sprigr-apps#1453); tracked here as
 #41.
+
+## Bounding the refresh fetch: `timeoutMs` (0.3.0)
+
+`ProviderConfig.timeoutMs` is an optional bound on the token-endpoint fetch
+that `refreshOAuthToken` (and so `refreshAndPersist` and `getValidAccessToken`)
+makes. When set, the request carries `AbortSignal.timeout(timeoutMs)` and a
+provider that never answers rejects with the runtime's `AbortError` instead of
+holding the invocation until the platform kills it. The rotation-race retry
+gets its own fresh bound.
+
+It is unset by default, so existing callers keep the unbounded behaviour. Set it
+on scheduled paths (a cron that refreshes every actor's token), where one hung
+provider can spend the whole invocation budget. Leave it unset on interactive
+and agent paths, where a merely slow provider should still succeed.
+
+```ts
+const config: ProviderConfig = { ...baseConfig, timeoutMs: 10_000 };
+await refreshAndPersist(config, store, prefix, false);
+```

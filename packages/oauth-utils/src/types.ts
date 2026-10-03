@@ -55,6 +55,17 @@ export interface ProviderConfig {
   clientId: string;
   /** OAuth client secret. */
   clientSecret: string;
+  /**
+   * Optional bound on the token-endpoint refresh fetch, via
+   * `AbortSignal.timeout`. Unset by default: the refresh fetch is unbounded
+   * unless a caller opts in, and a timed-out fetch rejects with the
+   * `AbortError` the runtime raises. Interactive and agent OAuth paths
+   * should leave this unset, because a live user action that is merely slow
+   * would otherwise hard-fail. Set it on a scheduled path, where an
+   * unbounded refresh can spend the whole invocation budget
+   * (sprigr/sprigr-apps#1376).
+   */
+  timeoutMs?: number;
 }
 
 /** Extra body params some providers require beyond the spec. */

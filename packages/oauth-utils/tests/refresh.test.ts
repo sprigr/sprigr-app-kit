@@ -131,6 +131,48 @@ describe('refreshAndPersist', () => {
  * escalates once the same install fails on invalid_grant across several
  * refresh cycles in a row with no intervening success.
  */
+describe('timeoutMs (opt-in bound on the refresh fetch)', () => {
+  it('rejects at the bound instead of hanging when the token endpoint never answers', async () => {
+    globalThis.fetch = vi.fn((_url: string, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    const store = makeStore({ refresh_token: 'rt' });
+    const boundedConfig: ProviderConfig = { ...config, timeoutMs: 50 };
+
+    const start = Date.now();
+    await expect(refreshAndPersist(boundedConfig, store, '', false)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    // The real assertion is "rejects" rather than "hangs forever". The
+    // elapsed-time check guards against a signal that was built but never
+    // passed to fetch, which would otherwise pass by accident on a slow box.
+    expect(Date.now() - start).toBeLessThan(5000);
+  });
+
+  it('passes no abort signal when timeoutMs is unset, so the default path stays unbounded', async () => {
+    let capturedSignal: AbortSignal | null | undefined = 'unset' as unknown as undefined;
+    globalThis.fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      capturedSignal = init?.signal;
+      return new Response(
+        JSON.stringify({ access_token: 'at', refresh_token: 'rt-new', expires_in: 3600 }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    const store = makeStore({ refresh_token: 'rt' });
+    // The module-level `config` fixture has no timeoutMs, the shape every
+    // interactive and agent call site uses.
+    await refreshAndPersist(config, store, '', false);
+
+    expect(capturedSignal).toBeUndefined();
+  });
+});
+
 describe('invalid_grant streak escalation (sprigr/sprigr-team#8134)', () => {
   const BAD_REQUEST_BODY = JSON.stringify({ error: 'invalid_grant', error_description: 'Bad Request' });
 
