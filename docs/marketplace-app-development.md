@@ -157,7 +157,8 @@ Single source of truth. Validated server-side at publish.
     {
       "name": "my_crm_oauth_callback",        // dispatched by the bouncer
       "handler": "src/handlers/oauth-callback.ts",
-      "input_schema": { /* { code, redirectUri, environment } */ }
+      "internal": true,                       // bouncer-only: keep it off the agent tool list
+      "input_schema": { /* { code, state, redirectUri, environment }, state required */ }
     }
   ]
 }
@@ -619,7 +620,7 @@ The Sprigr solution: a **shared bouncer worker** at one stable URL that decodes 
 
 Implementation rules:
 - `/oauth/start` puts the `installId` in the state (from `env.INSTALL_ID`), encodes with `encodeState()`, and uses the bouncer URL as `redirect_uri`. Pick the bouncer URL by environment from the request host so one bundle serves every environment. The production bouncer is `https://oauth-bouncer.sprigr.com/<slug>/oauth/callback`; for local testing the CLI dev harness listens on `http://localhost:8666/<slug>/oauth/callback`. The scaffolder generates this environment-aware selection for you.
-- The bouncer dispatches to `/__sprigr/tool/<app-slug-snake-case>_oauth_callback`. Your manifest **must** declare that tool (`my_crm_oauth_callback`) and point its `handler` at a module that takes `{ code, redirectUri, environment }` and exchanges the code with the provider.
+- The bouncer dispatches to `/__sprigr/tool/<app-slug-snake-case>_oauth_callback`. Your manifest **must** declare that tool (`my_crm_oauth_callback`), mark it `"internal": true`, and point its `handler` at a module that takes `{ code, state, redirectUri, environment }` and exchanges the code with the provider. The bouncer always sends `state`, so the handler refuses a call without one, or with a csrf it did not mint, before any exchange; otherwise anything else that can reach the tool could bind the install to another provider account (sprigr-apps#2442).
 - When exchanging the code, use the **bouncer's** `redirectUri` (passed in the args), not the install's own URL. Providers validate that the `redirect_uri` matches what was sent at `/oauth/start`.
 
 Common failure modes:

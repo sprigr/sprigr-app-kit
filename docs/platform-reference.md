@@ -174,7 +174,8 @@ Single source of truth. Validated server-side at publish.
     {
       "name": "procore_oauth_callback",       // dispatched by the bouncer
       "handler": "src/handlers/oauth-callback.ts",
-      "input_schema": { /* { code, redirectUri, environment } */ }
+      "internal": true,                       // bouncer-only: keep it off the agent tool list
+      "input_schema": { /* { code, state, redirectUri, environment }, state required */ }
     }
   ]
 }
@@ -734,7 +735,7 @@ Implementation rules:
     : 'https://oauth-bouncer.sprigr.com/procore/oauth/callback';
   const redirectUri = process.env.PROCORE_REDIRECT_URI ?? defaultBouncer;
   ```
-- The bouncer dispatches to `/__sprigr/tool/<app-slug-snake-case>_oauth_callback`. Your manifest **must** declare that tool (`procore_oauth_callback` in our case) and point its `handler` at a module that exchanges the code with Procore. The full dispatch body is `{ code, state, redirectUri, environment, installId }` — `state` is the raw encoded state from `/oauth/start`, so the handler can decode it and verify the `csrf` against the `oauth_csrf` value it stashed in D1; report a mismatch as `{ ok: false, error: 'expired_or_unknown_csrf' }` and the bouncer surfaces it as a real error page instead of a false success.
+- The bouncer dispatches to `/__sprigr/tool/<app-slug-snake-case>_oauth_callback`. Your manifest **must** declare that tool (`procore_oauth_callback` in our case) and point its `handler` at a module that exchanges the code with Procore. The full dispatch body is `{ code, state, redirectUri, environment, installId }` — `state` is the raw encoded state from `/oauth/start`, so the handler can decode it and verify the `csrf` against the `oauth_csrf` value it stashed in D1. The bouncer always sends it, so refuse a call with no `state` before any exchange (never skip the check when it is absent; sprigr-apps#2442), and declare the tool `"internal": true` so agents never see it. Report a missing state or a mismatch as `{ ok: false, error: 'expired_or_unknown_csrf' }` and the bouncer surfaces it as a real error page instead of a false success.
 - When exchanging the code, use the **bouncer's** `redirectUri` (passed in the args), not the install's own URL. Procore validates the `redirect_uri` matches what was sent at `/oauth/start`.
 
 Common failure modes:

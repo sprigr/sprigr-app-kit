@@ -179,7 +179,7 @@ describe('pnpm create:app (default template, OAuth): the install-wide connection
     expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
   }, 180_000);
 
-  it("passes its own tests, including the member/admin/owner role test", () => {
+  it("passes its own tests, including the member/admin/owner role test and the callback's state test", () => {
     const vitest = join(realpathSync(join(dir, 'node_modules', 'vitest')), 'vitest.mjs');
     const run = spawnSync(process.execPath, [vitest, 'run', '--no-file-parallelism'], {
       cwd: dir,
@@ -189,6 +189,10 @@ describe('pnpm create:app (default template, OAuth): the install-wide connection
     const output = `${run.stdout}${run.stderr}`;
     expect(run.status, output).toBe(0);
     expect(output).toContain('connection-admin.test.ts');
+    // The callback half of the connection (sprigr-apps#2442): a stateless or
+    // forged-csrf call makes no token request; the bouncer's call connects.
+    // Its static checks live in scaffold-oauth-callback.test.ts.
+    expect(output).toContain('oauth-callback.test.ts');
   }, 180_000);
 });
 
