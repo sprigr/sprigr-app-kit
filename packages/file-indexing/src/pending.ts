@@ -8,7 +8,7 @@
 import type { Deadline } from '@sprigr/apps-fetch-budget';
 import { capText } from './content';
 import { importFileObjects, partitionValidObjects } from './import';
-import { EXTRACTION_DRAIN_BUDGET_MS, MIN_ITEM_BUDGET_MS, budgetBelow } from './tick-budget';
+import { EXTRACTION_DRAIN_BUDGET_MS, MIN_ITEM_BUDGET_MS, remainingBudgetMs } from './tick-budget';
 import type { FileIndexingEnv, FileIndexingStore, IndexedFileObject } from './types';
 
 /** Pending rows polled per drain (one files.job read each, plus a re-import on success). */
@@ -66,7 +66,10 @@ export interface DrainOptions {
    *  `budgetMs` (default EXTRACTION_DRAIN_BUDGET_MS) starting now. */
   deadline?: Deadline;
   budgetMs?: number;
-  /** Least time left to START another row (default MIN_ITEM_BUDGET_MS). */
+  /** Least time left to START another row (default MIN_ITEM_BUDGET_MS). A
+   *  row is never started with 0 ms or less left, whatever this is: `0`
+   *  behaves like `1` (sprigr-app-kit#99; 0.1.0 started a row with exactly
+   *  0 ms left when this was 0). A row already in flight always finishes. */
   minItemMs?: number;
   now?: () => number;
   label?: string;
@@ -106,7 +109,10 @@ export async function drainPendingExtractions(
   let backfilled = 0;
   let deferred = 0;
   for (const [i, row] of pending.entries()) {
-    if (budgetBelow(minItemMs, deadline, now)) {
+    // `<= 0` as well as the floor: with minItemMs 0, budgetBelow alone
+    // (`remaining < 0`) would start a row at exactly the deadline.
+    const left = remainingBudgetMs(deadline, now);
+    if (left <= 0 || left < minItemMs) {
       deferred = pending.length - i;
       break;
     }

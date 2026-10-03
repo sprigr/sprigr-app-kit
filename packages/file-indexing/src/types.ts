@@ -155,6 +155,19 @@ export interface FileIndexingContext<TEnv extends FileIndexingEnv = FileIndexing
   now: () => number;
 }
 
+/** What `runExclusive` receives as its fourth argument. No row: the lease is
+ *  taken BEFORE the pass loads the scope's row, which it re-reads under the
+ *  lease. */
+export interface ExclusiveRunContext<TEnv extends FileIndexingEnv = FileIndexingEnv> {
+  env: TEnv;
+  /** The tick deadline the pass runs under; undefined means unbounded. A lease
+   *  TTL shorter than the time left lets a second invocation in mid-pass. */
+  deadline?: Deadline;
+  now: () => number;
+  /** Which entry point asked: the indexing pass or the permission re-stamp. */
+  purpose: 'index' | 'acl_refresh';
+}
+
 // ── the source adapter ────────────────────────────────────────────────
 
 /** A removed source item: its objectID plus the `file.deleted` payload fields. */
@@ -316,11 +329,17 @@ export interface FileSourceAdapter<TEntry = unknown, TEnv extends FileIndexingEn
   /** Extra listings for this pass (SharePoint, team folders). */
   extraScopes?(ctx: FileIndexingContext<TEnv>): Promise<ExtraScopePlan<TEntry> | null>;
   /** Serialise passes per scope (microsoft-365's D1 lease). `busy` = another
-   *  invocation holds it; the pass does nothing. */
+   *  invocation holds it; the pass does nothing.
+   *
+   *  `run` (0.1.1, sprigr-app-kit#99) carries the env and the tick deadline,
+   *  so an adapter whose lease lives in the app's D1 reaches `run.env.DB`
+   *  without building one adapter per env. Optional to read: an adapter that
+   *  declares only the first three parameters keeps working unchanged. */
   runExclusive?<T>(
     scope: FileIndexingScope,
     walkKey: string,
     fn: () => Promise<T>,
+    run: ExclusiveRunContext<TEnv>,
   ): Promise<{ busy: true; purgePending?: boolean } | { busy: false; value: T }>;
   /** Fill a missing owner email (google-workspace asks Drive). A found email
    *  is stored and the cursor reset, so every row is re-stamped with it. */

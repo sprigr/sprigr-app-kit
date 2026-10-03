@@ -440,9 +440,6 @@ importers:
       '@sprigr/apps-acl-identity-link':
         specifier: 0.2.0
         version: 0.2.0
-      '@sprigr/apps-app-sdk':
-        specifier: 0.14.0
-        version: 0.14.0
       '@sprigr/apps-fetch-budget':
         specifier: 0.1.0
         version: 0.1.0
@@ -450,6 +447,12 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^4.20240909.0
         version: 4.20260702.1
+      '@sprigr/apps-app-sdk':
+        specifier: 0.14.0
+        version: 0.14.0
+      '@sprigr/apps-app-sdk-latest':
+        specifier: npm:@sprigr/apps-app-sdk@0.15.1
+        version: '@sprigr/apps-app-sdk@0.15.1'
       sql.js:
         specifier: 1.14.2
         version: 1.14.2
@@ -2419,6 +2422,10 @@ packages:
 
   '@sprigr/apps-app-sdk@0.14.0':
     resolution: {integrity: sha512-6/w2rFY9RRtf4NhLCM5dZbtbdjiVVSCztH6XD1sKCqt4KvYHrM5XjB5XGAC2Jng7BmXeWvQ3Yx3mAlkYLv2gFg==}
+    hasBin: true
+
+  '@sprigr/apps-app-sdk@0.15.1':
+    resolution: {integrity: sha512-5vfc8BAZoPVrHxU8YzwEUTRDPX4XAZarcqUCmQpdFREQG71Sn7s2nxiD3PIQ/ZY1qa9pehlk+OVfWpXBFA89bQ==}
     hasBin: true
 
   '@sprigr/apps-d1-kv@0.2.0':
@@ -5656,6 +5663,8 @@ snapshots:
   '@sprigr/apps-app-sdk@0.12.0': {}
 
   '@sprigr/apps-app-sdk@0.14.0': {}
+
+  '@sprigr/apps-app-sdk@0.15.1': {}
 
   '@sprigr/apps-d1-kv@0.2.0': {}
 

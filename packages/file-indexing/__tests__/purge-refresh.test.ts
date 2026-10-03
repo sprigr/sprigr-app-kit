@@ -42,7 +42,7 @@ describe('sprigr-apps#2355: purgeActor', () => {
     expect(res).toMatchObject({ disabled: true, removed: 0, complete: false });
     expect(r.fp.acl.size).toBe(2);
     const again = await purgeIndexPrefix(r.fp.env, r.store, `ms:file:${K}:`);
-    expect(again).toEqual({ removed: 2, complete: true });
+    expect(again).toEqual({ removed: 2, complete: true, truncated: false, cut: false });
   });
 
   it('install-scoped ids: purges when this actor is the only indexer, refuses to guess when others index', async () => {
@@ -98,6 +98,95 @@ describe('sprigr-apps#2355: purgeActor', () => {
   });
 });
 
+describe('sprigr-app-kit#99: purgeIndexPrefix reports truncated, cut and error apart, and never throws', () => {
+  const prefix = `ms:file:${K}:`;
+  async function indexedRig(n: number) {
+    const r = await rig('delta');
+    seedFiles(r.src, n);
+    await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope);
+    return r;
+  }
+  /** The fake env with `data.listIds` / `data.delete` replaced. */
+  function withData(r: Awaited<ReturnType<typeof indexedRig>>, patch: Record<string, unknown>) {
+    const sprigr = r.fp.env.SPRIGR!;
+    return { ...r.fp.env, SPRIGR: { ...sprigr, data: { ...sprigr.data!, ...patch } } };
+  }
+
+  it('a truncated listing is truncated, not cut', async () => {
+    const r = await indexedRig(3);
+    r.fp.listTruncated = true;
+    expect(await purgeIndexPrefix(r.fp.env, r.store, prefix)).toEqual({ removed: 1, complete: false, truncated: true, cut: false });
+  });
+
+  it('a deadline stop is cut, not truncated', async () => {
+    const r = await indexedRig(2);
+    const out = await purgeIndexPrefix(r.fp.env, r.store, prefix, { deadline: { at: 2_000 }, now: () => 0 });
+    expect(out).toEqual({ removed: 0, complete: false, truncated: false, cut: true });
+    expect(r.fp.acl.size).toBe(2);
+  });
+
+  it('a delete that fails part-way returns the error AND the rows already removed (0.1.0 threw and lost them)', async () => {
+    const r = await indexedRig(1);
+    // 251 ids: two chunks of PURGE_DELETE_CHUNK (250). The second delete fails.
+    for (let i = 0; i < 250; i++) {
+      const id = `${prefix}drive-1:bulk-${String(i).padStart(3, '0')}`;
+      r.fp.acl.set(id, { objectID: id, acl_principals: ['user:alice@corp.com'] });
+    }
+    const realDelete = r.fp.env.SPRIGR!.data!.delete!;
+    let calls = 0;
+    const env = withData(r, {
+      async delete(ids: string[], o?: { withAcl?: boolean }) {
+        if (++calls === 2) throw new Error('503 index busy');
+        return realDelete(ids, o);
+      },
+    });
+    const out = await purgeIndexPrefix(env, r.store, prefix);
+    expect(out).toEqual({ removed: 250, complete: false, truncated: false, cut: false, error: '503 index busy' });
+    expect(r.fp.acl.size).toBe(1);
+  });
+
+  it('a listing failure is an error with nothing removed, not a throw', async () => {
+    const r = await indexedRig(2);
+    const env = withData(r, {
+      async listIds() {
+        throw new Error('listIds exploded');
+      },
+    });
+    expect(await purgeIndexPrefix(env, r.store, prefix)).toEqual({
+      removed: 0,
+      complete: false,
+      truncated: false,
+      cut: false,
+      error: 'listIds exploded',
+    });
+  });
+
+  it('the surface missing is unavailable, with truncated and cut false', async () => {
+    const r = await rig('delta', { platform: { withListIds: false } });
+    expect(await purgeIndexPrefix(r.fp.env, r.store, prefix)).toEqual({
+      removed: 0,
+      complete: false,
+      truncated: false,
+      cut: false,
+      unavailable: true,
+    });
+  });
+
+  it('purgeActor records a failed pass in errors (0.1.0 caught the throw; 0.1.1 reads error)', async () => {
+    const r = await indexedRig(2);
+    const realDelete = r.fp.env.SPRIGR!.data!.delete!;
+    const env = withData(r, {
+      async delete(ids: string[], o?: { withAcl?: boolean }) {
+        await realDelete(ids, o);
+        throw new Error('reply lost after the delete');
+      },
+    });
+    const res = await purgeActor(r.adapter, r.store, env, r.scope);
+    expect(res).toMatchObject({ disabled: true, removed: 0, complete: false });
+    expect(res.errors).toEqual([`purge ${prefix}: reply lost after the delete`]);
+  });
+});
+
 describe('sprigr-apps#2211: refreshAclPrincipals', () => {
   async function indexed() {
     const r = await rig('delta');
@@ -148,6 +237,23 @@ describe('sprigr-apps#2211: refreshAclPrincipals', () => {
     const out = await refreshAclPrincipals(r.adapter, r.store, r.fp.env, r.scope);
     expect(out!.error).toMatch(/acl-files/);
     expect((await r.store.load(r.scope))!.acl_refresh_completed_at).toBeNull();
+  });
+
+  it('sprigr-app-kit#99: runExclusive gets the env and deadline, tagged acl_refresh', async () => {
+    const r = await indexed();
+    const seen: unknown[] = [];
+    const adapter = {
+      ...r.adapter,
+      async runExclusive<T>(_scope: unknown, walkKey: string, fn: () => Promise<T>, run: unknown) {
+        seen.push({ walkKey, run });
+        return { busy: false as const, value: await fn() };
+      },
+    };
+    const now = () => 5_000;
+    await refreshAclPrincipals(adapter, r.store, r.fp.env, r.scope, { deadline: { at: 900_000 }, now });
+    expect(seen).toEqual([
+      { walkKey: r.store.walkKey(r.scope), run: { env: r.fp.env, deadline: { at: 900_000 }, now, purpose: 'acl_refresh' } },
+    ]);
   });
 
   it('counts rows the index does not hold as missing and never creates them', async () => {

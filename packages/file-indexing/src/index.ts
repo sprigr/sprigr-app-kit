@@ -97,7 +97,7 @@ export {
   fileActorStillConnected,
   buildContext,
 } from './indexer';
-export type { IndexActorFilesBudget, FileIndexingOutcome, PurgeActorResult, AclRefreshOutcome } from './indexer';
+export type { IndexActorFilesBudget, FileIndexingOutcome, PurgeActorResult, PurgePrefixResult, AclRefreshOutcome } from './indexer';
 
 export {
   createD1FileIndexingStore,
@@ -129,6 +129,7 @@ export type {
   ExtraScope,
   ExtraScopesResult,
   ExtraScopePlan,
+  ExclusiveRunContext,
   FileSourceAdapter,
   FileIndexingRow,
   PendingExtractionRow,

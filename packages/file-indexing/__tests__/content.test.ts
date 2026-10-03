@@ -165,6 +165,24 @@ describe('deferred extractions', () => {
     expect((await r.store.listPendingExtractions(5))[0]!.attempts).toBe(0);
   });
 
+  it('sprigr-app-kit#99: minItemMs 0 never starts a row with exactly 0 ms left, and starts one with 1 ms', async () => {
+    const r = await rig('drive');
+    await r.store.upsertPendingExtraction({ objectId: 'a', jobToken: 'a', recordJson: '{}', format: 'pptx' });
+    r.fp.jobs.set('a', { status: 'running' });
+    // Regression: 0.1.0 compared `remaining < minItemMs`, so 0 < 0 was false
+    // and the row started at the deadline itself.
+    await drainPendingExtractions(r.store, r.fp.env, { deadline: { at: 1_000 }, now: () => 1_000, minItemMs: 0 });
+    expect((await r.store.listPendingExtractions(5))[0]!.attempts).toBe(0);
+    // One whole millisecond left: polled (and bumped, the job still running).
+    await drainPendingExtractions(r.store, r.fp.env, { deadline: { at: 1_001 }, now: () => 1_000, minItemMs: 0 });
+    expect((await r.store.listPendingExtractions(5))[0]!.attempts).toBe(1);
+    // minItemMs 1 behaves the same at both edges.
+    await drainPendingExtractions(r.store, r.fp.env, { deadline: { at: 1_000 }, now: () => 1_000, minItemMs: 1 });
+    expect((await r.store.listPendingExtractions(5))[0]!.attempts).toBe(1);
+    await drainPendingExtractions(r.store, r.fp.env, { deadline: { at: 1_001 }, now: () => 1_000, minItemMs: 1 });
+    expect((await r.store.listPendingExtractions(5))[0]!.attempts).toBe(2);
+  });
+
   it('refreshPendingExtractions drops the job of a file this walk already extracted', async () => {
     const r = await rig('drive');
     await r.store.upsertPendingExtraction({ objectId: 'gw:file:q', jobToken: 'q', recordJson: '{}', format: 'pdf' });

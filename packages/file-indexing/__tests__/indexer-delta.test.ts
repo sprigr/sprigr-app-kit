@@ -223,6 +223,34 @@ describe('microsoft-365 shape: events, extra scopes, lease', () => {
     expect(r.fp.imports).toEqual([]);
   });
 
+  it('sprigr-app-kit#99: passes the env, deadline and clock to runExclusive, and a 3-argument adapter still runs', async () => {
+    const r = await rig('delta');
+    seedFiles(r.src, 1);
+    const seen: Array<{ walkKey: string; run: unknown }> = [];
+    const withRun = {
+      ...r.adapter,
+      async runExclusive<T>(_scope: FileIndexingScope, walkKey: string, fn: () => Promise<T>, run: unknown) {
+        seen.push({ walkKey, run });
+        return { busy: false as const, value: await fn() };
+      },
+    };
+    const c = clock();
+    const deadline = { at: c.now() + 60_000 };
+    const out = await indexActorFiles(withRun, r.store, r.fp.env, r.scope, { deadline, now: c.now });
+    expect(out.indexed).toBe(1);
+    expect(seen).toEqual([{ walkKey: r.store.walkKey(r.scope), run: { env: r.fp.env, deadline, now: c.now, purpose: 'index' } }]);
+
+    // A 0.1.0 adapter declares three parameters and ignores the fourth.
+    const threeArg = {
+      ...r.adapter,
+      async runExclusive<T>(_scope: FileIndexingScope, _walkKey: string, fn: () => Promise<T>) {
+        return { busy: false as const, value: await fn() };
+      },
+    };
+    r.src.put({ id: 'late', name: 'late.txt', mime: 'text/plain', content: 'late', perms: [] });
+    expect((await indexActorFiles(threeArg, r.store, r.fp.env, r.scope)).indexed).toBe(1);
+  });
+
   it('treats a deadline error thrown mid-page as a cut, not a row error', async () => {
     const r = await rig('delta');
     seedFiles(r.src, 4);
