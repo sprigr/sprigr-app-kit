@@ -145,13 +145,19 @@ export async function countPendingContentFills(
   return store.countPendingContentFills(contentFillToken(walkKey));
 }
 
-/** The sentence a status tool should show for a content backlog, or null
- *  when there is none. */
+/**
+ * What a status tool should say about a content backlog, or null when there
+ * is none. Written for the agent reading the status: on sprigr-apps#2702 an
+ * agent searched the index, found nothing, saw "ok" and told the user the
+ * text did not exist.
+ */
 export function describeContentPending(count: number | null | undefined): string | null {
   if (!count || count <= 0) return null;
-  return count === 1
-    ? '1 file is searchable by name only until its text is processed.'
-    : `${count} files are searchable by name only until their text is processed.`;
+  const head =
+    count === 1
+      ? '1 file is searchable by name only until its text is processed'
+      : `${count} files are searchable by name only until their text is processed`;
+  return `${head}; a search by what a file says can miss it until then, so read the file itself before saying its text does not exist.`;
 }
 
 export interface ContentFillOptions {

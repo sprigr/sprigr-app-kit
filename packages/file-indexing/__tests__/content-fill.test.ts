@@ -285,8 +285,10 @@ describe('content_pending and the queue boundaries', () => {
     await r.store.enable(other, { connectedEmail: 'bob@corp.com', extra: { tenant_id: 'tenant-1' } });
     expect(await countPendingContentFills(r.store, other)).toBe(0);
     expect(await countPendingContentFills(r.store, r.scope)).toBe(3);
-    expect(describeContentPending(3)).toBe('3 files are searchable by name only until their text is processed.');
-    expect(describeContentPending(1)).toBe('1 file is searchable by name only until its text is processed.');
+    expect(describeContentPending(3)).toBe(
+      '3 files are searchable by name only until their text is processed; a search by what a file says can miss it until then, so read the file itself before saying its text does not exist.',
+    );
+    expect(describeContentPending(1)).toMatch(/^1 file is searchable by name only until its text is processed; /);
     expect(describeContentPending(0)).toBeNull();
   });
 

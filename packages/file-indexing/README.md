@@ -181,7 +181,7 @@ Per row the drain:
 
 A row is dropped (and logged) when the file vanished (`refetchEntry` returned null, or `downloadText` returned `{ missing: true }`), no longer qualifies for text, lost every principal, or its fetch failed `MAX_CONTENT_FILL_ATTEMPTS` (5) times. A walk that imports the file WITH its text drops the row; a deleted file, the reconcile and `purgeActor` drop it as well. A file that already has a platform extraction job or an app's own queue row is never overwritten by a fill.
 
-Show the backlog. `outcome.contentPending` (and `countPendingContentFills(store, scope)` for a status tool) is the number of files of that scope still searchable by name only; `describeContentPending(n)` gives the sentence ("12 files are searchable by name only until their text is processed."). An app that reports "ok" while this is above zero tells agents the text does not exist.
+Show the backlog. `outcome.contentPending` (and `countPendingContentFills(store, scope)` for a status tool) is the number of files of that scope still searchable by name only; `describeContentPending(n)` gives the sentence for the agent reading the status ("12 files are searchable by name only until their text is processed; a search by what a file says can miss it until then, so read the file itself before saying its text does not exist."). An app that reports "ok" while this is above zero tells agents the text does not exist.
 
 ## The store
 
