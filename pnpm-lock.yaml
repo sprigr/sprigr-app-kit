@@ -435,6 +435,31 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
 
+  packages/file-indexing:
+    dependencies:
+      '@sprigr/apps-acl-identity-link':
+        specifier: 0.2.0
+        version: 0.2.0
+      '@sprigr/apps-app-sdk':
+        specifier: 0.14.0
+        version: 0.14.0
+      '@sprigr/apps-fetch-budget':
+        specifier: 0.1.0
+        version: 0.1.0
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^4.20240909.0
+        version: 4.20260702.1
+      sql.js:
+        specifier: 1.14.2
+        version: 1.14.2
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
+
   packages/fleet-conventions:
     devDependencies:
       typescript:
@@ -2382,6 +2407,9 @@ packages:
   '@speed-highlight/core@1.2.17':
     resolution: {integrity: sha512-Z92FwKpCtfaW1V0jTU/fh3QzYEZN8wDwrzRIBoADCJfn4mJCNcJN/XegifX7BDrQ8/h9Xh/JnbyMchL0FqXrkg==}
 
+  '@sprigr/apps-acl-identity-link@0.2.0':
+    resolution: {integrity: sha512-+HOyYVWIlCXViDx8FgAVHA24elbiD2wPkSn2LkkozBrdiTS6/WUT/ZO+tEezFy2vxzQilRHfV65lgOu9OB350Q==}
+
   '@sprigr/apps-app-sdk@0.1.0':
     resolution: {integrity: sha512-lU9qWVkV7TO70ULtnV8OjwQb4tFSea9MJOz9KUc2ddzR5g55m5miyLs0xNgF1wo798hOqawbUz/PgBvPvzF68Q==}
 
@@ -2389,11 +2417,18 @@ packages:
     resolution: {integrity: sha512-ThXKiaxQCwCyl3hWPwO3EJIm+ahzOeN/dbspVpHpR53ZP2xImRKMpTWPooNQ/XqhmD+50IB1HxIfJbLPhMLFcw==}
     hasBin: true
 
+  '@sprigr/apps-app-sdk@0.14.0':
+    resolution: {integrity: sha512-6/w2rFY9RRtf4NhLCM5dZbtbdjiVVSCztH6XD1sKCqt4KvYHrM5XjB5XGAC2Jng7BmXeWvQ3Yx3mAlkYLv2gFg==}
+    hasBin: true
+
   '@sprigr/apps-d1-kv@0.2.0':
     resolution: {integrity: sha512-PNnvNs/CFqMls+LN4XZki8tcLgoZF3JTdxbFc/ONM8xtr/HJC36pJOtNHFTSw+nAwV8XELqJwBmSy4j0EG+edg==}
 
   '@sprigr/apps-dedup-latch@0.1.0':
     resolution: {integrity: sha512-7hAbyVK+T69f31gVdF6noUhZl38AeYevuqw9a5GgHOxutqTONoiw+WjYe1BiTvpR+AkYEPHdWJC9ogX5dIpDDg==}
+
+  '@sprigr/apps-fetch-budget@0.1.0':
+    resolution: {integrity: sha512-C5eOffXX0Z9Ql/lYuLoWUVlF2N2Q0wY0BRjwp7bKT6291jP4HNXHTe9Eii7t+rR0v03dEX0Y2mwoQBeZ0OkiCg==}
 
   '@sprigr/apps-oauth-utils@0.1.0':
     resolution: {integrity: sha512-wR7HZ2L/cuMvL7tLssXI+83qnENH1FXogVU+eie3G7yYgcBHQI2A9ky86BJt8oTo7bepX5YHCYnMPxk2qxj0bQ==}
@@ -3507,6 +3542,9 @@ packages:
   source-map@0.7.6:
     resolution: {integrity: sha512-i5uvt8C3ikiWeNZSVZNWcfZPItFQOsYTUAOkcUPGd8DqDy1uOUikjt5dG+uRlwyvR108Fb9DOd4GvXfT0N2/uQ==}
     engines: {node: '>= 12'}
+
+  sql.js@1.14.2:
+    resolution: {integrity: sha512-3ZGPovObMFrdw79zrUHbfdE/DLIsy8jdNdssmMSQuRAymedU6q84asPt0kgiqrdMYlPegDItiIMfmIXzZnYFcw==}
 
   stackback@0.0.2:
     resolution: {integrity: sha512-1XMJE5fQo1jGH6Y/7ebnwPOBEkIEnT4QF32d5R1+VXdXveM0IBMJt8zfaxX1P3QhVwrYe+576+jkANtSS2mBbw==}
@@ -5611,13 +5649,19 @@ snapshots:
 
   '@speed-highlight/core@1.2.17': {}
 
+  '@sprigr/apps-acl-identity-link@0.2.0': {}
+
   '@sprigr/apps-app-sdk@0.1.0': {}
 
   '@sprigr/apps-app-sdk@0.12.0': {}
 
+  '@sprigr/apps-app-sdk@0.14.0': {}
+
   '@sprigr/apps-d1-kv@0.2.0': {}
 
   '@sprigr/apps-dedup-latch@0.1.0': {}
+
+  '@sprigr/apps-fetch-budget@0.1.0': {}
 
   '@sprigr/apps-oauth-utils@0.1.0': {}
 
@@ -6901,6 +6945,8 @@ snapshots:
   source-map@0.6.1: {}
 
   source-map@0.7.6: {}
+
+  sql.js@1.14.2: {}
 
   stackback@0.0.2: {}
 

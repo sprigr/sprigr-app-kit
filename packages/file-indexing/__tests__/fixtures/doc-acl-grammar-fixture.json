@@ -1,0 +1,218 @@
+{
+  "isValidPrincipal": [
+    [
+      "public",
+      true
+    ],
+    [
+      " public ",
+      true
+    ],
+    [
+      "PUBLIC",
+      false
+    ],
+    [
+      "user:alice@corp.com",
+      true
+    ],
+    [
+      "user:Alice@Corp.COM",
+      true
+    ],
+    [
+      "  user:Bob@X.io  ",
+      true
+    ],
+    [
+      "user:",
+      false
+    ],
+    [
+      "user: ",
+      false
+    ],
+    [
+      "user:a b@x.com",
+      false
+    ],
+    [
+      "user:a\tb",
+      false
+    ],
+    [
+      "user:a\nb",
+      false
+    ],
+    [
+      "group:",
+      false
+    ],
+    [
+      "group:ABC-123",
+      true
+    ],
+    [
+      "group: ABC ",
+      false
+    ],
+    [
+      "group:a b",
+      false
+    ],
+    [
+      "org:",
+      false
+    ],
+    [
+      "org:Tenant-GUID",
+      true
+    ],
+    [
+      " org:t1 ",
+      true
+    ],
+    [
+      "org:t 1",
+      false
+    ],
+    [
+      "anyone",
+      false
+    ],
+    [
+      "user",
+      false
+    ],
+    [
+      "User:alice@corp.com",
+      false
+    ],
+    [
+      "GROUP:x",
+      false
+    ],
+    [
+      "domain:corp.com",
+      false
+    ],
+    [
+      "",
+      false
+    ],
+    [
+      "   ",
+      false
+    ],
+    [
+      42,
+      false
+    ],
+    [
+      null,
+      false
+    ],
+    [
+      "__undefined__",
+      false
+    ],
+    [
+      [
+        "user:a"
+      ],
+      false
+    ],
+    [
+      "public extra",
+      false
+    ],
+    [
+      "user:x@y.com OR acl_principals:public",
+      false
+    ]
+  ],
+  "normalizePrincipal": [
+    [
+      "user:Alice@Corp.COM",
+      "user:alice@corp.com"
+    ],
+    [
+      "  user:Bob@X.io  ",
+      "user:bob@x.io"
+    ],
+    [
+      "group:ABC-123",
+      "group:ABC-123"
+    ],
+    [
+      " group:ABC ",
+      "group:ABC"
+    ],
+    [
+      "org:Tenant-GUID",
+      "org:Tenant-GUID"
+    ],
+    [
+      " org:t1 ",
+      "org:t1"
+    ],
+    [
+      "public",
+      "public"
+    ],
+    [
+      " public ",
+      "public"
+    ],
+    [
+      "user:already@lower.com",
+      "user:already@lower.com"
+    ]
+  ],
+  "userPrincipal": [
+    [
+      "Alice@Corp.COM",
+      "user:alice@corp.com"
+    ],
+    [
+      "  bob@x.io ",
+      "user:bob@x.io"
+    ],
+    [
+      "ÉLODIE@Example.FR",
+      "user:élodie@example.fr"
+    ]
+  ],
+  "groupPrincipal": [
+    [
+      "ABC-123",
+      "group:ABC-123"
+    ],
+    [
+      "  Sales@Corp.com ",
+      "group:Sales@Corp.com"
+    ],
+    [
+      "Mixed-Case-Id",
+      "group:Mixed-Case-Id"
+    ]
+  ],
+  "orgPrincipal": [
+    [
+      "Tenant-GUID",
+      "org:Tenant-GUID"
+    ],
+    [
+      "  corp.com ",
+      "org:corp.com"
+    ],
+    [
+      "ABC",
+      "org:ABC"
+    ]
+  ],
+  "constants": {
+    "PUBLIC_PRINCIPAL": "public",
+    "ACL_PRINCIPALS_ATTR": "acl_principals"
+  }
+}
