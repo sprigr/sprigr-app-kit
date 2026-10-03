@@ -56,6 +56,15 @@ on scheduled paths (a cron that refreshes every actor's token), where one hung
 provider can spend the whole invocation budget. Leave it unset on interactive
 and agent paths, where a merely slow provider should still succeed.
 
+**Not for providers that rotate the refresh token on every refresh.** The abort
+cancels the request, and it can land after the provider has already rotated.
+The old refresh token is then invalid, the new one is in a response nobody
+reads, and the install needs a reconnect. For a rotating provider, bound only
+the caller's wait instead: race the refresh promise against a timer, and hand
+the refresh itself to `ctx.waitUntil` so the isolate stays alive until the new
+token is persisted. The ServiceM8 app in sprigr-apps does exactly this for its
+scheduled refresh.
+
 ```ts
 const config: ProviderConfig = { ...baseConfig, timeoutMs: 10_000 };
 await refreshAndPersist(config, store, prefix, false);
