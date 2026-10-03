@@ -12,6 +12,9 @@
  * at the first page it could not announce, and the next pass re-walks and
  * emits from there.
  *
+ * Ordering: pages go out in order, but the events within one page are sent
+ * DEFAULT_FETCH_CONCURRENCY at a time, so their order is not guaranteed.
+ *
  * A `file.deleted` claim (adapter.claimDeletedEvent) is taken right before its
  * emit and given back (releaseDeletedEvent) when the emit throws, so a
  * deletion is never latched without having been announced.

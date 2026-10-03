@@ -251,14 +251,17 @@ export function createD1FileIndexingStore(
     },
 
     async countOtherActors(scope) {
-      const total = await db.prepare(`SELECT COUNT(*) AS n FROM ${T}`).first<{ n: number }>();
       const a = actorWhere(scope);
-      if (!a) return total?.n ?? 0;
-      const mine = await db
-        .prepare(`SELECT COUNT(*) AS n FROM ${T} WHERE ${a.where}`)
-        .bind(...a.binds)
-        .first<{ n: number }>();
-      return (total?.n ?? 0) - (mine?.n ?? 0);
+      // One query. COALESCE matters: on a row whose sprigr_user_id is NULL (an
+      // agent row) `sprigr_user_id = ?` is NULL, and a bare NOT (NULL) is NULL,
+      // which would silently leave every agent row out of the count.
+      const row = a
+        ? await db
+            .prepare(`SELECT COUNT(*) AS n FROM ${T} WHERE NOT COALESCE((${a.where}), 0)`)
+            .bind(...a.binds)
+            .first<{ n: number }>()
+        : await db.prepare(`SELECT COUNT(*) AS n FROM ${T}`).first<{ n: number }>();
+      return row?.n ?? 0;
     },
 
     async recordSuccess(scope, cursor, indexed, skipped) {

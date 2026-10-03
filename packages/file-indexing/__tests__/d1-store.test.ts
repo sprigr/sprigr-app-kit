@@ -51,6 +51,21 @@ describe('createD1FileIndexingStore on the google-workspace schema', () => {
     expect(await store.countOtherActors({ actor: BOB })).toBe(2);
   });
 
+  it('countOtherActors is one query and counts agent rows (NULL user id) too', async () => {
+    const { store, db } = await rig('drive');
+    await store.enable({ actor: { agentId: 'agt_1' } }, { connectedEmail: null });
+    await store.enable({ actor: BOB }, { connectedEmail: null });
+    let prepares = 0;
+    const counting = createD1FileIndexingStore(
+      { prepare: (sql: string) => (prepares++, db.prepare(sql)) },
+      GOOGLE_WORKSPACE_STORE_CONFIG,
+    );
+    expect(await counting.countOtherActors({ actor: ALICE })).toBe(2);
+    expect(prepares).toBe(1);
+    expect(await counting.countOtherActors({ actor: { agentId: 'agt_1' } })).toBe(2);
+    expect(await counting.countOtherActors({ actor: { agentId: 'agt_2' } })).toBe(3);
+  });
+
   it('lists enabled rows stale-first with their scopes', async () => {
     const { store } = await rig('drive');
     await store.enable({ actor: BOB }, { connectedEmail: 'bob@corp.com' });

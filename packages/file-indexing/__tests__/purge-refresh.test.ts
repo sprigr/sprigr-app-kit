@@ -62,6 +62,25 @@ describe('sprigr-apps#2355: purgeActor', () => {
     expect(shared.fp.acl.size).toBe(2);
   });
 
+  it('install-scoped ids: an actor with NO indexing row purges nothing, even when no one else indexes', async () => {
+    // Regression: with no row and no other actor, countOtherActors is 0 and
+    // the first cut deleted the whole install's `gw:file:` prefix.
+    const r = await rig('drive');
+    seedFiles(r.src, 3);
+    await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope);
+    await r.store.remove(r.scope); // the table is now empty
+    const res = await purgeActor(r.adapter, r.store, r.fp.env, r.scope);
+    expect(res).toMatchObject({ disabled: false, removed: 0, complete: false, purgeSkipped: 'no_indexing_row', prefixes: [] });
+    expect(r.fp.acl.size).toBe(3);
+    expect(r.fp.deletes).toEqual([]);
+    // Actor-scoped ids are unaffected: the prefix names the actor, so it is safe.
+    const ms = await rig('delta');
+    seedFiles(ms.src, 2);
+    await indexActorFiles(ms.adapter, ms.store, ms.fp.env, ms.scope);
+    await ms.store.remove(ms.scope);
+    expect(await purgeActor(ms.adapter, ms.store, ms.fp.env, ms.scope, { email: 'alice@corp.com' })).toMatchObject({ removed: 2 });
+  });
+
   it('never throws, and skips the purge without the list/delete surface', async () => {
     const r = await rig('delta', { platform: { withListIds: false } });
     const res = await purgeActor(r.adapter, r.store, r.fp.env, r.scope);

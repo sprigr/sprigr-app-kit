@@ -4,7 +4,11 @@
  *
  * Everything here is STRUCTURAL so an app's own env type (Ms365Env, GwsEnv,
  * a Dropbox env) is assignable without a cast: every member is optional and
- * typed as a supertype of what the platform wrapper injects.
+ * typed as a supertype of what the platform wrapper injects. No env, bridge
+ * or RESULT type here carries an index signature: an interface (app-sdk's
+ * SprigrFilesJobResult, SprigrDataPartialUpdateResult, an app's own env) is
+ * never assignable to a type with one, so a single `[key: string]: unknown`
+ * breaks the no-cast promise. __tests__/env-compat.test-d.ts pins it.
  */
 
 import type { Actor, D1Like } from '@sprigr/apps-app-sdk';
@@ -18,20 +22,25 @@ import type { Deadline } from '@sprigr/apps-fetch-budget';
 export interface FileIndexingDataApi {
   import(
     objects: Array<{ objectID: string; [key: string]: unknown }>,
-    opts?: { withAcl?: boolean },
-  ): Promise<{ indexed?: number; [key: string]: unknown }>;
+    // `index` is never sent by this package (withAcl cannot be combined with
+    // it). It is declared so app-sdk's SprigrDataApi, whose import options are
+    // `{ index?: string }` with no `withAcl`, still overlaps this type: two
+    // all-optional object types with no member in common fail TypeScript's
+    // weak-type check, and the SDK-typed env would need a cast.
+    opts?: { withAcl?: boolean; index?: string },
+  ): Promise<{ indexed?: number }>;
   /** Optional: absent on wrapper builds older than the delete surface. */
   delete?(objectIDs: string[], opts?: { withAcl?: boolean }): Promise<unknown>;
   /** Optional: absent on wrapper builds older than the list-ids surface. */
   listIds?(
     prefix: string,
     opts?: { withAcl?: boolean },
-  ): Promise<{ objectIDs: string[]; truncated: boolean; [key: string]: unknown }>;
+  ): Promise<{ objectIDs: string[]; truncated: boolean }>;
   /** Optional: absent on wrapper builds older than the partial-update route. */
   partialUpdate?(
     objects: Array<{ objectID: string; [key: string]: unknown }>,
     opts?: { withAcl?: boolean; createIfNotExists?: boolean },
-  ): Promise<{ updated: number; skippedMissing: number; index: string; [key: string]: unknown }>;
+  ): Promise<{ updated: number; skippedMissing: number; index: string }>;
 }
 
 /** Input to `env.SPRIGR.files.extract` (the platform binary-to-text bridge).
@@ -52,14 +61,12 @@ export interface FilesExtractResult {
   needs_job?: boolean;
   job_token?: string;
   error?: string;
-  [key: string]: unknown;
 }
 
 /** Result from `env.SPRIGR.files.job`. */
 export interface FilesJobResult {
   status: 'not_found' | 'running' | 'done' | 'error' | string;
   result?: Record<string, unknown>;
-  [key: string]: unknown;
 }
 
 /** The slice of `env.SPRIGR.files` the extraction bridge uses. */
@@ -81,11 +88,9 @@ export interface FileIndexingEnv {
     files?: FileIndexingFilesApi;
     emit?(event: string, payload: unknown): Promise<unknown>;
     acl?: AclIdentityBridge;
-    [key: string]: unknown;
   };
   SPRIGR_PLATFORM_BASE?: string;
   SPRIGR_INSTALL_TOKEN?: string;
-  [key: string]: unknown;
 }
 
 // ── the indexed row ───────────────────────────────────────────────────

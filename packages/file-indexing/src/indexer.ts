@@ -789,9 +789,10 @@ export interface PurgeActorResult {
   /** Every prefix was listed in full and deleted. False = call again later. */
   complete: boolean;
   /** Why rows were not purged: install-scoped objectIDs shared with other
-   *  actors (google-workspace with more than one indexing user), no
-   *  listIds/delete surface, or no actor key. */
-  purgeSkipped?: 'shared_prefix' | 'unavailable' | 'no_actor_key';
+   *  actors (google-workspace with more than one indexing user); install-
+   *  scoped ids and this actor has no indexing row (nothing in the index is
+   *  provably theirs); no listIds/delete surface; or no actor key. */
+  purgeSkipped?: 'shared_prefix' | 'no_indexing_row' | 'unavailable' | 'no_actor_key';
   errors: string[];
 }
 
@@ -802,8 +803,9 @@ export interface PurgeActorResult {
  *   3. delete the scope's rows from the ACL index, bounded by `deadline`;
  *   4. clear the walk state.
  * Never throws; every failure is in `errors`, and an incomplete purge reports
- * `complete: false` so the caller can queue the rest. Write the audit row from
- * the result. With install-scoped objectIDs and other actors indexing, rows
+ * `complete: false`. The store keeps NO durable purge-pending state: the
+ * caller must queue the rest itself (and drain it with purgeIndexPrefix) or
+ * tell the user to disconnect again. Write the audit row from the result. With install-scoped objectIDs and other actors indexing, rows
  * cannot be told apart by id, so the purge is skipped (`shared_prefix`):
  * which actor a shared file "belongs to" is a design decision the package
  * does not guess at.
@@ -843,10 +845,18 @@ export async function purgeActor<TEntry, TEnv extends FileIndexingEnv>(
   const ctx = buildContext(env, store, scope, row ?? blankRow(), opts);
   let prefixes: string[] = [];
   try {
-    prefixes = adapter.purgePrefixes ? await adapter.purgePrefixes(ctx) : [adapter.objectIdPrefix(ctx)];
-    if (!adapter.objectIdsActorScoped && (await store.countOtherActors(scope)) > 0) {
-      result.purgeSkipped = 'shared_prefix';
-      prefixes = [];
+    if (!adapter.objectIdsActorScoped && row === null) {
+      // Install-scoped ids (`gw:file:<id>`) name no actor, so the prefix is the
+      // WHOLE install's index. With no row this actor never indexed (or its
+      // row could not be read): deleting the prefix would wipe rows that are
+      // not provably theirs, so nothing is purged.
+      result.purgeSkipped = 'no_indexing_row';
+    } else {
+      prefixes = adapter.purgePrefixes ? await adapter.purgePrefixes(ctx) : [adapter.objectIdPrefix(ctx)];
+      if (!adapter.objectIdsActorScoped && (await store.countOtherActors(scope)) > 0) {
+        result.purgeSkipped = 'shared_prefix';
+        prefixes = [];
+      }
     }
   } catch (err) {
     result.errors.push(`prefixes: ${errMsg(err)}`);

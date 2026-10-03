@@ -21,7 +21,7 @@ The package owns everything that must behave the same for every provider:
 | Unreadable permissions | A transient permission failure holds the cursor at that page so the file is retried (sprigr-apps#2419), bounded by `MAX_UNRESOLVED_HOLD_MS` |
 | Content | Text-like files up to 256 KB, native exports, and PDF/OOXML through the platform extract bridge (5 per pass, staged under random single-use keys); pptx and files of 16 MiB or more drain as durable jobs. Text is capped at 32000 chars, and a cut is logged and marked |
 | Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty) |
-| Events | `<prefix>.file.created/updated/deleted` on incremental passes, with no per-run cap (sprigr-apps#2521) |
+| Events | `<prefix>.file.created/updated/deleted` on incremental passes, with no per-run cap (sprigr-apps#2521). Pages are emitted in order, but the events WITHIN a page go out with bounded concurrency (`DEFAULT_FETCH_CONCURRENCY`, 6), so their order is not guaranteed; a subscriber that cares orders by `modifiedAt` |
 | Disconnect | `purgeActor` switches indexing off, unlinks the owner identity and deletes the scope's rows (sprigr-apps#2355) |
 | Sharing-only changes | Opt-in `refreshAclPrincipals` re-stamps `acl_principals` with `data.partialUpdate({ withAcl: true })`, leaving content alone (sprigr-apps#2211) |
 | Budgets | Every loop stops STARTING work at its deadline, so every cut lands on a resume point under the 110 s dispatch wall |
@@ -175,13 +175,20 @@ const msStore = createD1FileIndexingStore(env.DB, {
 | `heldSinceColumn` | an INTEGER column that bounds the #2419 cursor hold. Neither app has it yet: add `ALTER TABLE <t> ADD COLUMN unresolved_held_since INTEGER` |
 | `aclRefreshColumns` | where `refreshAclPrincipals` keeps its continuation and last completion |
 
+## Disconnect purge: you provide the queue
+
+`purgeActor(adapter, store, env, scope, { deadline })` switches indexing off first, drops the owner identity link, then deletes the scope's rows from the ACL index until the deadline leaves less than `MIN_PURGE_LEG_MS`. When it cannot finish (a large index, a truncated listing, a delete error) it returns `complete: false` with the rows it did remove in `removed`, and **that is all it does about the rest**. The store keeps no durable "purge pending" state, so nothing in this package will come back for the remainder. The app must: either record the unfinished prefixes in a queue of its own and drain them from a later tick with `purgeIndexPrefix` (microsoft-365 does this with its `ms_file_index_purge` table), or tell the user plainly that the disconnect did not finish and must be run again (google-workspace's behaviour today). Because indexing is switched off before any delete, an unfinished purge never re-indexes; it only leaves rows behind until the next attempt.
+
+It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told apart by id: `'shared_prefix'` (install-scoped objectIDs such as `gw:file:<id>` with other actors indexing) or `'no_indexing_row'` (install-scoped objectIDs and this actor has no indexing row, so nothing under the shared prefix is provably theirs).
+
 ## Failure modes
 
 - **`outcome.error = 'permissions_unresolved: ...'`, `held: true`**: some files' permissions could not be read; the cursor waits at that page and retries. After `MAX_UNRESOLVED_HOLD_MS` (6 h, needs `heldSinceColumn`) the pass skips them and reports `permissions_unresolved_released`.
 - **`import_failed` / `delete_failed` / `reconcile_failed` / `walk_seen_record_failed`**: the cursor did not move; the next pass re-walks.
 - **`<cursorResetDetail>`**: the provider rejected the cursor; it is reset and the next pass does a full walk.
 - **`busy: true`**: `adapter.runExclusive` found another invocation holding the scope; nothing ran.
-- **`purgeSkipped: 'shared_prefix'`**: install-scoped objectIDs (`gw:file:<id>`) with other actors indexing cannot be told apart by id, so the purge deletes nothing. Indexing is still switched off and the identity unlinked.
+- **`purgeSkipped: 'shared_prefix'` / `'no_indexing_row'`**: see "Disconnect purge" above. Indexing is still switched off and the identity unlinked.
+- **`purgeActor` returns `complete: false`**: the rest is yours to queue; see "Disconnect purge" above.
 - **Reconcile skipped with "walk state moved"**: another invocation finished or restarted the walk; its reconcile covers it.
 
 ## API
