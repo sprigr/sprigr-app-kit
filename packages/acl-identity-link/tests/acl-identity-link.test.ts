@@ -31,28 +31,73 @@ describe('recordAclIdentityLink', () => {
   it('links the connected email for the owner, normalised, once per isolate', async () => {
     const linkIdentity = vi.fn(async () => ({ ok: true }));
     const env = envWith({ linkIdentity });
-    await recordAclIdentityLink(env, { platformUserId: 'plat_1' }, ' Ops@Example.com ');
-    await recordAclIdentityLink(env, { platformUserId: 'plat_1' }, 'ops@example.com');
+    await expect(recordAclIdentityLink(env, { platformUserId: 'plat_1' }, ' Ops@Example.com ')).resolves.toEqual({ ok: true });
+    await expect(recordAclIdentityLink(env, { platformUserId: 'plat_1' }, 'ops@example.com')).resolves.toEqual({ ok: true });
     expect(linkIdentity).toHaveBeenCalledTimes(1);
     expect(linkIdentity).toHaveBeenCalledWith({ kind: 'user', id: 'plat_1' }, 'ops@example.com');
   });
 
-  it('retries on the next run after a failure, and never throws', async () => {
+  it('retries on the next run after a generic failure, and never throws', async () => {
     const linkIdentity = vi.fn(async () => { throw new Error('503'); });
     const env = envWith({ linkIdentity });
-    await expect(recordAclIdentityLink(env, { agentId: 'agt_1' }, 'bot@example.com')).resolves.toBeUndefined();
+    await expect(recordAclIdentityLink(env, { agentId: 'agt_1' }, 'bot@example.com')).resolves.toEqual({ ok: false, reason: 'failed' });
     await recordAclIdentityLink(env, { agentId: 'agt_1' }, 'bot@example.com');
     expect(linkIdentity).toHaveBeenCalledTimes(2);
   });
 
   it('is a no-op on an older bridge, with no email, or with no actor', async () => {
-    await expect(recordAclIdentityLink(envWith(), { platformUserId: 'p' }, 'a@example.com')).resolves.toBeUndefined();
-    await expect(recordAclIdentityLink({}, { platformUserId: 'p' }, 'a@example.com')).resolves.toBeUndefined();
+    await expect(recordAclIdentityLink(envWith(), { platformUserId: 'p' }, 'a@example.com')).resolves.toEqual({ ok: false, reason: 'unavailable' });
+    await expect(recordAclIdentityLink({}, { platformUserId: 'p' }, 'a@example.com')).resolves.toEqual({ ok: false, reason: 'unavailable' });
     const linkIdentity = vi.fn(async () => ({}));
     await recordAclIdentityLink(envWith({ linkIdentity }), { platformUserId: 'p' }, null);
     await recordAclIdentityLink(envWith({ linkIdentity }), { platformUserId: 'p' }, '   ');
     await recordAclIdentityLink(envWith({ linkIdentity }), {}, 'a@example.com');
     expect(linkIdentity).not.toHaveBeenCalled();
+  });
+
+  it('detects owner_not_found via err.code and memoizes the refusal for the isolate', async () => {
+    const linkIdentity = vi.fn(async () => {
+      const err = new Error('env.SPRIGR.acl.linkIdentity failed: 404 owner_not_found');
+      (err as Error & { code?: string; status?: number }).code = 'owner_not_found';
+      (err as Error & { code?: string; status?: number }).status = 404;
+      throw err;
+    });
+    const env = envWith({ linkIdentity });
+    await expect(recordAclIdentityLink(env, { platformUserId: 'ghost' }, 'a@example.com')).resolves.toEqual({
+      ok: false,
+      reason: 'owner_not_found',
+    });
+    // Negative memo: the second call on the same isolate never re-asks the platform.
+    await expect(recordAclIdentityLink(env, { platformUserId: 'ghost' }, 'a@example.com')).resolves.toEqual({
+      ok: false,
+      reason: 'owner_not_found',
+    });
+    expect(linkIdentity).toHaveBeenCalledTimes(1);
+  });
+
+  it('detects owner_not_found via the message fallback when err.code is absent (older build-runner)', async () => {
+    const linkIdentity = vi.fn(async () => {
+      throw new Error('env.SPRIGR.acl.linkIdentity failed: 404 owner_not_found');
+    });
+    const env = envWith({ linkIdentity });
+    await expect(recordAclIdentityLink(env, { platformUserId: 'ghost' }, 'a@example.com')).resolves.toEqual({
+      ok: false,
+      reason: 'owner_not_found',
+    });
+    await recordAclIdentityLink(env, { platformUserId: 'ghost' }, 'a@example.com');
+    expect(linkIdentity).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not treat an unrelated 404 or a plain string error as owner_not_found', async () => {
+    const linkIdentity = vi.fn(async () => { throw new Error('env.SPRIGR.acl.linkIdentity failed: 404 not_found'); });
+    const env = envWith({ linkIdentity });
+    await expect(recordAclIdentityLink(env, { platformUserId: 'p' }, 'a@example.com')).resolves.toEqual({
+      ok: false,
+      reason: 'failed',
+    });
+    // A generic failure is NOT negatively memoized: it retries every call.
+    await recordAclIdentityLink(env, { platformUserId: 'p' }, 'a@example.com');
+    expect(linkIdentity).toHaveBeenCalledTimes(2);
   });
 });
 

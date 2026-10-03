@@ -236,6 +236,59 @@ describe('partialUpdateData with the injected host member', () => {
   });
 });
 
+describe('withAcl: principals-only re-stamp', () => {
+  const restamp = { objectID: 'ms:file:a:1:d:i1', acl_principals: ['user:alice@corp.com'] };
+  const aclIndex = 'comp_1-app-microsoft-365-acl-files';
+  const codeOf = (fn: () => unknown): string | undefined => {
+    try {
+      fn();
+    } catch (e) {
+      return (e as SprigrDataValidationError).error;
+    }
+    return undefined;
+  };
+
+  it('puts withAcl: true on the wire, and leaves it off every other body', () => {
+    expect(buildPartialUpdateBody([restamp], { withAcl: true })).toEqual({ objects: [restamp], createIfNotExists: false, withAcl: true });
+    expect('withAcl' in buildPartialUpdateBody([patch], { withAcl: false })).toBe(false);
+  });
+
+  it('rejects what the platform would refuse, before sending', () => {
+    expect(codeOf(() => buildPartialUpdateBody([restamp], { withAcl: true, createIfNotExists: true }))).toBe('acl_partial_update_create_unsupported');
+    expect(codeOf(() => buildPartialUpdateBody([restamp], { withAcl: true, index: 'files' }))).toBe('acl_index_combination_unsupported');
+    expect(codeOf(() => buildPartialUpdateBody([restamp, { ...restamp, name: 'x' }], { withAcl: true }))).toBe('acl_partial_update_fields');
+    expect(codeOf(() => buildPartialUpdateBody([{ objectID: 'f1' }], { withAcl: true }))).toBe('missing_acl_principals');
+    expect(codeOf(() => buildPartialUpdateBody([{ objectID: 'f1', acl_principals: [] }], { withAcl: true }))).toBe('missing_acl_principals');
+  });
+
+  it('sends withAcl over the install-token bridge', async () => {
+    reply = { status: 200, body: { ok: true, updated: 1, skippedMissing: 0, index: aclIndex } };
+    const res = await partialUpdateData(inlineEnv(), [restamp], { withAcl: true });
+    expect(calls[0]?.body).toEqual({ objects: [restamp], createIfNotExists: false, withAcl: true });
+    expect(res.index).toBe(aclIndex);
+  });
+
+  it('passes withAcl to the injected member and accepts a reply from the -acl-files index', async () => {
+    const seen: unknown[] = [];
+    const data = {
+      partialUpdate: async (_o: unknown, opts: unknown) => {
+        seen.push(opts);
+        return { ok: true as const, updated: 1, skippedMissing: 0, index: aclIndex };
+      },
+    };
+    const res = await partialUpdateData(inlineEnv({ SPRIGR: { data } }), [restamp], { withAcl: true });
+    expect(seen).toEqual([{ createIfNotExists: false, withAcl: true }]);
+    expect(res.updated).toBe(1);
+  });
+
+  it('throws when an older wrapper dropped the flag and the patch landed on the plain index', async () => {
+    const data = { partialUpdate: async () => ({ ok: true as const, updated: 0, skippedMissing: 1, index: 'comp_1-app-microsoft-365' }) };
+    await expect(partialUpdateData(inlineEnv({ SPRIGR: { data } }), [restamp], { withAcl: true })).rejects.toThrow(
+      'landed on comp_1-app-microsoft-365, not the -acl-files index',
+    );
+  });
+});
+
 describe('canPartialUpdate', () => {
   it('is true with the member, true with the bridge, false with neither', () => {
     expect(canPartialUpdate(inlineEnv({ SPRIGR_INSTALL_TOKEN: undefined, SPRIGR: { data: { partialUpdate: async () => ({}) } } }))).toBe(true);

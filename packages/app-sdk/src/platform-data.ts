@@ -18,6 +18,12 @@
  * fails with `shard_field_invalid`: a patch cannot be routed to its shard
  * otherwise. The per-call cap is the same 1000 objects as `import`.
  *
+ * `withAcl: true` is a narrower mode: it re-stamps `acl_principals` on rows
+ * already in the app's `-acl-files` index and nothing else. Every patch must
+ * be exactly `{ objectID, acl_principals }`, and `createIfNotExists` and
+ * `index` cannot be combined with it. Content is written only by an ACL
+ * `import`, whole.
+ *
  * This module carries two things:
  *
  *   1. `buildPartialUpdateBody`, the wire body both transports send, with
@@ -36,10 +42,13 @@
  * swallow.
  *
  * Wire contract (workers/provisioning/src/wfp-data.ts in sprigr-team):
- *   POST { index?, objects, createIfNotExists? }
+ *   POST { index?, objects, createIfNotExists?, withAcl? }
  *   200 { ok: true, updated, skippedMissing, index, physical_indexes? }
  *   400 { error, detail, index? } with error one of too_many_objects,
- *       invalid_object, unknown_data_index, shard_field_invalid, ...
+ *       invalid_object, unknown_data_index, shard_field_invalid,
+ *       acl_partial_update_fields, acl_partial_update_create_unsupported,
+ *       acl_index_combination_unsupported, missing_acl_principals,
+ *       invalid_acl_principal, ...
  *   401 / 404 bad token / inactive install
  */
 
@@ -60,7 +69,12 @@ export interface SprigrDataPartialUpdateBody {
   index?: string;
   objects: SprigrDataPatch[];
   createIfNotExists: boolean;
+  /** Present (and true) only for an ACL re-stamp. */
+  withAcl?: true;
 }
+
+/** The suffix of the reserved index a `withAcl` write lands in. */
+const ACL_INDEX_SUFFIX = '-acl-files';
 
 export interface PartialUpdateDataOptions extends SprigrDataPartialUpdateOpts {
   /** Ceiling on the HTTP fallback. No default: a data write is awaited for its result. */
@@ -132,11 +146,65 @@ export function buildPartialUpdateBody(
       error: 'unknown_data_index',
     });
   }
+  const withAcl = opts?.withAcl === true;
+  if (withAcl) checkAclRestamp(objects as SprigrDataPatch[], opts, at);
   return {
     ...(opts?.index !== undefined ? { index: opts.index } : {}),
     objects: objects as SprigrDataPatch[],
     createIfNotExists: opts?.createIfNotExists === true,
+    ...(withAcl ? { withAcl: true as const } : {}),
   };
+}
+
+/**
+ * The structural half of the platform's `withAcl` rules, checked before
+ * sending. The principal grammar (`user:`, `group:`, `org:`, `public`) is
+ * left to the platform, which owns it; this only rejects a batch that could
+ * never be accepted.
+ */
+function checkAclRestamp(objects: SprigrDataPatch[], opts: SprigrDataPartialUpdateOpts | undefined, at: string): void {
+  if (opts?.createIfNotExists === true) {
+    throw new SprigrDataValidationError(
+      `${at}: withAcl only re-stamps existing rows; createIfNotExists would create a row with principals and no content`,
+      { error: 'acl_partial_update_create_unsupported' },
+    );
+  }
+  if (opts?.index !== undefined) {
+    throw new SprigrDataValidationError(`${at}: withAcl targets the reserved -acl-files index and cannot be combined with index`, {
+      error: 'acl_index_combination_unsupported',
+    });
+  }
+  for (let i = 0; i < objects.length; i++) {
+    const o = objects[i] as Record<string, unknown>;
+    const extra = Object.keys(o).find((k) => k !== 'objectID' && k !== 'acl_principals');
+    if (extra !== undefined) {
+      throw new SprigrDataValidationError(
+        `${at}: objects[${i}] carries "${extra}"; a withAcl partial update sets only objectID and acl_principals (write content with data.import withAcl)`,
+        { error: 'acl_partial_update_fields', index: i },
+      );
+    }
+    const principals = o.acl_principals;
+    if (!Array.isArray(principals) || principals.length === 0) {
+      throw new SprigrDataValidationError(`${at}: objects[${i}] needs a non-empty acl_principals: string[]`, {
+        error: 'missing_acl_principals',
+        index: i,
+      });
+    }
+  }
+}
+
+/**
+ * A wrapper build older than sprigr/sprigr-team#9843 drops `withAcl` from
+ * `partialUpdate` and patches the PLAIN index instead, answering 200. The
+ * reply's `index` is the only trace, so check it rather than report a
+ * re-stamp that never reached the ACL index.
+ */
+function assertAclIndex(result: SprigrDataPartialUpdateResult): SprigrDataPartialUpdateResult {
+  if (typeof result?.index === 'string' && result.index.endsWith(ACL_INDEX_SUFFIX)) return result;
+  throw new Error(
+    `data.partialUpdate withAcl landed on ${String(result?.index)}, not the ${ACL_INDEX_SUFFIX} index: ` +
+      'this app was built by a platform wrapper that drops withAcl. Republish the app to pick up the current wrapper.',
+  );
 }
 
 /** Narrow an unknown `env.SPRIGR` down to a callable `data.partialUpdate`. */
@@ -196,10 +264,12 @@ export async function partialUpdateData(
   if (injected) {
     // Hand the member the explicit default too, so both transports carry
     // `createIfNotExists: false` rather than leaving one to infer it.
-    return injected(body.objects, {
+    const result = await injected(body.objects, {
       ...(body.index !== undefined ? { index: body.index } : {}),
       createIfNotExists: body.createIfNotExists,
+      ...(body.withAcl ? { withAcl: true } : {}),
     });
+    return body.withAcl ? assertAclIndex(result) : result;
   }
 
   const bridge = resolveInstallBridge(env);
