@@ -6,6 +6,8 @@ The shared file-indexing loop for marketplace apps that mirror a cloud drive int
 npm install @sprigr/apps-file-indexing   # exact-pin it, like every @sprigr/apps-* package
 ```
 
+`@sprigr/apps-app-sdk` is a **peer** dependency (`>=0.14.0 <1`), so the package runs on the app's own SDK copy and the app's bundle carries one SDK, not two. Keep `@sprigr/apps-app-sdk` (0.14.0 or later) in the app's own `dependencies`, which every app already does. 0.1.0 pinned the SDK at exactly 0.14.0 as a regular dependency, so an app on 0.15 shipped both copies.
+
 An app supplies two things:
 
 - a **`FileSourceAdapter`**: the provider calls (list changes, walk the tree, read permissions, download bytes);
@@ -20,7 +22,7 @@ The package owns everything that must behave the same for every provider:
 | Cursor discipline | The cursor moves only after its rows are imported, seen IDs recorded, deletions applied and events emitted. Any failure keeps the old cursor |
 | Unreadable permissions | A transient permission failure holds the cursor at that page so the file is retried (sprigr-apps#2419), bounded by `MAX_UNRESOLVED_HOLD_MS` |
 | Content | Text-like files up to 256 KB, native exports, and PDF/OOXML through the platform extract bridge (5 per pass, staged under random single-use keys); pptx and files of 16 MiB or more drain as durable jobs. Text is capped at 32000 chars, and a cut is logged and marked |
-| Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty) |
+| Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty). A completed walk that saw NOTHING (the user emptied the drive) deletes every row under the prefix; on a truncated listing it deletes the listed subset and the next completed walk continues. An errored, cut or held walk, or one that established no cursor, deletes nothing (sprigr-apps#2690) |
 | Events | `<prefix>.file.created/updated/deleted` on incremental passes, with no per-run cap (sprigr-apps#2521). Pages are emitted in order, but the events WITHIN a page go out with bounded concurrency (`DEFAULT_FETCH_CONCURRENCY`, 6), so their order is not guaranteed; a subscriber that cares orders by `modifiedAt` |
 | Disconnect | `purgeActor` switches indexing off, unlinks the owner identity and deletes the scope's rows (sprigr-apps#2355) |
 | Sharing-only changes | Opt-in `refreshAclPrincipals` re-stamps `acl_principals` with `data.partialUpdate({ withAcl: true })`, leaving content alone (sprigr-apps#2211) |
@@ -146,6 +148,21 @@ export const dropboxAdapter: FileSourceAdapter<Entry, DropboxEnv> = {
 };
 ```
 
+### Serialising passes: `runExclusive`
+
+An adapter that must not run two passes over one scope at once (a webhook and the schedule racing on the same cursor) implements `runExclusive(scope, walkKey, fn, run)`. Return `{ busy: true }` (plus `purgePending: true` when a queued purge is the reason) to skip the pass, or `{ busy: false, value: await fn() }`. The fourth argument (0.1.1) is `{ env, deadline, now, purpose }`: the app env, so a lease kept in D1 reads `run.env.DB` without a per-env adapter; the tick deadline, to size the lease TTL; and `purpose`, `'index'` from `indexActorFiles` or `'acl_refresh'` from `refreshAclPrincipals`. An adapter written for 0.1.0 declares three parameters and keeps working.
+
+```ts
+async runExclusive(scope, walkKey, fn, { env, deadline }) {
+  if (!(await acquireLease(env.DB, walkKey, deadline))) return { busy: true };
+  try {
+    return { busy: false, value: await fn() };
+  } finally {
+    await releaseLease(env.DB, walkKey);
+  }
+},
+```
+
 Team folders (Dropbox Business) slot in as `extraScopes`: one `ExtraScope` per team folder, each re-listed whole per pass, the same way microsoft-365 walks SharePoint libraries.
 
 ## The store
@@ -179,6 +196,14 @@ const msStore = createD1FileIndexingStore(env.DB, {
 
 `purgeActor(adapter, store, env, scope, { deadline })` switches indexing off first, drops the owner identity link, then deletes the scope's rows from the ACL index until the deadline leaves less than `MIN_PURGE_LEG_MS`. When it cannot finish (a large index, a truncated listing, a delete error) it returns `complete: false` with the rows it did remove in `removed`, and **that is all it does about the rest**. The store keeps no durable "purge pending" state, so nothing in this package will come back for the remainder. The app must: either record the unfinished prefixes in a queue of its own and drain them from a later tick with `purgeIndexPrefix` (microsoft-365 does this with its `ms_file_index_purge` table), or tell the user plainly that the disconnect did not finish and must be run again (google-workspace's behaviour today). Because indexing is switched off before any delete, an unfinished purge never re-indexes; it only leaves rows behind until the next attempt.
 
+`purgeIndexPrefix(env, store, prefix, { deadline })` is one drain pass over one prefix, and it never throws. It returns `{ removed, complete, truncated, cut, unavailable?, error? }`: `truncated` means the listing stopped at the platform cap, `cut` means the deadline stopped the deletes, and `error` carries a listing, delete or cleanup failure, with `removed` still counting the chunks deleted before it. `complete` is true only when none of those happened. A queue drain keeps the row queued on `!complete` and records `error` as the row's last error when it is set:
+
+```ts
+const pass = await purgeIndexPrefix(env, store, row.prefix, { deadline });
+if (pass.complete) await dequeue(row.prefix);
+else await requeue(row.prefix, { removed: row.removed + pass.removed, lastError: pass.error ?? null });
+```
+
 It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told apart by id: `'shared_prefix'` (install-scoped objectIDs such as `gw:file:<id>` with other actors indexing) or `'no_indexing_row'` (install-scoped objectIDs and this actor has no indexing row, so nothing under the shared prefix is provably theirs).
 
 ## Failure modes
@@ -188,8 +213,19 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 - **`<cursorResetDetail>`**: the provider rejected the cursor; it is reset and the next pass does a full walk.
 - **`busy: true`**: `adapter.runExclusive` found another invocation holding the scope; nothing ran.
 - **`purgeSkipped: 'shared_prefix'` / `'no_indexing_row'`**: see "Disconnect purge" above. Indexing is still switched off and the identity unlinked.
-- **`purgeActor` returns `complete: false`**: the rest is yours to queue; see "Disconnect purge" above.
+- **`purgeActor` returns `complete: false`**: the rest is yours to queue; see "Disconnect purge" above. A failed pass is in `errors` as `purge <prefix>: <message>`.
+- **`purgeIndexPrefix` returns `error`**: the listing or a delete failed; `removed` counts what went before it. It no longer throws (0.1.0 did).
 - **Reconcile skipped with "walk state moved"**: another invocation finished or restarted the walk; its reconcile covers it.
+
+## Upgrading from 0.1.0
+
+0.1.1 is additive except for two behaviour changes (items 1 and 4), so bump the pin and check the purge drain:
+
+1. **`purgeIndexPrefix` returns failures instead of throwing.** A drain that recorded a failure in its `catch` now gets `{ complete: false, error }` back and its `catch` never runs. Read `pass.error` where the `catch` used to set the row's last error or count a failure. Without that change the row still stays queued and is retried, but the failure is no longer recorded. `truncated` and `cut` now say why a pass was not complete.
+2. **`@sprigr/apps-app-sdk` is a peer dependency** (`>=0.14.0 <1`). Nothing to change if the app already depends on the SDK; its bundle drops the second copy.
+3. **`runExclusive` gets a fourth argument**, `{ env, deadline, now, purpose }`. Optional to use.
+4. **A completed full walk of an empty source now reconciles** (sprigr-apps#2690). 0.1.0 skipped the reconcile whenever the walk saw zero entries, so an emptied drive kept every row, full text searchable. Now every row under the prefix goes, but only when the walk reached its final page with no error, cut or hold and established a cursor. A truncated listing deletes the listed subset, and the next completed walk deletes more. An adapter with `reconcilePrefixes` is called with an empty seen list and decides which prefixes that covers (microsoft-365's returns none, so its SharePoint rows stay out of it). A direct `reconcileWalk` call must pass `{ completedWalk: true }` to get this.
+5. **`drainPendingExtractions` never starts a row with 0 ms or less left.** `minItemMs: 0` used to start one at exactly the deadline; it now behaves like `minItemMs: 1`, so an app that passed `1` to get that behaviour can keep it or drop it.
 
 ## API
 

@@ -220,7 +220,12 @@ export async function indexActorFiles<TEntry, TEnv extends FileIndexingEnv>(
   const walkKey = store.walkKey(scope);
   const run = () => indexScope(adapter, store, env, scope, budget);
   if (!adapter.runExclusive) return run();
-  const guarded = await adapter.runExclusive(scope, walkKey, run);
+  const guarded = await adapter.runExclusive(scope, walkKey, run, {
+    env,
+    ...(budget.deadline ? { deadline: budget.deadline } : {}),
+    now: budget.now ?? Date.now,
+    purpose: 'index',
+  });
   if (guarded.busy) {
     return { ...emptyOutcome(), busy: true, ...(guarded.purgePending ? { purgePending: true } : {}) };
   }
@@ -562,7 +567,10 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
       console.warn(`${label} reconcile skipped for ${walkKey}: the walk state moved under this run; nothing deleted`);
     } else {
       try {
-        reconciled = await reconcileWalk(adapter, store, ctx);
+        // sprigr-apps#2690: the walk reached its final page with no error,
+        // cut or hold (walkComplete) AND established a cursor, so an empty
+        // seen set proves the source is empty and every row is stale.
+        reconciled = await reconcileWalk(adapter, store, ctx, { completedWalk: nextCursor !== null });
       } catch (err) {
         const detail = `reconcile_failed: ${errMsg(err)}`;
         await store.recordError(scope, detail);
@@ -676,11 +684,24 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
  * unseen). Feature-detected: without listIds + delete it skips with a warning.
  * Always clears the seen set and the walk marker. THROWS on a listing or
  * delete failure so the caller keeps the cursor. Emits no events.
+ *
+ * An EMPTY seen set (sprigr-apps#2690: the user emptied the drive) deletes
+ * every row under the prefixes, but only with `opts.completedWalk`, which
+ * the caller sets when the walk provably finished (final page, no error, no
+ * cut, no hold, cursor established). The prefixes are then
+ * `reconcilePrefixes([], ctx)` when the adapter has it (so an adapter that
+ * keeps some rows out of the diff, such as microsoft-365's SharePoint rows,
+ * still decides), else `objectIdPrefix(ctx)`. A truncated listing in that
+ * case deletes the listed subset (every listed row is stale) and logs that
+ * more remain for the next completed walk. A
+ * direct caller that omits `opts` keeps the 0.1.0 behaviour: an empty seen
+ * set deletes nothing.
  */
 export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
   adapter: FileSourceAdapter<TEntry, TEnv>,
   store: FileIndexingStore,
   ctx: FileIndexingContext<TEnv>,
+  opts: { completedWalk?: boolean } = {},
 ): Promise<number> {
   const label = adapter.logLabel ?? DEFAULT_LABEL;
   const data = ctx.env.SPRIGR?.data;
@@ -688,8 +709,9 @@ export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
   if (data?.listIds && data.delete) {
     const seen = await store.listWalkSeen(ctx.walkKey);
     const seenSet = new Set(seen);
+    const emptyWalk = seenSet.size === 0;
     let prefixes: string[] = [];
-    if (seenSet.size > 0) {
+    if (!emptyWalk || opts.completedWalk === true) {
       prefixes = adapter.reconcilePrefixes ? adapter.reconcilePrefixes(seen, ctx) : [adapter.objectIdPrefix(ctx)];
       if (!adapter.objectIdsActorScoped && prefixes.length > 0) {
         const others = await store.countOtherActors(ctx.scope);
@@ -703,7 +725,15 @@ export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
     }
     for (const prefix of prefixes) {
       const listing = await data.listIds(prefix, { withAcl: true });
-      if (listing.truncated) console.warn(`${label} reconcile listing truncated for ${prefix}; healing the listed subset only`);
+      if (listing.truncated && emptyWalk) {
+        // The walk proved the source empty, so every listed row is stale:
+        // delete what the listing shows; the next completed walk continues.
+        console.warn(
+          `${label} reconcile of an empty walk: listing truncated for ${prefix}; deleting the listed subset, more rows remain for the next completed walk`,
+        );
+      } else if (listing.truncated) {
+        console.warn(`${label} reconcile listing truncated for ${prefix}; healing the listed subset only`);
+      }
       const stale = listing.objectIDs.filter((id) => id.startsWith(prefix) && !seenSet.has(id));
       for (let i = 0; i < stale.length; i += MAX_OBJECTS_PER_IMPORT) {
         await data.delete(stale.slice(i, i + MAX_OBJECTS_PER_IMPORT), { withAcl: true });
@@ -745,39 +775,69 @@ export async function countIndexedItems(
   return { total, truncated: listing.truncated };
 }
 
+/** What one purgeIndexPrefix pass did (0.1.1 shape, sprigr-app-kit#99). */
+export interface PurgePrefixResult {
+  /** Ids a delete was issued for in THIS pass, including the chunks deleted
+   *  before a failure. */
+  removed: number;
+  /** True only when the listing was whole, every listed id was deleted, and
+   *  nothing failed. Equals `!truncated && !cut && !error && !unavailable`.
+   *  Kept from 0.1.0. */
+  complete: boolean;
+  /** The listing stopped at the platform's cap: more ids remain beyond it. */
+  truncated: boolean;
+  /** The deadline left less than MIN_PURGE_LEG_MS before every listed id was
+   *  deleted. */
+  cut: boolean;
+  /** The platform has no listIds/delete surface; nothing was attempted. */
+  unavailable?: boolean;
+  /** The listing, a delete, or the pending-extraction cleanup failed; the
+   *  pass stopped there. `removed` still counts what went before it. */
+  error?: string;
+}
+
 /**
  * Delete every ACL-index row under `prefix`: one listing, then deletes of
  * PURGE_DELETE_CHUNK ids, dropping matching pending extractions with each
  * chunk, stopping when less than MIN_PURGE_LEG_MS of the deadline is left.
- * `complete` is false when the listing was truncated or the deadline cut it;
- * call again (an index read straight after a delete can still return deleted
- * ids, so do not re-list in the same pass). THROWS on a listing or delete
- * failure.
+ * When `complete` is false (`truncated`, `cut` or `error` says why), call
+ * again on a later pass: an index read straight after a delete can still
+ * return deleted ids, so do not re-list in the same pass.
+ *
+ * Never throws (0.1.1; 0.1.0 threw on a listing or delete failure and lost
+ * the partial `removed` count). A failure comes back in `error`, with
+ * `complete: false`, so a caller that records failures must read `error`.
  */
 export async function purgeIndexPrefix(
   env: FileIndexingEnv,
   store: FileIndexingStore,
   prefix: string,
   opts: { deadline?: Deadline; now?: () => number } = {},
-): Promise<{ removed: number; complete: boolean; unavailable?: boolean }> {
+): Promise<PurgePrefixResult> {
   const now = opts.now ?? Date.now;
   const data = env.SPRIGR?.data;
-  if (!data?.listIds || !data.delete) return { removed: 0, complete: false, unavailable: true };
-  const listing = await data.listIds(prefix, { withAcl: true });
-  const ids = listing.objectIDs.filter((id) => id.startsWith(prefix));
+  if (!data?.listIds || !data.delete) return { removed: 0, complete: false, truncated: false, cut: false, unavailable: true };
   let removed = 0;
+  let truncated = false;
   let cut = false;
-  for (let i = 0; i < ids.length; i += PURGE_DELETE_CHUNK) {
-    if (budgetBelow(MIN_PURGE_LEG_MS, opts.deadline, now)) {
-      cut = true;
-      break;
+  try {
+    const listing = await data.listIds(prefix, { withAcl: true });
+    truncated = listing.truncated === true;
+    const ids = listing.objectIDs.filter((id) => id.startsWith(prefix));
+    for (let i = 0; i < ids.length; i += PURGE_DELETE_CHUNK) {
+      if (budgetBelow(MIN_PURGE_LEG_MS, opts.deadline, now)) {
+        cut = true;
+        break;
+      }
+      const chunk = ids.slice(i, i + PURGE_DELETE_CHUNK);
+      await data.delete(chunk, { withAcl: true });
+      removed += chunk.length;
+      await forgetPendingExtractions(store, chunk);
     }
-    const chunk = ids.slice(i, i + PURGE_DELETE_CHUNK);
-    await data.delete(chunk, { withAcl: true });
-    removed += chunk.length;
-    await forgetPendingExtractions(store, chunk);
+  } catch (err) {
+    return { removed, complete: false, truncated, cut, error: errMsg(err) };
   }
-  return { removed, complete: !cut && !listing.truncated };
+  return { removed, complete: !cut && !truncated, truncated, cut };
 }
 
 export interface PurgeActorResult {
@@ -865,15 +925,11 @@ export async function purgeActor<TEntry, TEnv extends FileIndexingEnv>(
   result.prefixes = prefixes;
   let allComplete = true;
   for (const prefix of prefixes) {
-    try {
-      const r = await purgeIndexPrefix(env, store, prefix, opts);
-      result.removed += r.removed;
-      if (r.unavailable) result.purgeSkipped = 'unavailable';
-      if (!r.complete) allComplete = false;
-    } catch (err) {
-      allComplete = false;
-      result.errors.push(`purge ${prefix}: ${errMsg(err)}`);
-    }
+    const r = await purgeIndexPrefix(env, store, prefix, opts);
+    result.removed += r.removed;
+    if (r.unavailable) result.purgeSkipped = 'unavailable';
+    if (!r.complete) allComplete = false;
+    if (r.error !== undefined) result.errors.push(`purge ${prefix}: ${r.error}`);
   }
   result.complete = allComplete && result.errors.length === 0 && !result.purgeSkipped;
   try {
@@ -964,7 +1020,12 @@ export async function refreshAclPrincipals<TEntry, TEnv extends FileIndexingEnv>
     return runAclRefresh(adapter, store, env, scope, row, opts);
   };
   if (!adapter.runExclusive) return pass();
-  const guarded = await adapter.runExclusive(scope, store.walkKey(scope), pass);
+  const guarded = await adapter.runExclusive(scope, store.walkKey(scope), pass, {
+    env,
+    ...(opts.deadline ? { deadline: opts.deadline } : {}),
+    now,
+    purpose: 'acl_refresh',
+  });
   if (guarded.busy) return { pages: 0, restamped: 0, missing: 0, skipped: 0, completed: false, busy: true };
   return guarded.value;
 }

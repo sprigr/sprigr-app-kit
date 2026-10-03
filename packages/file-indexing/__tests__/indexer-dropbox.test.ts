@@ -7,7 +7,7 @@
  * way a new app with no file-indexing tables would start.
  */
 import { describe, expect, it } from 'vitest';
-import { indexActorFiles } from '../src/indexer';
+import { buildContext, indexActorFiles, reconcileWalk } from '../src/indexer';
 import { rig } from './helpers/setup';
 
 const oid = (id: string) => `dbx:file:u:user_alice:${id}`;
@@ -51,5 +51,130 @@ describe('dropbox shape', () => {
     const again = await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope);
     expect(again).toMatchObject({ indexed: 1, reconciled: 0 });
     expect((await r.store.load(r.scope))!.cursor).toBe('dbx:chg:1');
+  });
+});
+
+describe('sprigr-apps#2690: a completed full walk of an EMPTY source reconciles', () => {
+  /** 63 stale rows of this account (the staging count) plus one of another account. */
+  function seedStale(r: Awaited<ReturnType<typeof rig>>, n = 63): void {
+    for (let i = 0; i < n; i++) {
+      const id = oid(`gone-${String(i).padStart(2, '0')}`);
+      r.fp.acl.set(id, { objectID: id, acl_principals: ['user:alice@corp.com'], content: 'quokka pallet recall' });
+    }
+    r.fp.acl.set('dbx:file:u:user_bob:keep', { objectID: 'dbx:file:u:user_bob:keep', acl_principals: ['user:bob@corp.com'] });
+  }
+  const ours = (r: Awaited<ReturnType<typeof rig>>) => [...r.fp.acl.keys()].filter((k) => k.startsWith(oid('')));
+
+  it('(a) deletes every row under the prefix, and nothing under another prefix', async () => {
+    const r = await rig('dropbox');
+    seedStale(r);
+    await r.store.upsertPendingExtraction({ objectId: oid('gone-00'), jobToken: 'j', recordJson: '{}', format: 'pptx' });
+    const out = await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope);
+    expect(out).toMatchObject({ indexed: 0, reconciled: 63 });
+    expect(out.error).toBeUndefined();
+    expect(ours(r)).toEqual([]);
+    expect(r.fp.acl.has('dbx:file:u:user_bob:keep')).toBe(true);
+    expect(await r.store.listPendingExtractions(5)).toEqual([]);
+    expect((await r.store.load(r.scope))!).toMatchObject({ cursor: 'dbx:chg:0', full_walk_active: 0 });
+  });
+
+  it('(a) install-scoped ids (google-workspace shape) purge too when this actor is the only indexer', async () => {
+    const r = await rig('drive');
+    for (const id of ['gw:file:x', 'gw:file:y']) r.fp.acl.set(id, { objectID: id, acl_principals: ['user:alice@corp.com'] });
+    expect(await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope)).toMatchObject({ reconciled: 2 });
+    expect(r.fp.acl.size).toBe(0);
+  });
+
+  it('(a) an adapter with reconcilePrefixes still decides (microsoft-365 keeps SharePoint rows out of the diff)', async () => {
+    const r = await rig('delta');
+    const sp = 'ms:file:u:user_alice:sp-lib:doc';
+    r.fp.acl.set(sp, { objectID: sp, acl_principals: ['user:alice@corp.com'] });
+    expect(await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope)).toMatchObject({ reconciled: 0 });
+    expect(r.fp.acl.has(sp)).toBe(true);
+  });
+
+  it('(b) an errored empty walk deletes nothing', async () => {
+    const r = await rig('dropbox');
+    seedStale(r);
+    const adapter = {
+      ...r.adapter,
+      fullWalk: async () => {
+        throw new Error('500 list_folder failed');
+      },
+    };
+    const out = await indexActorFiles(adapter, r.store, r.fp.env, r.scope);
+    expect(out.error).toBe('500 list_folder failed');
+    expect(ours(r)).toHaveLength(63);
+    expect(r.fp.deletes).toEqual([]);
+  });
+
+  it('(b) a budget-cut empty walk deletes nothing', async () => {
+    const r = await rig('dropbox');
+    seedStale(r);
+    const out = await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope, { deadline: { at: 1_000 }, now: () => 2_000 });
+    expect(out).toMatchObject({ cut: true, pagesWalked: 0 });
+    expect(out.reconciled).toBeUndefined();
+    expect(ours(r)).toHaveLength(63);
+    expect(r.fp.deletes).toEqual([]);
+  });
+
+  it('(b) an empty final page that establishes no cursor cannot prove completion: nothing deleted', async () => {
+    const r = await rig('drive');
+    r.fp.acl.set('gw:file:x', { objectID: 'gw:file:x', acl_principals: ['user:alice@corp.com'] });
+    const adapter = { ...r.adapter, seedCursor: undefined, fullWalk: async () => ({ entries: [], cursor: null, hasMore: false }) };
+    await indexActorFiles(adapter, r.store, r.fp.env, r.scope);
+    expect(r.fp.acl.has('gw:file:x')).toBe(true);
+    expect(r.fp.deletes).toEqual([]);
+  });
+
+  it('(c) a truncated listing: a completed empty walk deletes the listed subset, an errored or cut one deletes nothing', async () => {
+    const r = await rig('dropbox');
+    seedStale(r);
+    r.fp.listTruncated = true; // the fake lists only the first id, truncated: true
+    const out = await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope);
+    expect(out).toMatchObject({ reconciled: 1 });
+    expect(r.fp.deletes).toEqual([[oid('gone-00')]]);
+    expect(ours(r)).toHaveLength(62);
+    expect((await r.store.load(r.scope))!.full_walk_active).toBe(0);
+
+    // A later completed empty walk shrinks it further.
+    await r.store.resetCursor(r.scope);
+    expect(await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope)).toMatchObject({ reconciled: 1 });
+    expect(ours(r)).toHaveLength(61);
+
+    const erred = await rig('dropbox');
+    seedStale(erred);
+    erred.fp.listTruncated = true;
+    const failing = {
+      ...erred.adapter,
+      fullWalk: async () => {
+        throw new Error('500 list_folder failed');
+      },
+    };
+    expect((await indexActorFiles(failing, erred.store, erred.fp.env, erred.scope)).error).toBe('500 list_folder failed');
+    const cut = await indexActorFiles(erred.adapter, erred.store, erred.fp.env, erred.scope, { deadline: { at: 1_000 }, now: () => 2_000 });
+    expect(cut).toMatchObject({ cut: true });
+    expect(ours(erred)).toHaveLength(63);
+    expect(erred.fp.deletes).toEqual([]);
+  });
+
+  it('a non-empty walk with a truncated listing is unchanged from 0.1.0: unseen listed rows go, unlisted ones stay', async () => {
+    const r = await rig('dropbox');
+    r.src.pageSize = 10;
+    r.src.put({ id: 'a', name: 'a.txt', mime: 'text/plain', perms: [] });
+    for (const id of [oid('0-gone'), oid('zz-gone')]) r.fp.acl.set(id, { objectID: id, acl_principals: ['user:alice@corp.com'] });
+    r.fp.listTruncated = true; // lists only `0-gone`, the first id in order
+    expect(await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope)).toMatchObject({ indexed: 1, reconciled: 1 });
+    expect(ours(r).sort()).toEqual([oid('a'), oid('zz-gone')]);
+  });
+
+  it('a direct reconcileWalk call without completedWalk keeps 0.1.0 behaviour: an empty seen set deletes nothing', async () => {
+    const r = await rig('dropbox');
+    seedStale(r, 2);
+    const row = (await r.store.load(r.scope))!;
+    expect(await reconcileWalk(r.adapter, r.store, buildContext(r.fp.env, r.store, r.scope, row))).toBe(0);
+    expect(ours(r)).toHaveLength(2);
+    expect(await reconcileWalk(r.adapter, r.store, buildContext(r.fp.env, r.store, r.scope, row), { completedWalk: true })).toBe(2);
+    expect(ours(r)).toEqual([]);
   });
 });

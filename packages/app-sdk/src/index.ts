@@ -271,6 +271,22 @@ export interface SprigrDataIndexOpts {
   index?: string;
 }
 
+/** Options for `env.SPRIGR.data.import`. */
+export interface SprigrDataImportOpts extends SprigrDataIndexOpts {
+  /**
+   * Write to the app's reserved ACL file index
+   * (`<companyId>-app-<slug>-acl-files`) instead of its data index. Every
+   * object must then carry `acl_principals`, a non-empty list of valid
+   * principals, or the platform rejects the WHOLE batch. Cannot be combined
+   * with `index` (the platform answers 400
+   * `acl_index_combination_unsupported`), and is refused for apps that
+   * declare `data_indexes`. Reads of that index (`search` / `get` with
+   * `withAcl`) are refused over the install bridge (403 `acl_actor_required`),
+   * so they are not modelled here; `delete` and `partialUpdate` accept it.
+   */
+  withAcl?: boolean;
+}
+
 /** Options for `env.SPRIGR.data.partialUpdate`. */
 export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts {
   /**
@@ -342,7 +358,7 @@ export interface SprigrDataApi {
    */
   import(
     objects: Array<{ objectID: string; [key: string]: unknown }>,
-    opts?: SprigrDataIndexOpts,
+    opts?: SprigrDataImportOpts,
   ): Promise<{
     ok: boolean;
     indexed: number;

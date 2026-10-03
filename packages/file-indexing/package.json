@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-file-indexing",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,11 +19,15 @@
   },
   "dependencies": {
     "@sprigr/apps-acl-identity-link": "0.2.0",
-    "@sprigr/apps-app-sdk": "0.14.0",
     "@sprigr/apps-fetch-budget": "0.1.0"
+  },
+  "peerDependencies": {
+    "@sprigr/apps-app-sdk": ">=0.14.0 <1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240909.0",
+    "@sprigr/apps-app-sdk": "0.14.0",
+    "@sprigr/apps-app-sdk-latest": "npm:@sprigr/apps-app-sdk@0.15.1",
     "sql.js": "1.14.2",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
