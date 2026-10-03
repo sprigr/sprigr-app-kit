@@ -169,6 +169,50 @@ describe('redactSecrets: must not damage app-authored diagnostics', () => {
   });
 });
 
+describe('redactSecrets: JSON nested inside a JSON string value (S017-05)', () => {
+  it('redacts a secret in an upstream body that was stringified into a non-secret field', () => {
+    const body = JSON.stringify({
+      error: 'upstream rejected the call',
+      detail: JSON.stringify({ api_key: 'SENTINELnestedapikeyvalue012345', code: 'E_AUTH' }),
+    });
+    const out = redactSecrets(body);
+
+    expect(out).not.toContain('SENTINEL');
+    expect(out).toContain('upstream rejected the call');
+    expect(out).toContain('E_AUTH');
+    // Still valid JSON whose nested string still parses.
+    const parsed = JSON.parse(out) as { detail: string };
+    expect(JSON.parse(parsed.detail)).toMatchObject({ api_key: '[redacted]', code: 'E_AUTH' });
+  });
+
+  it('looks two layers deep', () => {
+    const inner = JSON.stringify({ refresh_token: 'SENTINELdoublenestedtoken0123456' });
+    const body = JSON.stringify({ message: JSON.stringify({ response: inner }) });
+
+    expect(redactSecrets(body)).not.toContain('SENTINEL');
+  });
+
+  it('catches the stringify-first shape an app audit row builds from an error message', () => {
+    const errMessage = `Klaviyo 401: ${JSON.stringify({ errors: [{ detail: 'bad key', private_key: 'SENTINELklaviyoprivatekey012345' }] })}`;
+    const detail = JSON.stringify({ op: 'list_profiles', error: errMessage });
+
+    const out = redactSecrets(detail);
+    expect(out).not.toContain('SENTINEL');
+    expect(out).toContain('Klaviyo 401');
+    expect(out).toContain('bad key');
+  });
+
+  it('returns a nested value with nothing to redact byte-for-byte', () => {
+    const body = JSON.stringify({ detail: JSON.stringify({ customers: 3, note: 'caf\u00e9 / path' }) });
+    expect(redactSecrets(body)).toBe(body);
+  });
+
+  it('leaves a value that is not a valid JSON string literal alone instead of throwing', () => {
+    const body = '{"detail":"bad \\q escape \\"code\\":\\"E1\\""}';
+    expect(() => redactSecrets(body)).not.toThrow();
+  });
+});
+
 describe('redactSecrets: options', () => {
   it('honours extraSecretKeys for a provider-specific parameter name', () => {
     const body = '{"error":"bad","xyzzy_ticket":"SENTINELproviderticket"}';

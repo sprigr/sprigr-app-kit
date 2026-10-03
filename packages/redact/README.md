@@ -38,6 +38,10 @@ durable column with a length cap as the only transform. See issue sprigr/sprigr-
   `Bearer`/`Basic` header values, JWTs, `ya29.`, `1//`, `GOCSPX-`, `AIza`,
   `shpat_`/`shpca_`/`shppa_`/`shpss_`, `xoxb-`/`xapp-`, `EAA…`, `ATATT`,
   `sk-`, `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_`.
+- Any of the above inside JSON that was serialised into a string value
+  (an upstream error body stringified into an `error` or `detail` field),
+  up to three layers deep. A nested value with nothing to remove comes back
+  byte-for-byte (0.1.1).
 
 **Kept**, because the audit row exists to be debugged from:
 

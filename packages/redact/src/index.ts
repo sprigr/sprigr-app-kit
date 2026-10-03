@@ -182,6 +182,44 @@ const JSON_PAIR_RE = /("([A-Za-z0-9_.\-[\]]{1,64})"\s*:\s*)"((?:[^"\\]|\\.)*)"/g
  */
 const FORM_PAIR_RE = /([A-Za-z0-9_.\-[\]]{1,64})=([^&\s"'<>]{1,4096})/g;
 
+/**
+ * How many layers of JSON-inside-a-JSON-string to look into. Each layer is
+ * one round of escaping (`{\"k\":\"v\"}`), and real provider errors
+ * rarely nest more than twice.
+ */
+const MAX_NESTED_JSON_DEPTH = 3;
+
+/**
+ * Step 1 of redactSecrets. A pair whose key is not secret keeps its value,
+ * but that value can itself be JSON serialised into a string (an upstream
+ * error body stringified into an `error` or `detail` field). Its quotes are
+ * then backslash-escaped, so JSON_PAIR_RE cannot match the pairs inside it.
+ * Decode such a value as a JSON string, redact the pairs in the decoded
+ * text, and re-encode it, but only when something inside was actually
+ * redacted, so an untouched value comes back byte-for-byte
+ * (sprigr/sprigr-apps#2613, S017-05).
+ */
+function redactJsonPairs(
+  text: string,
+  shouldRedact: (key: string, value: string) => boolean,
+  depth: number,
+): string {
+  return text.replace(JSON_PAIR_RE, (whole, prefix: string, key: string, value: string) => {
+    if (shouldRedact(key, value)) return `${prefix}"${SECRET_PLACEHOLDER}"`;
+    if (depth >= MAX_NESTED_JSON_DEPTH || !value.includes('\\"')) return whole;
+    let decoded: string;
+    try {
+      decoded = JSON.parse(`"${value}"`) as string;
+    } catch {
+      // Not a valid JSON string literal (a stray backslash): leave it.
+      return whole;
+    }
+    const redacted = redactJsonPairs(decoded, shouldRedact, depth + 1);
+    if (redacted === decoded) return whole;
+    return `${prefix}${JSON.stringify(redacted)}`;
+  });
+}
+
 export interface RedactOptions {
   /**
    * Extra key names/fragments to treat as secret, for a provider with an
@@ -212,10 +250,8 @@ export function redactSecrets(input: string, opts: RedactOptions = {}): string {
 
   let out = input;
 
-  // 1. Keyed values, JSON shape.
-  out = out.replace(JSON_PAIR_RE, (whole, prefix: string, key: string, value: string) =>
-    shouldRedact(key, value) ? `${prefix}"${SECRET_PLACEHOLDER}"` : whole,
-  );
+  // 1. Keyed values, JSON shape, including JSON nested as an escaped string.
+  out = redactJsonPairs(out, shouldRedact, 0);
 
   // 2. Keyed values, form-encoded / query-string shape.
   out = out.replace(FORM_PAIR_RE, (whole, key: string, value: string) =>
