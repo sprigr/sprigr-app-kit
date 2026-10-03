@@ -692,7 +692,8 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
  * `reconcilePrefixes([], ctx)` when the adapter has it (so an adapter that
  * keeps some rows out of the diff, such as microsoft-365's SharePoint rows,
  * still decides), else `objectIdPrefix(ctx)`. A truncated listing in that
- * case deletes nothing, since the listing cannot show the whole prefix. A
+ * case deletes the listed subset (every listed row is stale) and logs that
+ * more remain for the next completed walk. A
  * direct caller that omits `opts` keeps the 0.1.0 behaviour: an empty seen
  * set deletes nothing.
  */
@@ -725,12 +726,14 @@ export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
     for (const prefix of prefixes) {
       const listing = await data.listIds(prefix, { withAcl: true });
       if (listing.truncated && emptyWalk) {
+        // The walk proved the source empty, so every listed row is stale:
+        // delete what the listing shows; the next completed walk continues.
         console.warn(
-          `${label} reconcile of an empty walk skipped for ${prefix}: the listing is truncated, so it cannot show the whole prefix; nothing deleted`,
+          `${label} reconcile of an empty walk: listing truncated for ${prefix}; deleting the listed subset, more rows remain for the next completed walk`,
         );
-        continue;
+      } else if (listing.truncated) {
+        console.warn(`${label} reconcile listing truncated for ${prefix}; healing the listed subset only`);
       }
-      if (listing.truncated) console.warn(`${label} reconcile listing truncated for ${prefix}; healing the listed subset only`);
       const stale = listing.objectIDs.filter((id) => id.startsWith(prefix) && !seenSet.has(id));
       for (let i = 0; i < stale.length; i += MAX_OBJECTS_PER_IMPORT) {
         await data.delete(stale.slice(i, i + MAX_OBJECTS_PER_IMPORT), { withAcl: true });
