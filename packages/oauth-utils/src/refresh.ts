@@ -114,6 +114,11 @@ export async function refreshOAuthToken(
       client_id: config.clientId,
       client_secret: config.clientSecret,
     }),
+    // Unset by default, which keeps the unbounded behaviour; see
+    // ProviderConfig.timeoutMs. Covers the rotation-race retry too: that path
+    // re-enters this function through refreshAndPersist's recursive call, so
+    // it gets its own fresh bound.
+    signal: config.timeoutMs != null ? AbortSignal.timeout(config.timeoutMs) : undefined,
   });
 
   if (!response.ok) {
