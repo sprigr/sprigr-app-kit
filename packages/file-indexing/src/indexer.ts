@@ -567,7 +567,10 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
       console.warn(`${label} reconcile skipped for ${walkKey}: the walk state moved under this run; nothing deleted`);
     } else {
       try {
-        reconciled = await reconcileWalk(adapter, store, ctx);
+        // sprigr-apps#2690: the walk reached its final page with no error,
+        // cut or hold (walkComplete) AND established a cursor, so an empty
+        // seen set proves the source is empty and every row is stale.
+        reconciled = await reconcileWalk(adapter, store, ctx, { completedWalk: nextCursor !== null });
       } catch (err) {
         const detail = `reconcile_failed: ${errMsg(err)}`;
         await store.recordError(scope, detail);
@@ -681,11 +684,23 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
  * unseen). Feature-detected: without listIds + delete it skips with a warning.
  * Always clears the seen set and the walk marker. THROWS on a listing or
  * delete failure so the caller keeps the cursor. Emits no events.
+ *
+ * An EMPTY seen set (sprigr-apps#2690: the user emptied the drive) deletes
+ * every row under the prefixes, but only with `opts.completedWalk`, which
+ * the caller sets when the walk provably finished (final page, no error, no
+ * cut, no hold, cursor established). The prefixes are then
+ * `reconcilePrefixes([], ctx)` when the adapter has it (so an adapter that
+ * keeps some rows out of the diff, such as microsoft-365's SharePoint rows,
+ * still decides), else `objectIdPrefix(ctx)`. A truncated listing in that
+ * case deletes nothing, since the listing cannot show the whole prefix. A
+ * direct caller that omits `opts` keeps the 0.1.0 behaviour: an empty seen
+ * set deletes nothing.
  */
 export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
   adapter: FileSourceAdapter<TEntry, TEnv>,
   store: FileIndexingStore,
   ctx: FileIndexingContext<TEnv>,
+  opts: { completedWalk?: boolean } = {},
 ): Promise<number> {
   const label = adapter.logLabel ?? DEFAULT_LABEL;
   const data = ctx.env.SPRIGR?.data;
@@ -693,8 +708,9 @@ export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
   if (data?.listIds && data.delete) {
     const seen = await store.listWalkSeen(ctx.walkKey);
     const seenSet = new Set(seen);
+    const emptyWalk = seenSet.size === 0;
     let prefixes: string[] = [];
-    if (seenSet.size > 0) {
+    if (!emptyWalk || opts.completedWalk === true) {
       prefixes = adapter.reconcilePrefixes ? adapter.reconcilePrefixes(seen, ctx) : [adapter.objectIdPrefix(ctx)];
       if (!adapter.objectIdsActorScoped && prefixes.length > 0) {
         const others = await store.countOtherActors(ctx.scope);
@@ -708,6 +724,12 @@ export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
     }
     for (const prefix of prefixes) {
       const listing = await data.listIds(prefix, { withAcl: true });
+      if (listing.truncated && emptyWalk) {
+        console.warn(
+          `${label} reconcile of an empty walk skipped for ${prefix}: the listing is truncated, so it cannot show the whole prefix; nothing deleted`,
+        );
+        continue;
+      }
       if (listing.truncated) console.warn(`${label} reconcile listing truncated for ${prefix}; healing the listed subset only`);
       const stale = listing.objectIDs.filter((id) => id.startsWith(prefix) && !seenSet.has(id));
       for (let i = 0; i < stale.length; i += MAX_OBJECTS_PER_IMPORT) {

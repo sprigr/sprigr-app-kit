@@ -22,7 +22,7 @@ The package owns everything that must behave the same for every provider:
 | Cursor discipline | The cursor moves only after its rows are imported, seen IDs recorded, deletions applied and events emitted. Any failure keeps the old cursor |
 | Unreadable permissions | A transient permission failure holds the cursor at that page so the file is retried (sprigr-apps#2419), bounded by `MAX_UNRESOLVED_HOLD_MS` |
 | Content | Text-like files up to 256 KB, native exports, and PDF/OOXML through the platform extract bridge (5 per pass, staged under random single-use keys); pptx and files of 16 MiB or more drain as durable jobs. Text is capped at 32000 chars, and a cut is logged and marked |
-| Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty) |
+| Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty). A completed walk that saw NOTHING (the user emptied the drive) deletes every row under the prefix; an errored, cut or held walk, one that established no cursor, or a truncated listing deletes nothing (sprigr-apps#2690) |
 | Events | `<prefix>.file.created/updated/deleted` on incremental passes, with no per-run cap (sprigr-apps#2521). Pages are emitted in order, but the events WITHIN a page go out with bounded concurrency (`DEFAULT_FETCH_CONCURRENCY`, 6), so their order is not guaranteed; a subscriber that cares orders by `modifiedAt` |
 | Disconnect | `purgeActor` switches indexing off, unlinks the owner identity and deletes the scope's rows (sprigr-apps#2355) |
 | Sharing-only changes | Opt-in `refreshAclPrincipals` re-stamps `acl_principals` with `data.partialUpdate({ withAcl: true })`, leaving content alone (sprigr-apps#2211) |
@@ -219,12 +219,13 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 
 ## Upgrading from 0.1.0
 
-0.1.1 is additive except for one behaviour change, so bump the pin and check the purge drain:
+0.1.1 is additive except for two behaviour changes (items 1 and 4), so bump the pin and check the purge drain:
 
 1. **`purgeIndexPrefix` returns failures instead of throwing.** A drain that recorded a failure in its `catch` now gets `{ complete: false, error }` back and its `catch` never runs. Read `pass.error` where the `catch` used to set the row's last error or count a failure. Without that change the row still stays queued and is retried, but the failure is no longer recorded. `truncated` and `cut` now say why a pass was not complete.
 2. **`@sprigr/apps-app-sdk` is a peer dependency** (`>=0.14.0 <1`). Nothing to change if the app already depends on the SDK; its bundle drops the second copy.
 3. **`runExclusive` gets a fourth argument**, `{ env, deadline, now, purpose }`. Optional to use.
-4. **`drainPendingExtractions` never starts a row with 0 ms or less left.** `minItemMs: 0` used to start one at exactly the deadline; it now behaves like `minItemMs: 1`, so an app that passed `1` to get that behaviour can keep it or drop it.
+4. **A completed full walk of an empty source now reconciles** (sprigr-apps#2690). 0.1.0 skipped the reconcile whenever the walk saw zero entries, so an emptied drive kept every row, full text searchable. Now every row under the prefix goes, but only when the walk reached its final page with no error, cut or hold and established a cursor, and never on a truncated listing. An adapter with `reconcilePrefixes` is called with an empty seen list and decides which prefixes that covers (microsoft-365's returns none, so its SharePoint rows stay out of it). A direct `reconcileWalk` call must pass `{ completedWalk: true }` to get this.
+5. **`drainPendingExtractions` never starts a row with 0 ms or less left.** `minItemMs: 0` used to start one at exactly the deadline; it now behaves like `minItemMs: 1`, so an app that passed `1` to get that behaviour can keep it or drop it.
 
 ## API
 
