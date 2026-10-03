@@ -666,6 +666,35 @@ $ curl -s -o /dev/null -w "%{http_code} %{redirect_url}" --max-redirs 0 \
 
 **Make that curl part of shipping any route meant for an outside visitor.** No cookies, no redirects followed, look at the `Location`. A `302` to `team.sprigr.com/login` means the path is gated; anything else means the route is reachable. Reference implementations: `apps/shopify/src/app/api/public/custom-app-landing/route.ts` (a provider's post-install landing) and `apps/microsoft-365/src/app/api/public/admin-consent/start/route.ts` (an emailed approval link), both in `sprigr-apps`.
 
+## 6c. Mail and ticket apps: the inbox contract
+
+An app that writes into the Sprigr inbox (a mailbox, a helpdesk) implements one contract, so the platform never needs editing for it (sprigr-team decision 0150). Everything below is typed in `@sprigr/apps-app-sdk`.
+
+**1. Declare every channel you append under** in `capabilities.inbox_channels`:
+
+```json
+"capabilities": {
+  "personal_mailbox": true,
+  "inbox_channels": [{
+    "channel": "acme_mail", "kind": "email", "label": "Acme Mail", "icon": "mail",
+    "send": {
+      "tool": "inbox_send", "contract": "sprigr.inbox.send/v1",
+      "returns_message_id": { "send": true, "reply": true },
+      "attachments": "file_key",
+      "supports": { "bcc": true, "html": true, "recipients": true, "importance": false, "internal_note": false }
+    }
+  }]
+}
+```
+
+The channel must start with your slug in snake case plus `_`. Append refuses an undeclared channel (`channel_not_owned`), and replies cannot send without `send`. The declaration also drives the inbox UI: label, icon, Bcc/To controls, signature slot (`signature_family`), and an optional `deep_link_template`.
+
+**2. Append** with `env.SPRIGR.inbox.append({ channel, messages, owner })`, where `owner` is the MAILBOX owner from your connection row. Wrap env with `withSprigrInboxFallback(env)` on an inline route (a push receiver), where `env.SPRIGR` is not injected. Make `sourceId` and `providerAttachmentId` encode the connection: `fetch_attachment` and the `external_*` mirror tools arrive with no actor.
+
+**3. Send** through `defineInboxSendHandler({ connectionForSourceId, connectionForActor, send })`. It receives `InboxSendV1Args` and enforces the mailbox-owner rule: a reply is refused unless the connection that received the mail is filed under the writer's own `u:`/`a:` key. Return `message_id` equal to the `sourceId` your sync will write for the sent copy, so the Sent echo dedups.
+
+**4. Connect without OAuth** (an API token or app password pasted on your page): after validating the credential, call `connectComplete(env, { viewer_token: request.headers.get('X-Sprigr-Viewer'), account, identities })` from the page's POST route, and file the connection under the returned `actor_key`. The platform takes the user only from that signed token. Check `existing_mailboxes` and ask before backfilling a mailbox another app already syncs. Call `connectDisconnect` when a connection is removed or its credential dies.
+
 ## 7. Local dev
 
 The kit's CLI dev harness (`sprigr app dev --dir apps/<slug>`, CLI >= 0.2.0, Node >= 22.5) runs your **tool handlers and the entire OAuth callback loop** against a local SQLite-backed copy of your per-install D1 - before any publish, no Sprigr account needed. What it **cannot** run is the platform host object: every `env.SPRIGR.*` method throws locally, and webhook/schedule dispatch plus the build pipeline only exist on the platform. So the final shakedown is still: publish, install, click through.
