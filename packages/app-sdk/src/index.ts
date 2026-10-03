@@ -653,3 +653,31 @@ export type HandlerFn<TArgs, TResult> = (
 // Write protection: the three tiers (confirmation policy, _approval, _undo)
 // and the archive-first refusal. See README "Write protection".
 export * from './write-protection/index';
+
+// Inbox contract for mail and ticket apps (sprigr-team decision 0150).
+export {
+  INBOX_SEND_CONTRACT_V1,
+  withSprigrInboxFallback,
+  defineInboxSendHandler,
+  InboxSendRefusal,
+  connectComplete,
+  connectDisconnect,
+} from './inbox';
+export type {
+  InboxChannelDeclaration,
+  InboxSendSupports,
+  SyncedMessage,
+  SyncedAttachment,
+  InboxAppendRequest,
+  InboxAppendResult,
+  InboxFoldersRequest,
+  InboxFoldersResult,
+  SprigrInboxApi,
+  InboxAddress,
+  InboxSendV1Args,
+  InboxSendV1Result,
+  InboxSendConnection,
+  InboxSendHandlerImpl,
+  ConnectCompleteRequest,
+  ConnectCompleteResult,
+} from './inbox';
