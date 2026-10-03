@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-pending-oauth",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Single-use, TTL'd OAuth handshake state in a per-install D1 table, plus completion markers so a replayed callback reports already_connected.",
   "type": "module",
   "main": "./dist/index.js",
