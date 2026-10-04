@@ -676,6 +676,10 @@ What happens server-side:
 - After publishing a new version, upgrade existing installs via the portal "Upgrade" banner or `sprigr app upgrade <slug>`.
 - The install is re-pinned to the latest approved version and the build is re-enqueued with the same website id. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
 
+### Retire (per-actor apps): `on_actor_retired`
+- A per-actor app (`auth.model: per_actor`) should declare an `internal: true` tool named `on_actor_retired` and wrap its handler with `actorRetiredHook` from `@sprigr/apps-app-sdk` (0.16.0+). The platform calls it when the identity behind one of your actor keys is gone: a member removed, an agent deleted, a companion's bound user id corrected (the OLD key), or an operator retiring an orphan. Revoke the person's grant at the provider and purge what you keep for that key, exactly as your disconnect tool does.
+- Without it, a removed member's third-party grant stays live in your app, and the platform logs `actor_retire_unhandled` for your install. The SDK README has the contract.
+
 ## 6. OAuth - the shared bouncer pattern
 
 Most third-party OAuth providers require a **single registered redirect_uri per dev-app registration**. But every install is a different URL (`my-crm-5oema5wd.apps.sprigr.com`, `my-crm-abc12345.apps.sprigr.com`, ...) - you can't register them all.

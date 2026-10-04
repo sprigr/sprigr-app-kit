@@ -103,6 +103,18 @@ export {
 } from './tool-wrappers';
 export type { ToolResult, ToolWrapperOptions } from './tool-wrappers';
 export {
+  actorRetiredHook,
+  parseActorRetiredArgs,
+  ACTOR_RETIRED_HOOK_TOOL,
+  ACTOR_RETIRE_REASONS,
+} from './lifecycle';
+export type {
+  ActorRetired,
+  ActorRetiredHookBody,
+  ActorRetiredResult,
+  ActorRetireReason,
+} from './lifecycle';
+export {
   putAppFile,
   putAppFileStream,
   appFileUrl,
