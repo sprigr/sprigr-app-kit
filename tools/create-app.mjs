@@ -128,15 +128,16 @@ const KIT_DEPS = NO_OAUTH ? ["app-sdk", "d1-kv"] : ["app-sdk", "oauth-utils", "d
 // pinning 0.1.0 alongside that code would not compile.
 // app-sdk 0.9.0 is the first version that exports `resolveViewerContext`,
 // which the generated src/lib/viewer.ts gates the install-wide connection on
-// (sprigr-apps#2357); 0.12.0 is the current release and what the adapter
-// examples already run. The scaffold's own test typechecks a generated app
-// against this exact pin, so a pin without that export fails there.
-// NOTE: oauth-utils is left on the version this file has always pinned. It is
-// behind its published latest (0.2.x), and bumping it belongs in its own PR
-// with its own verification rather than riding along here.
+// (sprigr-apps#2357); 0.15.1 adds the putAppFileStream transient-R2 retry.
+// oauth-utils 0.3.0 adds the opt-in `timeoutMs` refresh bound and
+// `allowNoRefreshToken`, and builds OAuthError messages without the raw
+// provider body (0.2.0). packages/fulfilment-conformance's
+// scaffold-connection-gate test typechecks a generated app against these exact
+// pins by borrowing them from a workspace member that installed them, so
+// examples/harvest pins the same versions; bump both together.
 const KIT_DEP_VERSIONS = {
-  "app-sdk": "0.12.0",
-  "oauth-utils": "0.1.0",
+  "app-sdk": "0.15.1",
+  "oauth-utils": "0.3.0",
   "d1-kv": "0.2.0",
 };
 

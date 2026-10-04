@@ -79,14 +79,14 @@ importers:
         specifier: 1.20.2
         version: 1.20.2(next@15.5.22(react-dom@19.0.0(react@19.0.0))(react@19.0.0))(wrangler@4.114.0(@cloudflare/workers-types@5.20260724.1))
       '@sprigr/apps-app-sdk':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.15.1
+        version: 0.15.1
       '@sprigr/apps-d1-kv':
         specifier: 0.2.0
         version: 0.2.0
       '@sprigr/apps-oauth-utils':
-        specifier: 0.1.0
-        version: 0.1.0
+        specifier: 0.3.0
+        version: 0.3.0
       next:
         specifier: 15.5.22
         version: 15.5.22(react-dom@19.0.0(react@19.0.0))(react@19.0.0)
@@ -2472,6 +2472,9 @@ packages:
 
   '@sprigr/apps-oauth-utils@0.1.0':
     resolution: {integrity: sha512-wR7HZ2L/cuMvL7tLssXI+83qnENH1FXogVU+eie3G7yYgcBHQI2A9ky86BJt8oTo7bepX5YHCYnMPxk2qxj0bQ==}
+
+  '@sprigr/apps-oauth-utils@0.3.0':
+    resolution: {integrity: sha512-Y2Z7j0nTDHBXcIm5GS6mqAl8kWXwKIlltuNFyZbPGHMq5OfjmF2DP8Nn3LdZ0RZxz6S1n5nOO56uYtMtI1CQdA==}
 
   '@sprigr/apps-sync-cursor@0.1.0':
     resolution: {integrity: sha512-CgjA4s8TS3zj1J3CXYIGzSB5z6c7Px3AVBwxrAb1b+/Xo6qVwX/iq3YsNtprHVzzmotLHczhYfUz2rIfnogpXQ==}
@@ -5706,6 +5709,8 @@ snapshots:
   '@sprigr/apps-fetch-budget@0.1.0': {}
 
   '@sprigr/apps-oauth-utils@0.1.0': {}
+
+  '@sprigr/apps-oauth-utils@0.3.0': {}
 
   '@sprigr/apps-sync-cursor@0.1.0': {}
 
