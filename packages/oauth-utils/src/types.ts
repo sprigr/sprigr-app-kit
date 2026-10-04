@@ -64,6 +64,14 @@ export interface ProviderConfig {
    * would otherwise hard-fail. Set it on a scheduled path, where an
    * unbounded refresh can spend the whole invocation budget
    * (sprigr/sprigr-apps#1376).
+   *
+   * Do NOT set it for a provider that rotates the refresh token on every
+   * refresh (single-use refresh tokens). The abort can land after the
+   * provider has already rotated: the old token is then invalid and the
+   * new one is in a response nobody reads, so the install needs a
+   * reconnect. For those providers bound only the caller's wait (race the
+   * promise against a timer) and keep the refresh itself alive with
+   * `ctx.waitUntil` until it has persisted.
    */
   timeoutMs?: number;
 }
