@@ -56,6 +56,7 @@ export default { list_things: actorTool(async (env, actor, args) => { /* ... */ 
 - `parseActor` / `actorKey` / `ownerFromActorKey` — per-actor token scoping
 - `putAppFile` / `putAppFileStream` / `appFileUrl` / `getAppFile` / `listAppFiles` / `deleteAppFile` — durable app-scoped file storage from outside the injected bridge
 - `fetchFileBytes` / `fetchFileAsBase64` / `bytesToBase64` / `base64ToBytes` — file byte helpers
+- `readableStoredKey(appKey, downloadUrl)` / `agentFileKeyFromUrl` — turn the install-relative key your app stored a file under into the absolute key the platform's `read_file` tool opens (read off the signed URL `appFileUrl` minted). Return it as a tool's `file_key` so an agent can open the file. `appKeyFromCallerKey` / `callerKeyRefusal` go the other way, for a key an agent hands back to your tool (0.16.0)
 
 Full platform semantics: [`docs/platform-reference.md`](../../docs/platform-reference.md).
 
