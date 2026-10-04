@@ -569,9 +569,14 @@ A small npm package (no runtime deps). Provides:
 - Types: `D1Like`, `WebhookArgs`, `ScheduleArgs`, `EventArgs`, `HandlerFn`
 
 Plus a companion `@sprigr/apps-oauth-utils` with:
-- `exchangeCode(args)` - code → tokens
-- `refreshAccessToken(args)` - race-safe refresh rotation
-- `OAuthError` typed errors
+- `exchangeAuthCode` / `exchangeAndPersist` - code → tokens, persisted with the refresh token written first
+- `getValidAccessToken` / `refreshAndPersist` - race-safe refresh rotation; `ProviderConfig.timeoutMs` (0.3.0) bounds the refresh fetch on scheduled paths, but not for providers that rotate refresh tokens (see its README)
+- `OAuthError` typed errors, with a message that never carries the provider's raw response body
+
+Three more packages cover the rest of an OAuth app's plumbing. Every OAuth app needs the first two; reach for the third when the app has one token per user:
+- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page.
+- `@sprigr/apps-redact` - `redactSecrets` / `redactErrorMessage` strip codes, client secrets, tokens and API keys out of a string (JSON pairs, form pairs, `Bearer` values, known token prefixes, JSON nested inside a string) while keeping status codes and provider error text. Run every error you store in an audit row or `last_error` column through it.
+- `@sprigr/apps-actor-token-refresh` - `ActorRefreshLatch` coalesces concurrent refreshes for one user onto one in-flight call, and `needsRefresh` / `REFRESH_BUFFER_MS` decide when to refresh. Pass a lease config to `run` for providers that rotate refresh tokens, so two invocations in different isolates never spend the same refresh token.
 
 And `@sprigr/apps-d1-kv` with `makeD1TokenStore` / `makeSettingsStore` (D1-backed token + settings stores over the scaffolded `<slug>_secrets` / `<slug>_settings` tables). `makeD1TokenStore` takes a **required** `encryption` option; a scaffolded app gets `{ mode: 'encrypt', kek: env.<SLUG>_TOKEN_KEK }` and the matching `auto_generate` manifest secret, so its tokens are sealed at rest from the first write. See [build-guide.md](build-guide.md) for the modes and for the two-step path an app with existing installs has to take. The scaffolder exact-pins all of these.
 
@@ -675,6 +680,10 @@ What happens server-side:
 ### Upgrade
 - After publishing a new version, upgrade existing installs via the portal "Upgrade" banner or `sprigr app upgrade <slug>`.
 - The install is re-pinned to the latest approved version and the build is re-enqueued with the same website id. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
+
+### Retire (per-actor apps): `on_actor_retired`
+- A per-actor app (`auth.model: per_actor`) should declare an `internal: true` tool named `on_actor_retired` and wrap its handler with `actorRetiredHook` from `@sprigr/apps-app-sdk` (0.16.0+). The platform calls it when the identity behind one of your actor keys is gone: a member removed, an agent deleted, a companion's bound user id corrected (the OLD key), or an operator retiring an orphan. Revoke the person's grant at the provider and purge what you keep for that key, exactly as your disconnect tool does.
+- Without it, a removed member's third-party grant stays live in your app, and the platform logs `actor_retire_unhandled` for your install. The SDK README has the contract.
 
 ## 6. OAuth - the shared bouncer pattern
 

@@ -238,6 +238,34 @@ Doc-object shape (one concept per object, recipe-first; the platform injects `ap
 
 > Availability: the ingestion + agent-retrieval pipeline shipped to **staging** (sprigr-team PRs #1742 + #1743) and is verified end-to-end there. It reaches prod when those promote to `main` on sprigr-team. Publishing `docs[]` to prod before then is harmless — the field is simply ignored until the platform side lands.
 
+## 2c. Rules for reading your data (`agent_notes`, field `note`)
+
+Docs are pulled: an agent reads them only if it thinks to search. The rules an analyst must not miss when reading your rows (which period a table holds, what one row is, rows to exclude, a join that fans out) belong on the data declaration itself, where the platform pushes them to the agent at the moment of use. Declare `agent_notes` on any `datasets`, `data_exports` or `data_indexes` entry, and a `note` on any field:
+
+```jsonc
+"datasets": {
+  "gl_transactions": {
+    "mode": "keyed", "key": ["unique_key"], "contract_version": 1,
+    "description": "GL_TransThisYr: general ledger postings",
+    "record_grain": "One row per general ledger posting",
+    "agent_notes": [
+      "Despite its name this table is LAST financial year (FY26). FY27 postings are in gl_transactions_all.",
+      "Month and year totals come from gl_accounts; use this table for drill-down. Docs: my-app__gl-transactions."
+    ],
+    "fields": {
+      "GLT1_Locn":   { "type": "string", "note": "Store code: the first three digits match stores.store_no." },
+      "GLT1_Amount": { "type": "number", "sensitivity": ["financial_cost"], "note": "Signed: credits are negative." }
+    }
+  }
+}
+```
+
+**Where they show up.** The tenant's analytics build carries them into every table built from the entry; `analytics_query` returns them (as `by: "app"`) with the table's schema and with every query result that reads the table, beside the tenant operator's own notes. Field notes are keyed by your field names; the platform maps them to the tenant's column names, and a role that cannot see a column never receives its note, so **put a rule about a sensitive column on that column's `note`, not in `agent_notes`.**
+
+**Caps (refused at publish, never cut):** `agent_notes` is one string or up to 12 strings, each at most 500 characters and 2,000 together; a field `note` is at most 200 characters, 3,000 per entry. `sprigr app validate` names every over-cap note with its path, e.g. `datasets.gl_transactions.agent_notes[0] is 612 characters; max 500 per note.`; the publish answers the same with the codes `contract_agent_notes_too_long`, `contract_agent_notes_malformed`, `contract_field_note_too_long`, `contract_field_note_malformed`.
+
+**Writing them well:** one rule per note, imperative, with the correct pattern and a one-line SQL shape when there is one (`JOIN dept_names USING (dept)`, `WHERE line_no > 0`). Point at the full doc id (`<your-slug>__<doc-id>`) for detail. They describe your data and nothing else: text that tries to instruct an agent to do anything beyond reading the rows is shown as the app's and is grounds for review. New notes reach agents with the tenant's next analytics build after the install upgrades.
+
 ## 3. The SDK (`@sprigr/apps-app-sdk`)
 
 Vendored under `src/lib/vendor/app-sdk/`. Small, no runtime deps. Provides:

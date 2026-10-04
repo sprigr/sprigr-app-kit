@@ -177,6 +177,12 @@ Two things that only matter for an app that ALREADY has installs:
 
 From `@sprigr/apps-app-sdk` (npm dep): `encodeState`/`decodeState` (the bouncer decodes YOUR state, so always build it with `encodeState`), `randomHex`, `hmacSha256Hex` + `constantTimeEqual` (webhook signatures), `fetchWithRetry` (rate-limited provider APIs). For anything that runs under a schedule or a long tool call, add `@sprigr/apps-fetch-budget` (`createDeadline` + `fetchWithBudget`): `fetchWithRetry` carries no timeout, and an unbounded `fetch` hangs until the platform dispatcher's 110s wall kills the whole invocation. See [marketplace-app-development.md](marketplace-app-development.md#bounding-outbound-http-the-110-second-dispatch-wall-sprigrapps-fetch-budget).
 
+Three more primitives every OAuth app should use instead of writing its own:
+
+- `@sprigr/apps-pending-oauth`: `makePendingOAuthStore({ db, table })` for the csrf state your `/oauth/start` route writes and your callback consumes exactly once (two callbacks racing on one csrf: only one gets the payload), and `makeOAuthCompletions({ db, table })` to record a finished connect, so your callback can recognise a replay of it and answer `{ ok: false, reason: 'already_connected' }`, which the bouncer renders as "already connected" instead of a failure page. You own both tables' migrations.
+- `@sprigr/apps-redact`: wrap any error text before it lands in a durable column: `redactSecrets(text)` or `redactErrorMessage(err)`. Provider token endpoints echo the request back in their error bodies, so without it an authorization code or client secret ends up in your audit table.
+- `@sprigr/apps-actor-token-refresh`: for apps where each user (or agent) connects their own account. `new ActorRefreshLatch()` plus `latch.run(actorKey, () => refresh())` makes concurrent tool calls share one refresh; add the optional lease (`{ db, table, cachedToken }`) when the provider rotates refresh tokens on every refresh. Catch `RefreshLeaseBusyError` as a transient error, never as "not connected".
+
 Why tokens live in D1 and not manifest secrets: manifest `secrets[]` are read-only at runtime, and refresh rotation needs writes. Per-install D1 is isolated, and the store seals values under the install's own key on top of that (Cloudflare's storage-layer encryption at rest is not protection against a read primitive inside the app itself, which is what the KEK is for).
 
 ### 6c. The four files you fill in

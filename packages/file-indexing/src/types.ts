@@ -81,6 +81,14 @@ export interface FileIndexingFilesApi {
   delete?(key: string, opts?: { owner_ref?: string; ownerless?: boolean }): Promise<unknown>;
 }
 
+/** The subset of the app-sdk's SprigrLogEntry the package writes. */
+export interface FileIndexingLogEntry {
+  level: 'debug' | 'info' | 'warn' | 'error';
+  category: string;
+  summary: string;
+  metadata?: Record<string, unknown>;
+}
+
 /** The env the indexer reads. Every app env that carries `SPRIGR` fits. */
 export interface FileIndexingEnv {
   SPRIGR?: {
@@ -88,6 +96,10 @@ export interface FileIndexingEnv {
     files?: FileIndexingFilesApi;
     emit?(event: string, payload: unknown): Promise<unknown>;
     acl?: AclIdentityBridge;
+    /** `env.SPRIGR.log` (sprigr-team#7154): one Analytics Engine row per
+     *  entry. The pass logs its content-fill outcome through it when present
+     *  (0.1.3, sprigr-apps#2725). Structurally the app-sdk's SprigrLogFn. */
+    log?(entry: FileIndexingLogEntry): Promise<unknown>;
   };
   SPRIGR_PLATFORM_BASE?: string;
   SPRIGR_INSTALL_TOKEN?: string;
@@ -320,6 +332,12 @@ export interface FileSourceAdapter<TEntry = unknown, TEnv extends FileIndexingEn
   deleteStaged?(key: string, ctx: FileIndexingContext<TEnv>): Promise<void>;
   /** Key a 429 throttle applies to (default: the object's driveId). */
   throttleKeyOf?(object: IndexedFileObject): string;
+  /** 0.1.3 (sprigr-apps#2725): true when an error `refetchEntry` threw is the
+   *  source rate-limiting this pass. The content-fill drain then stops
+   *  starting rows on that throttle key for the rest of the pass, and the row
+   *  waits without spending one of its attempts. Default: the error carries
+   *  `status === 429` (DropboxApiError and GraphApiError both do). */
+  isThrottleError?(err: unknown): boolean;
   /** 0.1.2 (sprigr-apps#2702): the source's CURRENT entry for an indexed row,
    *  or null when the file no longer exists. Optional. When present, the
    *  content-fill drain re-reads each waiting file before it fetches text:

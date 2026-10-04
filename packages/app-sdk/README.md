@@ -44,6 +44,28 @@ export default { list_things: actorTool(async (env, actor, args) => { /* ... */ 
 
 **Why this is in the SDK:** every app hand-rolled this, and one shipped a version that fell back to "the first connected actor on the install" when the caller had none. One person's consent then exposed their account to every agent on that install, in production.
 
+## Retiring a person or agent: `on_actor_retired`
+
+A per-actor app must forget a person when the platform does. When a member is removed, an agent is deleted, a companion's bound user id is corrected, or an operator retires an orphaned key, the platform POSTs `/__sprigr/tool/on_actor_retired` to every install that declares a tool of that name (sprigr-team decision 0154). Run the same revoke-and-purge your own disconnect tool runs, for that key only.
+
+```ts
+import { actorRetiredHook } from '@sprigr/apps-app-sdk';
+
+export default {
+  on_actor_retired: actorRetiredHook<MyEnv>(async (env, retired) => {
+    // retired.actor is shaped like a stamped actor: actorKey(retired.actor) === retired.actorKey
+    await revokeAndPurge(env, retired.actor, { cutoff: retired.requestedAt, ownerRef: retired.storageOwnerRef });
+    return { done: true };
+  }),
+};
+```
+
+- Declare it in `tools[]` with `"internal": true`. The platform never lets an agent or the app bridge call it.
+- `actorRetiredHook` refuses a call that carries `args.actor` (the platform's dispatch never does) and a malformed body, by throwing. It never turns a throw into `{ ok: false }`: the platform reads `done`, and a swallowed error would read as finished. A throw is retried.
+- Return `{ done: true }` when finished or durably queued by the app; `{ done: false, remaining }` to be called again (1 min up to 12 h, 8 deliveries). Be idempotent.
+- `successorKey` is audit only: never move the grant or the data to it. Delete only what existed by `requestedAt`.
+- `storageOwnerRef` is the `owner_ref` a no-actor maintenance `env.SPRIGR.files.list` reports for this person's per-user stored files; pass it to a no-actor `files.delete(key, { owner_ref })`.
+
 ## Webhook callback URLs
 
 - `resolvePlatformWebhookBase(env)` / `buildMarketplaceWebhookUrl(env, installId, topicPath)` — env-correct platform host, so a staging install never registers prod-pointing subscriptions.
