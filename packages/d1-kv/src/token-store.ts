@@ -167,6 +167,14 @@ export function makeD1TokenStore(opts: MakeD1TokenStoreOpts): TokenStore {
   /**
    * Best-effort lazy migration of one legacy row.
    *
+   * A compare-and-set, not an upsert: the row is sealed only if it still
+   * holds the cleartext value this read saw. A token refresh can rotate the
+   * row between the read and this write; an unconditional upsert would then
+   * write the stale token back over the rotated one, and for a provider with
+   * single-use refresh tokens that strands the install (sprigr/sprigr-apps#2613,
+   * S017-06). When the row has moved on, the UPDATE matches nothing and the
+   * newer value, which `put` already sealed, stands.
+   *
    * Failure here must not fail the read: the caller already has a usable
    * token, and an install that cannot write (a read-replica hiccup, a
    * transient D1 error) should still be able to call its provider. The
@@ -175,7 +183,13 @@ export function makeD1TokenStore(opts: MakeD1TokenStoreOpts): TokenStore {
    */
   async function reseal(key: string, plaintext: string): Promise<void> {
     try {
-      await writeRaw(key, await encryptValue(kek, plaintext));
+      const sealed = await encryptValue(kek, plaintext);
+      await db
+        .prepare(
+          `UPDATE ${table} SET value = ?, updated_at = datetime('now') WHERE key = ? AND value = ?`,
+        )
+        .bind(sealed, key, plaintext)
+        .run();
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'unknown error';
       console.warn(`[d1-kv] could not re-encrypt ${table}.${key} in place: ${detail}`);
