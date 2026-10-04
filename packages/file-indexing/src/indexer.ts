@@ -20,6 +20,7 @@ import { isFetchBudgetTimeout, type Deadline } from '@sprigr/apps-fetch-budget';
 import { enrichObjectsWithContent, type ExtractionBudget } from './content';
 import {
   CONTENT_FILL_BUDGET_MS,
+  IDLE_CONTENT_FILL_BUDGET_MS,
   contentFillToken,
   drainContentFills,
   storeSupportsContentFills,
@@ -84,6 +85,14 @@ export interface IndexActorFilesBudget {
   contentFillBudgetMs?: number;
   /** Rows the content-fill drain reads this pass (default MAX_CONTENT_FILLS_PER_PASS). */
   maxContentFills?: number;
+  /** 0.1.3: rows the content-fill drain works on at once (default
+   *  CONTENT_FILL_CONCURRENCY). */
+  contentFillConcurrency?: number;
+  /** 0.1.3: the drain's slice on a pass with a deadline whose walk started no
+   *  content fetch (default: the larger of IDLE_CONTENT_FILL_BUDGET_MS and
+   *  `contentFillBudgetMs`). Still bounded by the deadline. Ignored when
+   *  `contentFillBudgetMs` is 0. */
+  idleContentFillBudgetMs?: number;
 }
 
 export interface FileIndexingOutcome {
@@ -415,8 +424,18 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
   // ── content (best-effort, bounded) ──
   const extractBudget: ExtractionBudget = { extracted: 0, deferred: 0 };
   const throttled = new Set<string>();
-  const enriched = await enrichObjectsWithContent(adapter, store, ctx, objects, { mimeByObjectId, budget: extractBudget, throttled });
+  // A backlog keeps its share of the pass (sprigr-apps#2725): the walk stops
+  // STARTING fetches early, and what it leaves joins the queue the drain
+  // works on concurrently.
+  const enrichDeadline = await walkContentDeadline(store, ctx, deadline, budget, now, label);
+  const enriched = await enrichObjectsWithContent(adapter, store, ctx, objects, {
+    mimeByObjectId,
+    budget: extractBudget,
+    throttled,
+    ...(enrichDeadline ? { deadline: enrichDeadline } : {}),
+  });
   let contentDeferred = enriched.recorded;
+  let contentAttempted = enriched.attempted;
   let fillRecordFailed = enriched.recordFailed;
 
   // ── extra scopes (re-listed whole each pass; no cursor, no events) ──
@@ -450,8 +469,10 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
             mimeByObjectId,
             budget: extractBudget,
             throttled,
+            ...(enrichDeadline ? { deadline: enrichDeadline } : {}),
           });
           contentDeferred += scopeEnriched.recorded;
+          contentAttempted += scopeEnriched.attempted;
           fillRecordFailed ??= scopeEnriched.recordFailed;
           objects.push(...stamped.objects);
           result.walked.push(sc.id);
@@ -655,7 +676,10 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
   if (error) await store.recordError(scope, error);
 
   // ── content fills: after the cursor, inside what is left of the deadline ──
-  const fill = await runContentFills(adapter, store, ctx, budget, { budget: extractBudget, throttled, label });
+  // A pass whose walk fetched no text (nothing changed, or only metadata)
+  // gives the drain the larger idle slice; it needs a deadline to bound it.
+  const idle = deadline !== undefined && !cut && contentAttempted === 0 && contentDeferred === 0;
+  const fill = await runContentFills(adapter, store, ctx, budget, { budget: extractBudget, throttled, label, idle });
 
   return {
     ...base(),
@@ -672,16 +696,50 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
 }
 
 /**
+ * The deadline the walk's content fetches stop STARTING at. With fills on, a
+ * deadline, and a backlog already waiting, it is the pass deadline less the
+ * drain's slice (at most half of what is left), so the drain keeps its share
+ * of a busy pass (sprigr-apps#2725: on 0.1.2 a 200-file walk used the whole
+ * tick and the 91 rows already waiting got nothing). Files the walk does not
+ * start are recorded for a fill, the same as at the deadline, and the drain
+ * fetches them concurrently. Otherwise the pass deadline, unchanged. One
+ * COUNT read, only on a pass that may drain.
+ */
+async function walkContentDeadline(
+  store: FileIndexingStore,
+  ctx: FileIndexingContext<any>,
+  deadline: Deadline | undefined,
+  budget: IndexActorFilesBudget,
+  now: () => number,
+  label: string,
+): Promise<Deadline | undefined> {
+  const sliceMs = budget.contentFillBudgetMs ?? CONTENT_FILL_BUDGET_MS;
+  if (!deadline || sliceMs <= 0 || !ctx.walkKey || !store.countPendingContentFills) return deadline;
+  const left = deadline.at - now();
+  if (left <= 0) return deadline;
+  let waiting: number;
+  try {
+    waiting = await store.countPendingContentFills(contentFillToken(ctx.walkKey));
+  } catch (err) {
+    console.warn(`${label} content-fill count failed for ${ctx.walkKey}; the walk keeps the whole deadline:`, errMsg(err));
+    return deadline;
+  }
+  if (waiting === 0) return deadline;
+  return { at: deadline.at - Math.min(sliceMs, Math.floor(left / 2)) };
+}
+
+/**
  * The end-of-pass content-fill step: count this scope's waiting rows, drain a
- * bounded batch if there are any, and report what is left. Never throws: a
- * store failure here only leaves the count unknown.
+ * bounded batch if there are any, report what is left, and log the outcome
+ * through `env.SPRIGR.log` when the app has it. Never throws: a store failure
+ * here only leaves the count unknown.
  */
 async function runContentFills<TEntry, TEnv extends FileIndexingEnv>(
   adapter: FileSourceAdapter<TEntry, TEnv>,
   store: FileIndexingStore,
   ctx: FileIndexingContext<TEnv>,
   budget: IndexActorFilesBudget,
-  shared: { budget: ExtractionBudget; throttled: Set<string>; label: string },
+  shared: { budget: ExtractionBudget; throttled: Set<string>; label: string; idle: boolean },
 ): Promise<{ filled: number; pending?: number }> {
   if (!storeSupportsContentFills(store) || !ctx.walkKey || !store.countPendingContentFills) return { filled: 0 };
   const token = contentFillToken(ctx.walkKey);
@@ -692,17 +750,60 @@ async function runContentFills<TEntry, TEnv extends FileIndexingEnv>(
     console.warn(`${shared.label} content-fill count failed for ${ctx.walkKey}:`, errMsg(err));
     return { filled: 0 };
   }
-  const sliceMs = budget.contentFillBudgetMs ?? CONTENT_FILL_BUDGET_MS;
-  if (pending === 0 || sliceMs <= 0) return { filled: 0, pending };
+  const busySliceMs = budget.contentFillBudgetMs ?? CONTENT_FILL_BUDGET_MS;
+  if (pending === 0 || busySliceMs <= 0) return { filled: 0, pending };
+  const sliceMs = shared.idle
+    ? (budget.idleContentFillBudgetMs ?? Math.max(busySliceMs, IDLE_CONTENT_FILL_BUDGET_MS))
+    : busySliceMs;
+  const startedAt = ctx.now();
   const out: ContentFillOutcome = await drainContentFills(adapter, store, ctx, {
     ...(ctx.deadline ? { deadline: ctx.deadline } : {}),
     budgetMs: sliceMs,
     ...(budget.maxContentFills !== undefined ? { maxFills: budget.maxContentFills } : {}),
+    ...(budget.contentFillConcurrency !== undefined ? { concurrency: budget.contentFillConcurrency } : {}),
     budget: shared.budget,
     throttled: shared.throttled,
     label: shared.label,
   });
-  return { filled: out.filled, pending: Math.max(0, pending - out.filled - out.converted - out.dropped) };
+  const left = Math.max(0, pending - out.filled - out.converted - out.dropped);
+  await logContentFillOutcome(ctx, shared.label, {
+    filled: out.filled,
+    converted: out.converted,
+    dropped: out.dropped,
+    waiting: out.waiting,
+    not_started: out.deferred,
+    pending_before: pending,
+    pending: left,
+    slice_ms: sliceMs,
+    idle: shared.idle,
+    peak_in_flight: out.peakInFlight,
+    elapsed_ms: ctx.now() - startedAt,
+    ...(out.error ? { error: out.error.slice(0, 300) } : {}),
+  });
+  return { filled: out.filled, pending: left };
+}
+
+/** One `file_indexing.content_fill` row per drain, when the env can log
+ *  (sprigr-apps#2725: 0.1.2's pass outcome reached no system log, so the
+ *  drain rate could only be read from D1). Analytics Engine, not D1: no
+ *  write bill. Never throws. */
+async function logContentFillOutcome(
+  ctx: FileIndexingContext<any>,
+  label: string,
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  const log = ctx.env.SPRIGR?.log;
+  if (typeof log !== 'function') return;
+  try {
+    await log.call(ctx.env.SPRIGR, {
+      level: 'info',
+      category: 'file_indexing.content_fill',
+      summary: `content fill: ${String(metadata.filled)} filled, ${String(metadata.pending)} still waiting`,
+      metadata: { walk_key: ctx.walkKey, ...metadata },
+    });
+  } catch (err) {
+    console.warn(`${label} content-fill log failed:`, errMsg(err));
+  }
 }
 
 /**
