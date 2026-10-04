@@ -1,0 +1,39 @@
+{
+  "name": "@sprigr/apps-datasets",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsup src/index.ts src/testing.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/datasets"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "description": "Write keyed datasets through env.SPRIGR.datasets.append (decisions 0079, 0115): objectID to row_key rows, 5xx-only retry, batches of at most 1,000 rows, and a test helper that checks rows against the manifest's datasets contract."
+}
