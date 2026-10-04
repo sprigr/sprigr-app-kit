@@ -98,6 +98,7 @@ Single source of truth. Validated server-side at publish.
     "version": "0.1.0",
     "description": "Connect My CRM for contact sync, deals, ...",
     "author": { "name": "Your Company", "email": "you@example.com" },
+    "icon": "icon.svg",                      // optional - the app's mark on the Apps page (see "The app icon" below)
     "category": "crm",
     "tags": ["crm", "contacts", "..."],
     "agent_routing": "Contact lookups and deal updates: my_crm; bulk contact sync: my_crm_sync_contacts."  // optional, see below
@@ -172,6 +173,20 @@ Single source of truth. Validated server-side at publish.
 - `runtime.tier` is required for non-agent apps (`"ssr"` for Next.js/Astro/Remix, `"static"` for plain HTML).
 - `permissions.network_domains` is an outbound allowlist - every domain `fetch()` calls **must** be there, including OAuth login hosts. WFP returns a network error otherwise.
 - `tools[].handler` paths are **relative to the app dir**, not the bundle root. The build-runner adapter resolves them when generating `__sprigr_handlers.js`.
+
+### The app icon (`metadata.icon`)
+
+Point `metadata.icon` at an image inside the app directory (`"icon": "icon.svg"`, or `public/icon.png`). The bundler uploads it with the rest of the app, provisioning resolves it to a data URI and stores it as `icon_url` on the app, and the portal renders it as the app's mark on the Apps page and the detail header. Without it the app shows the initials of its name on an accent tile, so the field is optional.
+
+Rules the publish enforces (one 400 with the reason, nothing half-committed):
+
+- SVG, at most 32 KB, with a `viewBox`; no `<script>`, event-handler attributes, `javascript:`, `<foreignObject>`, DOCTYPE/ENTITY, `@import`, or any `href` / `url()` that is not a `#fragment`.
+- PNG, at most 64 KB, square, 64 to 1024 px. Prefer SVG.
+- The image fills the tile edge to edge, so leave your own margin inside the viewBox (about 16% around a partner glyph). Sprigr's own apps paint a full-bleed ink tile with a lime glyph; copy one of the `sprigr-*` apps' `icon.svg` as the template.
+- A publish with no files (an agent template) inlines the image: `"icon": "data:image/svg+xml;base64,…"`.
+- Use a vendor's mark only where their brand terms allow it in an integration listing, unaltered.
+
+`sprigr app publish` and `sprigr app validate` fail before the upload when the path is missing from the bundle. Every republish syncs `icon_url` from the manifest, so dropping the field removes the icon; bump `metadata.version` to ship either change.
 
 ### Declaring a tool's side effects (`tools[].effects`)
 
