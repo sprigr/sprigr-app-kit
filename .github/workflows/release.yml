@@ -79,5 +79,21 @@ jobs:
               continue
             fi
             echo "publishing $name@$version"
-            (cd "$dir" && pnpm run --if-present build && npm publish --access public --provenance)
+            # `npm view` above can lag a publish by minutes, so a release that
+            # starts right after another one's publish can see a version as
+            # missing that npm has already accepted. npm then refuses the
+            # re-publish with E403 "cannot publish over the previously
+            # published versions". That means the version IS published:
+            # skip it and keep going, instead of aborting the loop before the
+            # packages after it publish (2026-10-04, runs 37164141724 and
+            # 37164165483). Any other publish failure still fails the job.
+            if ! out=$(cd "$dir" && pnpm run --if-present build && npm publish --access public --provenance 2>&1); then
+              echo "$out"
+              if grep -q "cannot publish over the previously published versions" <<<"$out"; then
+                echo "skip: $name@$version already published (npm view had not caught up)"
+                continue
+              fi
+              exit 1
+            fi
+            echo "$out"
           done
