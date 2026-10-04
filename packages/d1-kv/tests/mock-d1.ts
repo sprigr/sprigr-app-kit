@@ -6,6 +6,7 @@
  *   SELECT value FROM <t> WHERE key = ?
  *   INSERT INTO <t> (key, value, updated_at) VALUES (?, ?, datetime('now'))
  *     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+ *   UPDATE <t> SET value = ?, updated_at = datetime('now') WHERE key = ? AND value = ?
  *   DELETE FROM <t> WHERE key = ?
  *   SELECT key, value FROM <t>
  *
@@ -52,6 +53,7 @@ function makeStmt(sql: string, args: unknown[], state: DbState): D1PreparedState
 
 const SELECT_VALUE_RX = /^SELECT value FROM (\w+) WHERE key = \?$/;
 const INSERT_UPSERT_RX = /^INSERT INTO (\w+) \(key, value, updated_at\)\s+VALUES \(\?, \?, datetime\('now'\)\)\s+ON CONFLICT\(key\) DO UPDATE SET\s+value = excluded\.value,\s+updated_at = datetime\('now'\)$/;
+const UPDATE_CAS_RX = /^UPDATE (\w+) SET value = \?, updated_at = datetime\('now'\) WHERE key = \? AND value = \?$/;
 const DELETE_RX = /^DELETE FROM (\w+) WHERE key = \?$/;
 const SELECT_ALL_RX = /^SELECT key, value FROM (\w+)$/;
 
@@ -71,6 +73,15 @@ function execStatement(sql: string, args: unknown[], state: DbState): unknown {
     const table = ins[1] as string;
     const rows = ensure(state, table);
     rows[String(args[0])] = String(args[1]);
+    return null;
+  }
+
+  const cas = UPDATE_CAS_RX.exec(normalized);
+  if (cas) {
+    const table = cas[1] as string;
+    const rows = ensure(state, table);
+    const key = String(args[1]);
+    if (rows[key] === String(args[2])) rows[key] = String(args[0]);
     return null;
   }
 

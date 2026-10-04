@@ -166,11 +166,52 @@ describe('legacy cleartext rows (the migration path)', () => {
     expect(await store.get('refresh_token')).toBe('legacy-plain-token');
   });
 
+  it('does not overwrite a token rotated between the read and the re-seal (S017-06)', async () => {
+    const { db, raw } = makeDb({ shopify_secrets: { refresh_token: 'legacy-plain-token' } });
+    const realPrepare = db.prepare.bind(db);
+    let rotated = false;
+    db.prepare = (sql: string) => {
+      if (!rotated && sql.startsWith('UPDATE')) {
+        // A concurrent refresh lands between this read and its re-seal and
+        // writes the rotated token (sealed, as an encrypt-mode put would).
+        rotated = true;
+        return {
+          bind: (...args: unknown[]) => ({
+            run: async () => {
+              const rotator = makeD1TokenStore({
+                db: { prepare: realPrepare },
+                table: 'shopify_secrets',
+                encryption: { mode: 'encrypt', kek: KEK },
+              });
+              await rotator.put('refresh_token', 'rotated-token');
+              return realPrepare(sql).bind(...args).run();
+            },
+          }),
+        } as unknown as ReturnType<typeof realPrepare>;
+      }
+      return realPrepare(sql);
+    };
+    const store = makeD1TokenStore({
+      db,
+      table: 'shopify_secrets',
+      encryption: { mode: 'encrypt', kek: KEK },
+    });
+
+    // The read still returns what it saw...
+    expect(await store.get('refresh_token')).toBe('legacy-plain-token');
+    expect(rotated).toBe(true);
+    // ...but the rotated token is what remains stored.
+    const stored = (await raw('shopify_secrets', 'refresh_token')) as string;
+    expect(isEncryptedValue(stored)).toBe(true);
+    db.prepare = realPrepare;
+    expect(await store.get('refresh_token')).toBe('rotated-token');
+  });
+
   it('a failed lazy re-encrypt does not fail the read', async () => {
     const { db } = makeDb({ shopify_secrets: { refresh_token: 'legacy-plain-token' } });
     const realPrepare = db.prepare.bind(db);
     db.prepare = (sql: string) => {
-      if (sql.includes('INSERT INTO')) throw new Error('D1_ERROR: transient');
+      if (sql.includes('UPDATE')) throw new Error('D1_ERROR: transient');
       return realPrepare(sql);
     };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
