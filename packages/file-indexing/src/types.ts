@@ -291,11 +291,15 @@ export interface FileSourceAdapter<TEntry = unknown, TEnv extends FileIndexingEn
    *  resolved list that lacks it; never replaces anything. */
   ownerPrincipal?(ctx: FileIndexingContext<TEnv>): string | null;
 
-  /** Text body of a text-like file. Throw or return '' on failure. */
+  /** Text body of a text-like file. Throw or return '' on failure.
+   *  `throttled`: the source answered 429; nothing more is asked of that
+   *  throttle key this pass and the file waits for a later content fill.
+   *  `missing` (0.1.2): the source says the file no longer exists; a pending
+   *  content fill for it is dropped instead of retried. */
   downloadText?(
     object: IndexedFileObject,
     ctx: FileIndexingContext<TEnv>,
-  ): Promise<string | { text: string; throttled?: boolean }>;
+  ): Promise<string | { text: string; throttled?: boolean; missing?: boolean }>;
   /** Raw bytes of a binary (pdf/docx/xlsx/pptx) for the extract bridge. A
    *  non-ok Response leaves the content empty. */
   downloadBinary?(object: IndexedFileObject, ctx: FileIndexingContext<TEnv>): Promise<Response>;
@@ -316,6 +320,15 @@ export interface FileSourceAdapter<TEntry = unknown, TEnv extends FileIndexingEn
   deleteStaged?(key: string, ctx: FileIndexingContext<TEnv>): Promise<void>;
   /** Key a 429 throttle applies to (default: the object's driveId). */
   throttleKeyOf?(object: IndexedFileObject): string;
+  /** 0.1.2 (sprigr-apps#2702): the source's CURRENT entry for an indexed row,
+   *  or null when the file no longer exists. Optional. When present, the
+   *  content-fill drain re-reads each waiting file before it fetches text:
+   *  a vanished file's fill is dropped, and the row is re-stamped from the
+   *  current entry (permissions resolved again, new revision, name and path),
+   *  so text is never written under principals the file no longer has. Throw
+   *  for a failure that may pass; the fill is retried. Without it the drain
+   *  uses the stored record, which every walk that sees the file refreshes. */
+  refetchEntry?(object: IndexedFileObject, ctx: FileIndexingContext<TEnv>): Promise<TEntry | null>;
 
   /** Whether a created/updated event is emitted for this object (default
    *  true; folders never emit). microsoft-365 limits it to OneDrive rows. */
@@ -431,12 +444,36 @@ export interface FileIndexingStore {
   clearWalkSeen(walkKey: string): Promise<void>;
 
   upsertPendingExtraction(row: { objectId: string; jobToken: string; recordJson: string; format: string }): Promise<void>;
+  /** Oldest first. Content-fill rows (`CONTENT_FILL_TOKEN_PREFIX`) are not
+   *  extraction jobs: createD1FileIndexingStore leaves them out, and
+   *  drainPendingExtractions skips any a custom store returns. */
   listPendingExtractions(limit: number): Promise<PendingExtractionRow[]>;
-  listPendingExtractionsFor(objectIds: string[]): Promise<Array<Pick<PendingExtractionRow, 'object_id' | 'record_json'>>>;
+  /** `job_token` is returned by createD1FileIndexingStore since 0.1.2; a store
+   *  that leaves it out still works (an unknown token is treated as a job,
+   *  so a content fill never overwrites it). */
+  listPendingExtractionsFor(
+    objectIds: string[],
+  ): Promise<Array<Pick<PendingExtractionRow, 'object_id' | 'record_json'> & { job_token?: string }>>;
   refreshPendingExtractionRecord(objectId: string, recordJson: string): Promise<void>;
   bumpPendingExtraction(objectId: string): Promise<void>;
   deletePendingExtraction(objectId: string): Promise<void>;
   deletePendingExtractions(objectIds: string[]): Promise<void>;
+
+  // ── content fills (0.1.2, sprigr-apps#2702) ──
+  // Rows in the same pending table whose job_token is a content-fill token
+  // (`contentFillToken(walkKey)`): files a pass imported without their text
+  // because it stopped at the deadline, the extraction cap or a 429. Optional
+  // so a hand-written store keeps compiling; without `listPendingContentFills`
+  // nothing is recorded (there would be no drain) and the pass behaves as
+  // 0.1.1 did. createD1FileIndexingStore implements all four.
+
+  /** Upsert many rows at once (a deadline cut can defer hundreds). Falls back
+   *  to one upsertPendingExtraction per row when absent. */
+  upsertPendingContentFills?(rows: Array<{ objectId: string; jobToken: string; recordJson: string; format: string }>): Promise<void>;
+  /** Rows carrying exactly this token, least recently touched first. */
+  listPendingContentFills?(jobToken: string, limit: number): Promise<PendingExtractionRow[]>;
+  countPendingContentFills?(jobToken: string): Promise<number>;
+  deletePendingContentFills?(jobToken: string): Promise<void>;
 }
 
 export type { Actor, D1Like, Deadline };

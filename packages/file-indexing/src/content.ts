@@ -8,18 +8,22 @@
  *   - TEXT-LIKE files at or under MAX_CONTENT_BYTES are downloaded and decoded.
  *   - BINARY OOXML/PDF files go through the platform extract bridge: download,
  *     stage under a random single-use key, extract, delete the staged copy.
- *     At most MAX_EXTRACTIONS_PER_RUN per pass; pptx and files of 16 MiB or
- *     more come back as a durable job that the drain backfills later.
- *   - Folders, oversize text, legacy .doc/.xls/.ppt and images stay
+ *     At most MAX_EXTRACTIONS_PER_RUN per pass; pptx (and anything the
+ *     platform answers needs_job for) comes back as a durable job that the
+ *     extraction drain backfills later.
+ *   - Folders, oversize text, binaries of MAX_EXTRACT_INLINE_BYTES or more
+ *     (never downloaded), legacy .doc/.xls/.ppt and images stay
  *     metadata-only.
  *
  * Every per-file failure leaves that file's content empty and never fails the
- * pass.
+ * pass. A file left without text that could have had it is recorded for a
+ * later content fill (content-fill.ts, sprigr-apps#2702).
  */
 
 import { deleteAppFile, hmacSha256Hex, randomHex, resolveInstallBridge } from '@sprigr/apps-app-sdk';
 import type { ExtractFormat, FileIndexingContext, FileSourceAdapter, FileIndexingStore, IndexedFileObject } from './types';
 import { deadlinePassed } from './tick-budget';
+import { recordContentFills } from './content-fill';
 
 /** Only TEXT-LIKE files at or under this many bytes are downloaded. */
 export const MAX_CONTENT_BYTES = 256 * 1024;
@@ -252,7 +256,8 @@ export async function extractBinaryFileContent<TEntry>(
 }
 
 /** The per-pass extraction counter, shared by every enrich call in one pass
- *  (main walk plus each extra scope) so the cap is truly per pass. */
+ *  (main walk plus each extra scope, and the content-fill drain that follows)
+ *  so the cap is truly per pass. */
 export interface ExtractionBudget {
   extracted: number;
   deferred: number;
@@ -261,20 +266,121 @@ export interface ExtractionBudget {
 export interface EnrichSummary {
   extracted: number;
   deferredBudget: number;
+  /** Eligible files not started because the tick deadline passed (0.1.1
+   *  counted every remaining object, folders and metadata-only files too). */
   deferredDeadline: number;
+  /** Eligible files not asked because their throttle key answered 429. */
   skippedThrottled: number;
+  /** Text or native fetches that threw (0.1.2). */
+  failed: number;
+  /** Files recorded for a later content fill (0.1.2, sprigr-apps#2702): the
+   *  deadline, budget and throttle deferrals above plus the failed fetches. */
+  recorded: number;
+  /** Set when the content-fill rows could not be written. The rows it names
+   *  would import with no text and nothing would come back for them, so the
+   *  indexing pass treats it as a failure and keeps its cursor. */
+  recordFailed?: string;
+}
+
+/** What text a file can get. */
+export type ContentKind = { kind: 'native' } | { kind: 'text' } | { kind: 'binary'; format: ExtractFormat };
+
+/**
+ * The content route for one object, or null when it stays metadata-only:
+ * folders, oversize text, formats the bridge cannot read, binaries at or over
+ * the inline ceiling, and routes this adapter or env cannot serve (no
+ * downloadText; no downloadBinary or files.extract/putStream).
+ */
+export function contentKindFor<TEntry>(
+  adapter: FileSourceAdapter<TEntry, any>,
+  ctx: FileIndexingContext,
+  obj: IndexedFileObject,
+  mime: string,
+): ContentKind | null {
+  if (obj.isFolder === 'true') return null;
+  if (adapter.isNativeExportable?.(mime) && adapter.exportNative) return { kind: 'native' };
+  if (isTextLikeMimeType(mime)) {
+    if (typeof obj.size === 'number' && obj.size > MAX_CONTENT_BYTES) return null;
+    return adapter.downloadText ? { kind: 'text' } : null;
+  }
+  const format = extractFormatForMime(mime);
+  if (!format) return null;
+  if (typeof obj.size === 'number' && obj.size >= MAX_EXTRACT_INLINE_BYTES) return null;
+  const files = ctx.env.SPRIGR?.files;
+  if (!adapter.downloadBinary || !files?.extract || !files.putStream) return null;
+  return { kind: 'binary', format };
+}
+
+/** One content fetch: text to store, a durable extraction job, or why not. */
+export type ContentFetch =
+  | { status: 'filled'; text: string }
+  | { status: 'job'; jobToken: string }
+  | { status: 'throttled' }
+  | { status: 'missing' }
+  | { status: 'failed' };
+
+/**
+ * Fetch the content for one object along its route. Never throws: a failure
+ * is logged and comes back as `failed`. Shared by the walk's enrichment and
+ * the content-fill drain so both apply the same caps and logs.
+ */
+export async function fetchObjectContent<TEntry>(
+  adapter: FileSourceAdapter<TEntry, any>,
+  ctx: FileIndexingContext,
+  obj: IndexedFileObject,
+  mime: string,
+  kind: ContentKind,
+): Promise<ContentFetch> {
+  const label = adapter.logLabel ?? '[file-indexing]';
+  if (kind.kind === 'native') {
+    try {
+      return { status: 'filled', text: capText(await adapter.exportNative!(obj, mime, ctx), { label, what: obj.objectID }) };
+    } catch (err) {
+      console.warn(
+        `${label} native export failed for ${obj.objectID} (${mime}); leaving content empty:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return { status: 'failed' };
+    }
+  }
+  if (kind.kind === 'text') {
+    try {
+      const got = await adapter.downloadText!(obj, ctx);
+      if (typeof got !== 'string' && got.missing) return { status: 'missing' };
+      if (typeof got !== 'string' && got.throttled) return { status: 'throttled' };
+      const text = typeof got === 'string' ? got : got.text;
+      return { status: 'filled', text: capText(text, { label, what: obj.objectID }) };
+    } catch (err) {
+      console.warn(
+        `${label} content fetch failed for ${obj.objectID}; leaving content empty:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return { status: 'failed' };
+    }
+  }
+  const extract = await extractBinaryFileContent(adapter, ctx, obj, kind.format, {
+    version: typeof obj.modifiedAt === 'string' ? obj.modifiedAt : undefined,
+  });
+  if (extract.deferred) return { status: 'job', jobToken: extract.deferred.jobToken };
+  return { status: 'filled', text: extract.text };
 }
 
 /**
  * Populate `content` on already-stamped objects in place. Best-effort per
  * file, bounded by the size and char caps, the shared extraction budget, and
- * the tick deadline (checked between objects; the rest import metadata-only
- * and pick their content up on their next change). A 429 from a download
- * marks that throttle key (default: driveId) so its remaining files are not
- * asked again this pass (sprigr-apps#1527).
+ * the tick deadline (checked between objects). A 429 from a download marks
+ * that throttle key (default: driveId) so its remaining files are not asked
+ * again this pass (sprigr-apps#1527).
+ *
+ * 0.1.2 (sprigr-apps#2702): a file that could have had text but did not get
+ * it this pass (the deadline passed, the extraction cap was spent, its drive
+ * answered 429, or the fetch threw) is RECORDED for a later content fill
+ * (`recordContentFills`), instead of importing metadata-only and being
+ * forgotten until it next changes. The drain (`drainContentFills`) fills it
+ * on a later pass. `opts.recordDeferred: false` keeps the 0.1.1 behaviour.
  */
 export async function enrichObjectsWithContent<TEntry>(
-  adapter: FileSourceAdapter<TEntry>,
+  adapter: FileSourceAdapter<TEntry, any>,
   store: FileIndexingStore,
   ctx: FileIndexingContext,
   objects: IndexedFileObject[],
@@ -282,6 +388,8 @@ export async function enrichObjectsWithContent<TEntry>(
     mimeByObjectId?: Map<string, string>;
     budget?: ExtractionBudget;
     throttled?: Set<string>;
+    /** Record deferred files for a later content fill (default true). */
+    recordDeferred?: boolean;
   } = {},
 ): Promise<EnrichSummary> {
   const label = adapter.logLabel ?? '[file-indexing]';
@@ -291,86 +399,80 @@ export async function enrichObjectsWithContent<TEntry>(
   const startDeferred = budget.deferred;
   let deferredDeadline = 0;
   let skippedThrottled = 0;
-  for (const [i, obj] of objects.entries()) {
+  let failed = 0;
+  let cut = false;
+  const waiting: Array<{ object: IndexedFileObject; mime: string }> = [];
+  for (const obj of objects) {
     if (obj.isFolder === 'true') continue;
-    if (deadlinePassed(ctx.deadline, ctx.now)) {
-      deferredDeadline = objects.length - i;
-      console.warn(
-        `${label} content enrichment stopped at the tick deadline: ${deferredDeadline} of ${objects.length} row(s) import metadata-only this run`,
-      );
-      break;
+    const mime = opts.mimeByObjectId?.get(obj.objectID) ?? (typeof obj.mimeType === 'string' ? obj.mimeType : '');
+    const kind = contentKindFor(adapter, ctx, obj, mime);
+    if (!kind) {
+      const format = extractFormatForMime(mime);
+      if (format && typeof obj.size === 'number' && obj.size >= MAX_EXTRACT_INLINE_BYTES) {
+        console.warn(
+          `${label} extract skipped for ${obj.objectID} (${format}, ${obj.size} bytes >= inline ceiling); it stays metadata-only`,
+        );
+      }
+      continue;
+    }
+    if (!cut && deadlinePassed(ctx.deadline, ctx.now)) cut = true;
+    if (cut) {
+      deferredDeadline++;
+      waiting.push({ object: obj, mime });
+      continue;
     }
     const throttleKey = adapter.throttleKeyOf ? adapter.throttleKeyOf(obj) : String(obj.driveId ?? '');
     if (throttled.has(throttleKey)) {
       skippedThrottled++;
+      waiting.push({ object: obj, mime });
       continue;
     }
-    const mime = opts.mimeByObjectId?.get(obj.objectID) ?? (typeof obj.mimeType === 'string' ? obj.mimeType : '');
-    if (adapter.isNativeExportable?.(mime) && adapter.exportNative) {
-      try {
-        obj.content = capText(await adapter.exportNative(obj, mime, ctx), { label, what: obj.objectID });
-      } catch (err) {
-        console.warn(
-          `${label} native export failed for ${obj.objectID} (${mime}); leaving content empty:`,
-          err instanceof Error ? err.message : String(err),
-        );
-        obj.content = '';
+    if (kind.kind === 'binary') {
+      if (budget.extracted >= MAX_EXTRACTIONS_PER_RUN) {
+        budget.deferred++;
+        waiting.push({ object: obj, mime });
+        continue;
       }
+      budget.extracted++;
+    }
+    const got = await fetchObjectContent(adapter, ctx, obj, mime, kind);
+    if (got.status === 'filled') {
+      obj.content = got.text;
       continue;
     }
-    if (isTextLikeMimeType(mime)) {
-      if (typeof obj.size === 'number' && obj.size > MAX_CONTENT_BYTES) continue;
-      if (!adapter.downloadText) continue;
-      try {
-        const got = await adapter.downloadText(obj, ctx);
-        const text = typeof got === 'string' ? got : got.text;
-        obj.content = capText(text, { label, what: obj.objectID });
-        if (typeof got !== 'string' && got.throttled) {
-          throttled.add(throttleKey);
-          console.warn(`${label} ${throttleKey} is rate-limited (429); skipping content fetches for its remaining items this run`);
-        }
-      } catch (err) {
-        console.warn(
-          `${label} content fetch failed for ${obj.objectID}; leaving content empty:`,
-          err instanceof Error ? err.message : String(err),
-        );
-        obj.content = '';
-      }
+    obj.content = '';
+    if (got.status === 'throttled') {
+      throttled.add(throttleKey);
+      console.warn(`${label} ${throttleKey} is rate-limited (429); skipping content fetches for its remaining items this run`);
+      waiting.push({ object: obj, mime });
       continue;
     }
-    const format = extractFormatForMime(mime);
-    if (!format) continue;
-    if (typeof obj.size === 'number' && obj.size >= MAX_EXTRACT_INLINE_BYTES) {
-      console.warn(
-        `${label} extract deferred (needs_job) for ${obj.objectID} (${format}, ${obj.size} bytes >= inline ceiling); leaving content empty this run`,
-      );
+    if (got.status === 'failed') {
+      failed++;
+      waiting.push({ object: obj, mime });
       continue;
     }
-    if (budget.extracted >= MAX_EXTRACTIONS_PER_RUN) {
-      budget.deferred++;
-      continue;
-    }
-    budget.extracted++;
-    const extract = await extractBinaryFileContent(adapter, ctx, obj, format, {
-      version: typeof obj.modifiedAt === 'string' ? obj.modifiedAt : undefined,
-    });
-    if (extract.deferred) {
+    if (got.status === 'job') {
       try {
         await store.upsertPendingExtraction({
           objectId: obj.objectID,
-          jobToken: extract.deferred.jobToken,
+          jobToken: got.jobToken,
           recordJson: JSON.stringify(obj),
-          format,
+          format: kind.kind === 'binary' ? kind.format : mime,
         });
       } catch (err) {
         console.warn(
-          `${label} failed to record pending extraction for ${obj.objectID} (${format}); it stays metadata-only:`,
+          `${label} failed to record pending extraction for ${obj.objectID}; it stays metadata-only:`,
           err instanceof Error ? err.message : String(err),
         );
       }
-      continue;
     }
-    obj.content = extract.text;
+    // 'missing': the source says the file is gone; the walk's deletion handles it.
+  }
+  if (deferredDeadline > 0) {
+    console.warn(
+      `${label} content enrichment stopped at the tick deadline: ${deferredDeadline} file(s) import without their text this run and wait for a content fill`,
+    );
   }
   const extracted = budget.extracted - startExtracted;
   const deferredBudget = budget.deferred - startDeferred;
@@ -380,5 +482,20 @@ export async function enrichObjectsWithContent<TEntry>(
         (skippedThrottled > 0 ? `; ${skippedThrottled} rows skipped on rate-limited drives` : ''),
     );
   }
-  return { extracted, deferredBudget, deferredDeadline, skippedThrottled };
+  let recorded = 0;
+  let recordFailed: string | undefined;
+  if (waiting.length > 0 && opts.recordDeferred !== false) {
+    const r = await recordContentFills(store, ctx, waiting, { label });
+    recorded = r.recorded;
+    recordFailed = r.error;
+  }
+  return {
+    extracted,
+    deferredBudget,
+    deferredDeadline,
+    skippedThrottled,
+    failed,
+    recorded,
+    ...(recordFailed !== undefined ? { recordFailed } : {}),
+  };
 }

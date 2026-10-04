@@ -21,7 +21,8 @@ The package owns everything that must behave the same for every provider:
 | Fail closed | A file whose permissions cannot be read is skipped, never stamped `public`. A row whose principals do not validate is never sent, so one bad row cannot reject a whole batch |
 | Cursor discipline | The cursor moves only after its rows are imported, seen IDs recorded, deletions applied and events emitted. Any failure keeps the old cursor |
 | Unreadable permissions | A transient permission failure holds the cursor at that page so the file is retried (sprigr-apps#2419), bounded by `MAX_UNRESOLVED_HOLD_MS` |
-| Content | Text-like files up to 256 KB, native exports, and PDF/OOXML through the platform extract bridge (5 per pass, staged under random single-use keys); pptx and files of 16 MiB or more drain as durable jobs. Text is capped at 32000 chars, and a cut is logged and marked |
+| Content | Text-like files up to 256 KB, native exports, and PDF/OOXML through the platform extract bridge (5 per pass, staged under random single-use keys); pptx drains as a durable job. Binaries of 16 MiB or more stay metadata-only. Text is capped at 32000 chars, and a cut is logged and marked |
+| Content backlog | A file the pass could not fetch text for (the deadline passed, the 5-binary cap was spent, its drive answered 429, or the fetch threw) is queued for a content fill and filled by later passes of the same scope; `outcome.contentPending` counts what still waits (sprigr-apps#2702) |
 | Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty). A completed walk that saw NOTHING (the user emptied the drive) deletes every row under the prefix; on a truncated listing it deletes the listed subset and the next completed walk continues. An errored, cut or held walk, or one that established no cursor, deletes nothing (sprigr-apps#2690) |
 | Events | `<prefix>.file.created/updated/deleted` on incremental passes, with no per-run cap (sprigr-apps#2521). Pages are emitted in order, but the events WITHIN a page go out with bounded concurrency (`DEFAULT_FETCH_CONCURRENCY`, 6), so their order is not guaranteed; a subscriber that cares orders by `modifiedAt` |
 | Disconnect | `purgeActor` switches indexing off, unlinks the owner identity and deletes the scope's rows (sprigr-apps#2355) |
@@ -47,7 +48,8 @@ export async function runIndexFiles(env: DropboxEnv) {
     if (Date.now() >= deadline.at) break;                    // the rest sort first next tick
     if (!(await fileActorStillConnected(dropboxAdapter, scope, env))) continue;
     const outcome = await indexActorFiles(dropboxAdapter, store, env, scope, { deadline });
-    // audit outcome.indexed / skipped / unresolved / error as the app does today
+    // audit outcome.indexed / skipped / unresolved / error as the app does today;
+    // outcome.contentPending says how many files still wait for their text
   }
   await drainPendingExtractions(store, env); // its own 15 s slice
 }
@@ -165,6 +167,22 @@ async runExclusive(scope, walkKey, fn, { env, deadline }) {
 
 Team folders (Dropbox Business) slot in as `extraScopes`: one `ExtraScope` per team folder, each re-listed whole per pass, the same way microsoft-365 walks SharePoint libraries.
 
+## Content fills: the backlog a pass leaves
+
+A pass fetches text one file at a time and stops STARTING fetches at its deadline, after `MAX_EXTRACTIONS_PER_RUN` binaries, and for a drive that answered 429. The rows are still imported and the cursor still moves (the cursor discipline above is unchanged); each file left without the text it could have had is recorded in the store's pending-extraction table under the token `content-fill:<walkKey>`, so no migration is needed. A fetch that throws is recorded too. 0.1.1 imported those files metadata-only and forgot them, so a 300-file burst into Dropbox left 215 files searchable by name only, with the status still `ok` (sprigr-apps#2702).
+
+Every later `indexActorFiles` pass of the same scope ends with a drain: after the cursor moves, it reads up to `MAX_CONTENT_FILLS_PER_PASS` (100) of the scope's rows, least recently touched first, and fills them one by one while at least `MIN_ITEM_BUDGET_MS` is left of BOTH the pass deadline and its own `CONTENT_FILL_BUDGET_MS` (15 s) slice. It shares the pass's extraction cap and 429 set, and it never runs a pass past its deadline: a webhook pass whose walk used its budget fills nothing, and the schedule's passes catch up. `contentFillBudgetMs: 0` turns the drain off for one pass (the rows wait); `maxContentFills` caps the rows read.
+
+Per row the drain:
+
+- re-reads the file when the adapter implements **`refetchEntry(object, ctx)`** (return the provider's current entry, or `null` when it is gone). A vanished file's row is dropped; the row is re-stamped from the current entry through the same fail-closed stamping as the walk, so its text is written under the principals the file has NOW, with its new revision, name and path. Unreadable permissions leave the row queued. Without `refetchEntry` it uses the stored record, which every walk that imports the file refreshes and every permission re-stamp updates;
+- fetches the text the way the walk does (`downloadText`, `exportNative`, or the extract bridge; a pptx turns into a durable extraction job);
+- imports the row through the validated `withAcl` import and deletes the queue row. A `withAcl` partial update cannot carry `content` (the platform only allows `acl_principals` there), so the row is imported whole.
+
+A row is dropped (and logged) when the file vanished (`refetchEntry` returned null, or `downloadText` returned `{ missing: true }`), no longer qualifies for text, lost every principal, or its fetch failed `MAX_CONTENT_FILL_ATTEMPTS` (5) times. A walk that imports the file WITH its text drops the row; a deleted file, the reconcile and `purgeActor` drop it as well. A file that already has a platform extraction job or an app's own queue row is never overwritten by a fill.
+
+Show the backlog. `outcome.contentPending` (and `countPendingContentFills(store, scope)` for a status tool) is the number of files of that scope still searchable by name only; `describeContentPending(n)` gives the sentence for the agent reading the status ("12 files are searchable by name only until their text is processed; a search by what a file says can miss it until then, so read the file itself before saying its text does not exist."). An app that reports "ok" while this is above zero tells agents the text does not exist.
+
 ## The store
 
 A new app uses the package's default tables: copy `DEFAULT_FILE_INDEXING_SCHEMA_SQL` into its first file-indexing migration (the app owns its migrations, which are immutable once published) and call `createD1FileIndexingStore(env.DB)` with no config. The two existing apps keep their tables:
@@ -216,6 +234,8 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 - **`purgeActor` returns `complete: false`**: the rest is yours to queue; see "Disconnect purge" above. A failed pass is in `errors` as `purge <prefix>: <message>`.
 - **`purgeIndexPrefix` returns `error`**: the listing or a delete failed; `removed` counts what went before it. It no longer throws (0.1.0 did).
 - **Reconcile skipped with "walk state moved"**: another invocation finished or restarted the walk; its reconcile covers it.
+- **`content_fill_record_failed: ...`**: the files this pass could not fetch text for could not be queued (a store write failed). The pass keeps its cursor and imports nothing, so the next pass re-walks them rather than importing them without text and forgetting them.
+- **`outcome.contentPending > 0`**: files imported without their text that later passes are filling; see "Content fills" above. Not an error.
 
 ## Upgrading from 0.1.0
 
@@ -227,11 +247,24 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 4. **A completed full walk of an empty source now reconciles** (sprigr-apps#2690). 0.1.0 skipped the reconcile whenever the walk saw zero entries, so an emptied drive kept every row, full text searchable. Now every row under the prefix goes, but only when the walk reached its final page with no error, cut or hold and established a cursor. A truncated listing deletes the listed subset, and the next completed walk deletes more. An adapter with `reconcilePrefixes` is called with an empty seen list and decides which prefixes that covers (microsoft-365's returns none, so its SharePoint rows stay out of it). A direct `reconcileWalk` call must pass `{ completedWalk: true }` to get this.
 5. **`drainPendingExtractions` never starts a row with 0 ms or less left.** `minItemMs: 0` used to start one at exactly the deadline; it now behaves like `minItemMs: 1`, so an app that passed `1` to get that behaviour can keep it or drop it.
 
+## Upgrading from 0.1.1
+
+0.1.2 (sprigr-apps#2702) needs no migration: content fills live in the pending-extraction table every app already has. Bump the pin, then:
+
+1. **Show `contentPending`.** `indexActorFiles` now returns `contentDeferred`, `contentFilled` and `contentPending`. Wire `contentPending` (or `countPendingContentFills(store, scope)`) into the status the app shows, with `describeContentPending`, instead of reporting a bare "ok" while files wait for their text.
+2. **A store with its own `listPendingExtractions` SQL must leave content-fill rows out** (`substr(job_token, 1, length('content-fill:')) != 'content-fill:'`, or `!isContentFillToken(row.job_token)`). `drainPendingExtractions` skips any it is handed, but a listing that returns them can fill its page with them and starve the real extraction jobs. dropbox's `withoutRivieraRows` is one.
+3. **Optional: implement `refetchEntry`** so a fill re-reads the file's current permissions and revision and drops a vanished file at once.
+4. **Optional: return `{ text: '', missing: true }` from `downloadText`** when the provider says the file is gone, so its fill is dropped instead of retried.
+5. **Behaviour changes.** `EnrichSummary.deferredDeadline` and `skippedThrottled` now count only files that could have had text (0.1.1 counted folders and metadata-only files too), and `enrichObjectsWithContent` records its deferrals unless called with `recordDeferred: false`. `listPendingExtractionsFor` also returns `job_token`. `store.enable` clears the scope's old fills, and the permission re-stamp writes the new principals into waiting rows' stored records too. A binary of 16 MiB or more was never extracted (the old comment said it drained as a job; it did not) and still stays metadata-only.
+6. **`EXTRACTION_DRAIN_BUDGET_MS` is unchanged**, and a pass never runs past its deadline: the fill drain only uses time the pass has left.
+
 ## API
 
 Grammar: `PUBLIC_PRINCIPAL`, `ACL_PRINCIPALS_ATTR`, `userPrincipal`, `groupPrincipal`, `orgPrincipal`, `isValidPrincipal`, `normalizePrincipal`, `stampedPrincipalsValid`.
 
-Content: `MAX_CONTENT_BYTES`, `MAX_CONTENT_CHARS`, `MAX_EXTRACT_INLINE_BYTES`, `MAX_EXTRACTIONS_PER_RUN`, `EXTRACT_STAGING_PREFIX`, `CONTENT_TRUNCATION_MARKER`, `extractFormatForMime`, `isTextLikeMimeType`, `capText`, `buildExtractJobToken`, `extractBinaryFileContent`, `enrichObjectsWithContent`.
+Content: `MAX_CONTENT_BYTES`, `MAX_CONTENT_CHARS`, `MAX_EXTRACT_INLINE_BYTES`, `MAX_EXTRACTIONS_PER_RUN`, `EXTRACT_STAGING_PREFIX`, `CONTENT_TRUNCATION_MARKER`, `extractFormatForMime`, `isTextLikeMimeType`, `capText`, `buildExtractJobToken`, `extractBinaryFileContent`, `enrichObjectsWithContent`, `contentKindFor`, `fetchObjectContent`.
+
+Content fills: `CONTENT_FILL_TOKEN_PREFIX`, `CONTENT_FILL_BUDGET_MS`, `MAX_CONTENT_FILLS_PER_PASS`, `MAX_CONTENT_FILL_ATTEMPTS`, `contentFillToken`, `isContentFillToken`, `storeSupportsContentFills`, `recordContentFills`, `drainContentFills`, `countPendingContentFills`, `describeContentPending`, `syncPendingRecordPrincipals`.
 
 Passes: `indexActorFiles`, `reconcileWalk`, `drainPendingExtractions`, `refreshPendingExtractions`, `forgetPendingExtractions`, `purgeActor`, `purgeIndexPrefix`, `refreshAclPrincipals`, `aclRefreshDue`, `countIndexedItems`, `importFileObjects`, `emitFileEvents`, `actorOfFileRow`, `fileActorStillConnected`.
 

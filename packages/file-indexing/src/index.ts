@@ -18,6 +18,10 @@
  *     await indexActorFiles(driveAdapter, store, env, scope, { deadline });
  *   }
  *   await drainPendingExtractions(store, env);
+ *
+ * Files a pass could not fetch text for (deadline, extraction cap, 429) are
+ * queued and filled by later passes of the same scope (0.1.2, content-fill.ts);
+ * `outcome.contentPending` says how many still wait.
  */
 
 export {
@@ -45,8 +49,25 @@ export {
   buildExtractJobToken,
   extractBinaryFileContent,
   enrichObjectsWithContent,
+  contentKindFor,
+  fetchObjectContent,
 } from './content';
-export type { BinaryExtractResult, ExtractionBudget, EnrichSummary } from './content';
+export type { BinaryExtractResult, ExtractionBudget, EnrichSummary, ContentKind, ContentFetch } from './content';
+
+export {
+  CONTENT_FILL_TOKEN_PREFIX,
+  CONTENT_FILL_BUDGET_MS,
+  MAX_CONTENT_FILLS_PER_PASS,
+  MAX_CONTENT_FILL_ATTEMPTS,
+  contentFillToken,
+  isContentFillToken,
+  storeSupportsContentFills,
+  recordContentFills,
+  countPendingContentFills,
+  describeContentPending,
+  drainContentFills,
+} from './content-fill';
+export type { ContentFillOptions, ContentFillOutcome } from './content-fill';
 
 export { MAX_OBJECTS_PER_IMPORT, importFileObjects, partitionValidObjects } from './import';
 
@@ -60,6 +81,7 @@ export {
   drainPendingExtractions,
   refreshPendingExtractions,
   forgetPendingExtractions,
+  syncPendingRecordPrincipals,
 } from './pending';
 export type { DrainOptions } from './pending';
 
