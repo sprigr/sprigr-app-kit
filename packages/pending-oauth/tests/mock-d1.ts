@@ -84,7 +84,11 @@ function makeStmt(
       return makeStmt(sql, [...args, ...next], state, completions, log);
     },
     async run() {
-      execStatement(sql, args, state, completions, log);
+      const result = execStatement(sql, args, state, completions, log);
+      // Report rows changed the way D1 does, for the statements that count.
+      if (result && typeof result === 'object' && 'changes' in result) {
+        return { meta: { changes: (result as { changes: number }).changes } };
+      }
       return {};
     },
     async first<T = unknown>(): Promise<T | null> {
@@ -138,8 +142,10 @@ function execStatement(
   const delOne = DELETE_ONE_RX.exec(normalized);
   if (delOne) {
     const rows = ensure(state, delOne[1] as string);
-    delete rows[String(args[0])];
-    return null;
+    const key = String(args[0]);
+    const existed = key in rows;
+    delete rows[key];
+    return { changes: existed ? 1 : 0 };
   }
 
   const delOld = DELETE_OLD_RX.exec(normalized);

@@ -13,7 +13,7 @@ import {
   makePendingOAuthStore,
   DEFAULT_PENDING_TTL_MS,
 } from '../src/store';
-import type { PendingStateBase } from '../src/types';
+import type { D1Like, D1PreparedStatementLike, PendingStateBase } from '../src/types';
 
 const TABLE = 'demo_pending_oauth';
 
@@ -40,6 +40,38 @@ describe('makePendingOAuthStore', () => {
 
     const got = await store.consume('csrf-a');
     expect(got).toEqual(state);
+  });
+
+  it('lets exactly one of two concurrent consumes of the same csrf have the payload (S017-04)', async () => {
+    const { db } = makeMockD1();
+    const store = makePendingOAuthStore<DemoState>({ db, table: TABLE });
+    await store.store(demo('csrf-race'));
+
+    // Both calls read the row before either deletes it: the interleaving a
+    // replayed or double-submitted provider callback produces.
+    const results = await Promise.all([store.consume('csrf-race'), store.consume('csrf-race')]);
+
+    expect(results.filter((r) => r !== null)).toHaveLength(1);
+    expect(results.filter((r) => r === null)).toHaveLength(1);
+  });
+
+  it('keeps the previous behaviour when the binding reports no meta.changes', async () => {
+    const payload = JSON.stringify(demo('csrf-nometa'));
+    const db: D1Like = {
+      prepare(sql: string): D1PreparedStatementLike {
+        const stmt: D1PreparedStatementLike = {
+          bind: () => stmt,
+          run: async () => undefined,
+          first: async <T,>() =>
+            (sql.startsWith('SELECT') ? { payload, created_at: Date.now() } : null) as T | null,
+          all: async <T,>() => ({ results: [] as T[] }),
+        };
+        return stmt;
+      },
+    };
+    const store = makePendingOAuthStore<DemoState>({ db, table: TABLE });
+
+    expect(await store.consume('csrf-nometa')).toMatchObject({ csrf: 'csrf-nometa' });
   });
 
   it('is single-use: a second consume of the same csrf returns null (replay)', async () => {

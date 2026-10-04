@@ -119,7 +119,16 @@ export function makePendingOAuthStore<T extends PendingStateBase>(
         .first<{ payload: string; created_at: number }>();
       if (!row) return null;
       // Delete on read - pending state is single-use (blocks replay).
-      await db.prepare(`DELETE FROM ${table} WHERE csrf = ?`).bind(csrf).run();
+      const deleted = await db.prepare(`DELETE FROM ${table} WHERE csrf = ?`).bind(csrf).run();
+      // Two callbacks for the same csrf can both read the row before either
+      // deletes it. Only the call whose DELETE actually removed the row may
+      // use the payload; the other lost the race and gets null, exactly as
+      // if it had arrived second (sprigr/sprigr-apps#2613, S017-04). D1
+      // reports this as meta.changes. A binding that reports no meta (some
+      // app test doubles) keeps the previous behaviour, so the check never
+      // refuses a consume it cannot judge.
+      const changes = (deleted as { meta?: { changes?: unknown } } | null | undefined)?.meta?.changes;
+      if (typeof changes === 'number' && changes < 1) return null;
       if (Date.now() - row.created_at > window) return null;
       try {
         return JSON.parse(row.payload) as T;
