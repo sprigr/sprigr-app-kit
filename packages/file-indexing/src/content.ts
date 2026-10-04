@@ -22,7 +22,7 @@
 
 import { deleteAppFile, hmacSha256Hex, randomHex, resolveInstallBridge } from '@sprigr/apps-app-sdk';
 import type { ExtractFormat, FileIndexingContext, FileSourceAdapter, FileIndexingStore, IndexedFileObject } from './types';
-import { deadlinePassed } from './tick-budget';
+import { deadlinePassed, type Deadline } from './tick-budget';
 import { recordContentFills } from './content-fill';
 
 /** Only TEXT-LIKE files at or under this many bytes are downloaded. */
@@ -264,6 +264,9 @@ export interface ExtractionBudget {
 }
 
 export interface EnrichSummary {
+  /** Content fetches started (text, native export or extract), 0.1.3. A
+   *  pass whose walk started none is idle for the content-fill drain. */
+  attempted: number;
   extracted: number;
   deferredBudget: number;
   /** Eligible files not started because the tick deadline passed (0.1.1
@@ -390,6 +393,11 @@ export async function enrichObjectsWithContent<TEntry>(
     throttled?: Set<string>;
     /** Record deferred files for a later content fill (default true). */
     recordDeferred?: boolean;
+    /** Stop STARTING fetches at this deadline instead of `ctx.deadline`
+     *  (0.1.3, sprigr-apps#2725): a pass with a content-fill backlog ends its
+     *  walk's fetches early so the drain keeps its slice. Fetches still run
+     *  under `ctx`, so their own caps are unchanged. */
+    deadline?: Deadline;
   } = {},
 ): Promise<EnrichSummary> {
   const label = adapter.logLabel ?? '[file-indexing]';
@@ -397,6 +405,8 @@ export async function enrichObjectsWithContent<TEntry>(
   const throttled = opts.throttled ?? new Set<string>();
   const startExtracted = budget.extracted;
   const startDeferred = budget.deferred;
+  const stopAt = opts.deadline ?? ctx.deadline;
+  let attempted = 0;
   let deferredDeadline = 0;
   let skippedThrottled = 0;
   let failed = 0;
@@ -415,7 +425,7 @@ export async function enrichObjectsWithContent<TEntry>(
       }
       continue;
     }
-    if (!cut && deadlinePassed(ctx.deadline, ctx.now)) cut = true;
+    if (!cut && deadlinePassed(stopAt, ctx.now)) cut = true;
     if (cut) {
       deferredDeadline++;
       waiting.push({ object: obj, mime });
@@ -435,6 +445,7 @@ export async function enrichObjectsWithContent<TEntry>(
       }
       budget.extracted++;
     }
+    attempted++;
     const got = await fetchObjectContent(adapter, ctx, obj, mime, kind);
     if (got.status === 'filled') {
       obj.content = got.text;
@@ -490,6 +501,7 @@ export async function enrichObjectsWithContent<TEntry>(
     recordFailed = r.error;
   }
   return {
+    attempted,
     extracted,
     deferredBudget,
     deferredDeadline,

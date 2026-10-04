@@ -22,7 +22,7 @@ The package owns everything that must behave the same for every provider:
 | Cursor discipline | The cursor moves only after its rows are imported, seen IDs recorded, deletions applied and events emitted. Any failure keeps the old cursor |
 | Unreadable permissions | A transient permission failure holds the cursor at that page so the file is retried (sprigr-apps#2419), bounded by `MAX_UNRESOLVED_HOLD_MS` |
 | Content | Text-like files up to 256 KB, native exports, and PDF/OOXML through the platform extract bridge (5 per pass, staged under random single-use keys); pptx drains as a durable job. Binaries of 16 MiB or more stay metadata-only. Text is capped at 32000 chars, and a cut is logged and marked |
-| Content backlog | A file the pass could not fetch text for (the deadline passed, the 5-binary cap was spent, its drive answered 429, or the fetch threw) is queued for a content fill and filled by later passes of the same scope; `outcome.contentPending` counts what still waits (sprigr-apps#2702) |
+| Content backlog | A file the pass could not fetch text for (the deadline passed, the 5-binary cap was spent, its drive answered 429, or the fetch threw) is queued for a content fill and filled by later passes of the same scope, 4 rows at a time (sprigr-apps#2725); `outcome.contentPending` counts what still waits (sprigr-apps#2702) |
 | Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty). A completed walk that saw NOTHING (the user emptied the drive) deletes every row under the prefix; on a truncated listing it deletes the listed subset and the next completed walk continues. An errored, cut or held walk, or one that established no cursor, deletes nothing (sprigr-apps#2690) |
 | Events | `<prefix>.file.created/updated/deleted` on incremental passes, with no per-run cap (sprigr-apps#2521). Pages are emitted in order, but the events WITHIN a page go out with bounded concurrency (`DEFAULT_FETCH_CONCURRENCY`, 6), so their order is not guaranteed; a subscriber that cares orders by `modifiedAt` |
 | Disconnect | `purgeActor` switches indexing off, unlinks the owner identity and deletes the scope's rows (sprigr-apps#2355) |
@@ -171,7 +171,19 @@ Team folders (Dropbox Business) slot in as `extraScopes`: one `ExtraScope` per t
 
 A pass fetches text one file at a time and stops STARTING fetches at its deadline, after `MAX_EXTRACTIONS_PER_RUN` binaries, and for a drive that answered 429. The rows are still imported and the cursor still moves (the cursor discipline above is unchanged); each file left without the text it could have had is recorded in the store's pending-extraction table under the token `content-fill:<walkKey>`, so no migration is needed. A fetch that throws is recorded too. 0.1.1 imported those files metadata-only and forgot them, so a 300-file burst into Dropbox left 215 files searchable by name only, with the status still `ok` (sprigr-apps#2702).
 
-Every later `indexActorFiles` pass of the same scope ends with a drain: after the cursor moves, it reads up to `MAX_CONTENT_FILLS_PER_PASS` (100) of the scope's rows, least recently touched first, and fills them one by one while at least `MIN_ITEM_BUDGET_MS` is left of BOTH the pass deadline and its own `CONTENT_FILL_BUDGET_MS` (15 s) slice. It shares the pass's extraction cap and 429 set, and it never runs a pass past its deadline: a webhook pass whose walk used its budget fills nothing, and the schedule's passes catch up. `contentFillBudgetMs: 0` turns the drain off for one pass (the rows wait); `maxContentFills` caps the rows read.
+Every later `indexActorFiles` pass of the same scope ends with a drain: after the cursor moves, it reads up to `MAX_CONTENT_FILLS_PER_PASS` (200) of the scope's rows, least recently touched first, and works on `CONTENT_FILL_CONCURRENCY` (4) of them at once. A row starts only while at least `MIN_ITEM_BUDGET_MS` is left of BOTH the pass deadline and the drain's slice; rows in flight when either runs out finish. It shares the pass's extraction cap and 429 set, and it never runs a pass past its deadline. The filled rows go to the index in `data.import` calls of up to `CONTENT_FILL_IMPORT_CHUNK` (100) rows, and their queue rows are deleted in one batch per call.
+
+How much of a pass the drain gets (0.1.3, sprigr-apps#2725):
+
+- **A pass whose walk fetched no text** (nothing changed, or only metadata) and that has a deadline gets `IDLE_CONTENT_FILL_BUDGET_MS` (45 s), still capped by the deadline. With no deadline the slice stays 15 s.
+- **A busy pass** gets `CONTENT_FILL_BUDGET_MS` (15 s). When the scope already had rows waiting at the start of the pass, the walk stops STARTING its own content fetches that long before the deadline (at most half of what is left), so a big walk no longer leaves the drain nothing. The files the walk did not start are queued like any other deferral and the drain fetches them concurrently.
+- **`contentFillBudgetMs: 0`** turns the drain off for one pass (the rows wait), and with it the early stop: the walk keeps the whole deadline, exactly as in 0.1.2. Webhook passes use this.
+
+Knobs per call: `contentFillBudgetMs`, `idleContentFillBudgetMs`, `contentFillConcurrency`, `maxContentFills`.
+
+A 429 stops new rows on that throttle key for the rest of the pass, from a download (`{ throttled: true }`) or from `refetchEntry` (an error with `status === 429`, or whatever `adapter.isThrottleError` says). Such a row waits without spending an attempt. Measured on virtual time with staging's per-row cost (1.1 s: re-read, permissions, download), 300 queued rows fill in two 60 s scheduled ticks (164, then 136) against 13 per tick in 0.1.2 (`__tests__/content-fill-throughput.test.ts`).
+
+When the env has `env.SPRIGR.log`, each drain writes one `file_indexing.content_fill` row (filled, converted, dropped, waiting, not started, pending before and after, slice, peak in flight, elapsed) to the platform's system logs, so the rate can be read without D1.
 
 Per row the drain:
 
@@ -258,13 +270,23 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 5. **Behaviour changes.** `EnrichSummary.deferredDeadline` and `skippedThrottled` now count only files that could have had text (0.1.1 counted folders and metadata-only files too), and `enrichObjectsWithContent` records its deferrals unless called with `recordDeferred: false`. `listPendingExtractionsFor` also returns `job_token`. `store.enable` clears the scope's old fills, and the permission re-stamp writes the new principals into waiting rows' stored records too. A binary of 16 MiB or more was never extracted (the old comment said it drained as a job; it did not) and still stays metadata-only.
 6. **`EXTRACTION_DRAIN_BUDGET_MS` is unchanged**, and a pass never runs past its deadline: the fill drain only uses time the pass has left.
 
+## Upgrading from 0.1.2
+
+0.1.3 (sprigr-apps#2725) needs no migration and no code change. Bump the pin; the content-fill drain gets faster on its own. What changes:
+
+1. **Up to 4 rows in flight.** Each row is still re-read, re-stamped and fetched in order, so about 12 source calls can be in flight from one drain. A 429 stops new rows on its key for the pass, and a 429 from `refetchEntry` no longer spends one of the row's attempts. Lower it with `contentFillConcurrency` if a source needs it.
+2. **An idle scheduled pass drains for up to 45 s** (`IDLE_CONTENT_FILL_BUDGET_MS`), still inside its deadline. A pass with no deadline keeps 15 s.
+3. **A busy pass with a backlog stops its walk's content fetches 15 s early** (at most half of what is left), and the drain gets that time. That pass may queue a few more files for a fill than 0.1.2 did, each one row write plus its delete; it only happens while a backlog exists. `contentFillBudgetMs: 0` passes (webhooks) are unchanged.
+4. **`MAX_CONTENT_FILLS_PER_PASS` is 200** (was 100), and the drain imports in calls of up to 100 rows.
+5. **New:** `ContentFillOutcome.peakInFlight`, `EnrichSummary.attempted`, the `deadline` option of `enrichObjectsWithContent`, the optional `adapter.isThrottleError`, and the optional `env.SPRIGR.log` member (`FileIndexingLogEntry`). An app whose env already declares the app-sdk's `SprigrLogFn` fits it.
+
 ## API
 
 Grammar: `PUBLIC_PRINCIPAL`, `ACL_PRINCIPALS_ATTR`, `userPrincipal`, `groupPrincipal`, `orgPrincipal`, `isValidPrincipal`, `normalizePrincipal`, `stampedPrincipalsValid`.
 
 Content: `MAX_CONTENT_BYTES`, `MAX_CONTENT_CHARS`, `MAX_EXTRACT_INLINE_BYTES`, `MAX_EXTRACTIONS_PER_RUN`, `EXTRACT_STAGING_PREFIX`, `CONTENT_TRUNCATION_MARKER`, `extractFormatForMime`, `isTextLikeMimeType`, `capText`, `buildExtractJobToken`, `extractBinaryFileContent`, `enrichObjectsWithContent`, `contentKindFor`, `fetchObjectContent`.
 
-Content fills: `CONTENT_FILL_TOKEN_PREFIX`, `CONTENT_FILL_BUDGET_MS`, `MAX_CONTENT_FILLS_PER_PASS`, `MAX_CONTENT_FILL_ATTEMPTS`, `contentFillToken`, `isContentFillToken`, `storeSupportsContentFills`, `recordContentFills`, `drainContentFills`, `countPendingContentFills`, `describeContentPending`, `syncPendingRecordPrincipals`.
+Content fills: `CONTENT_FILL_TOKEN_PREFIX`, `CONTENT_FILL_BUDGET_MS`, `IDLE_CONTENT_FILL_BUDGET_MS`, `CONTENT_FILL_CONCURRENCY`, `CONTENT_FILL_IMPORT_CHUNK`, `MAX_CONTENT_FILLS_PER_PASS`, `MAX_CONTENT_FILL_ATTEMPTS`, `contentFillToken`, `isContentFillToken`, `storeSupportsContentFills`, `recordContentFills`, `drainContentFills`, `countPendingContentFills`, `describeContentPending`, `syncPendingRecordPrincipals`.
 
 Passes: `indexActorFiles`, `reconcileWalk`, `drainPendingExtractions`, `refreshPendingExtractions`, `forgetPendingExtractions`, `purgeActor`, `purgeIndexPrefix`, `refreshAclPrincipals`, `aclRefreshDue`, `countIndexedItems`, `importFileObjects`, `emitFileEvents`, `actorOfFileRow`, `fileActorStillConnected`.
 
