@@ -709,3 +709,12 @@ export type {
   ConnectCompleteRequest,
   ConnectCompleteResult,
 } from './inbox';
+export {
+  APP_FILES_ROOT,
+  APP_OWNER_SEGMENT,
+  agentFileKeyFromUrl,
+  readableStoredKey,
+  appKeyFromCallerKey,
+  callerKeyRefusal,
+} from './stored-file-keys';
+export type { CallerKeyResolution } from './stored-file-keys';
