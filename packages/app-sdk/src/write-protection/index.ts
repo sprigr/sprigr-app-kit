@@ -10,6 +10,7 @@ export type {
   UndoFidelity,
 } from './types';
 export { UNIT_SEP, approvalHash, set, seq } from './approval-hash';
+export { APPROVAL_PREVIEW_MAX, approvalPreview, approvalRecipients } from './approval-card';
 export { InvalidUndoEnvelopeError, fullWarning, recreatedWarning, undoEnvelope } from './undo-envelope';
 export { archiveOfferRefusal, refuseWithoutForce } from './refuse-without-force';
 export type { ArchiveOfferOptions, ArchiveOfferRefusal } from './refuse-without-force';

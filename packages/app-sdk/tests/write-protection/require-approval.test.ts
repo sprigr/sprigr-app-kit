@@ -182,6 +182,46 @@ describe('requireApproval: _approval.count (decision 0039)', () => {
 });
 
 
+describe('requireApproval: _approval.unattended (sprigr-team decision 0160)', () => {
+  const handlers = {
+    send_mail: vi.fn(async () => ({ ok: true })),
+    delete_mail: vi.fn(async () => ({ ok: true })),
+  };
+  const gated = requireApproval(handlers, {
+    send_mail: {
+      keys: ['to'],
+      describe: (target) => ({ question: `Send to ${target}?`, header: 'Mail' }),
+      unattended: 'proceed',
+    },
+    delete_mail: {
+      keys: ['id'],
+      describe: (target) => ({ question: `Delete ${target}?`, header: 'Mail' }),
+    },
+  }, opts());
+  const env: Env = { defaultStore: 'acme.myshopify.com' };
+
+  it("carries unattended: 'proceed' when the spec asks for it", async () => {
+    const r = (await gated.send_mail({ to: 'a@b.com' }, env, {} as never)) as { _approval: Record<string, unknown> };
+    expect(r._approval.unattended).toBe('proceed');
+    expect(handlers.send_mail).not.toHaveBeenCalled();
+  });
+
+  it('leaves it off otherwise, so the platform keeps withholding unattended writes', async () => {
+    const r = (await gated.delete_mail({ id: 'm1' }, env, {} as never)) as { _approval: Record<string, unknown> };
+    expect(r._approval).not.toHaveProperty('unattended');
+  });
+
+  it('does not change the grant hash, so a tap minted before the flag still redeems', async () => {
+    const withFlag = (await gated.send_mail({ to: 'a@b.com' }, env, {} as never)) as { _approval: { hash: string } };
+    const plain = requireApproval(handlers, {
+      send_mail: { keys: ['to'], describe: (target) => ({ question: `Send to ${target}?`, header: 'Mail' }) },
+    }, opts());
+    const without = (await plain.send_mail({ to: 'a@b.com' }, env, {} as never)) as { _approval: { hash: string } };
+    expect(withFlag._approval.hash).toBe(without._approval.hash);
+  });
+});
+
+
 /**
  * sprigr-app-kit#44: one gate-level `resolveConnection` cannot describe two
  * families of write truthfully. A spec may override it, and the two consumers

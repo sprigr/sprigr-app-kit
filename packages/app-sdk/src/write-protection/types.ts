@@ -88,6 +88,19 @@ export interface AppApprovalEnvelope {
    * `ApprovalSpec.count`.
    */
   count?: number;
+  /**
+   * What the platform does when nobody can be asked (a schedule, workflow
+   * step or delegation turn). Omitted, the write is withheld unless the
+   * step's standing approval covers it. `'proceed'` runs the granted pass
+   * instead, so the card appears only when a person is on the turn: the
+   * contract the platform's built-in email send gate has always had. Use it
+   * for writes automations legitimately make (sending mail, posting a chat
+   * message); keep the default for deletes, money and bulk writes. Needs a
+   * platform with sprigr-team decision 0160; an older one ignores it and
+   * withholds. Set it through `ApprovalSpec.unattended` when you use the
+   * wrappers.
+   */
+  unattended?: 'proceed';
 }
 
 /**
