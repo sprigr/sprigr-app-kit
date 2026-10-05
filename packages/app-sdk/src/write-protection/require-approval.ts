@@ -85,6 +85,13 @@ export interface ApprovalSpec<P = unknown, E = unknown> {
    */
   count?: (args: ToolArgs) => number;
   /**
+   * `'proceed'`: ask only when a person is on the turn, and let an unattended
+   * run (schedule, workflow step, delegation) do the write. Omit to withhold
+   * unattended writes unless a standing approval covers them. See
+   * `AppApprovalEnvelope.unattended`.
+   */
+  unattended?: 'proceed';
+  /**
    * Overrides the gate's `resolveConnection` for THIS spec only; the gate's
    * value stays the default for every spec that omits it.
    *
@@ -273,6 +280,7 @@ async function askPass<E, P>(
       ...spec.describe(target, params, connection),
       hash: approvalHash(...hashPrefix, rawId, connection, ...extra),
       ...(count !== undefined ? { count } : {}),
+      ...(spec.unattended === 'proceed' ? { unattended: 'proceed' as const } : {}),
     },
   };
 }
