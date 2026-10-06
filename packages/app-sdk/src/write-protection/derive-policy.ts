@@ -33,6 +33,8 @@ export interface DerivePolicyOptions {
   exempt?: readonly string[];
   /** Explicit rules that win over the verb table (e.g. a hand-written describe). */
   overrides?: Readonly<Record<string, ConfirmRule>>;
+  /** Approval spec keys; see `PolicySource.approvalCovered`. */
+  approvalCovered?: Iterable<string>;
 }
 
 export interface DerivedPolicy {
@@ -75,7 +77,7 @@ export function deriveConfirmationPolicy(registry: Iterable<string>, opts: Deriv
     }
     if (!hit) unmatched.push(name);
   }
-  const policy = buildConfirmationPolicy({ irreversible, always, rules: overrides }) as ConfirmationPolicy & {
+  const policy = buildConfirmationPolicy({ irreversible, always, rules: overrides, approvalCovered: opts.approvalCovered }) as ConfirmationPolicy & {
     actions: Record<string, ConfirmRule>;
   };
   return { policy, ungated, unmatched };

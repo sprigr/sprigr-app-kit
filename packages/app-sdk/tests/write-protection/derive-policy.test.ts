@@ -40,3 +40,16 @@ describe('deriveConfirmationPolicy', () => {
     expect(checkConfirmationPolicy({ policy, registry, ungated: [...ungated, 'create_job'], nestedUnderInput: true })).toEqual([]);
   });
 });
+
+describe('deriveConfirmationPolicy: approvalCovered', () => {
+  it('stamps attended on derived and overridden rules the specs cover', () => {
+    const { policy } = deriveConfirmationPolicy(['delete_job', 'archive_job', 'cancel_job', 'list_jobs'], {
+      rules: commonDestructiveVerbs('in ServiceM8'),
+      overrides: { cancel_job: { always: true, describe: 'Cancel job {input.uuid}' } },
+      approvalCovered: ['delete_job', 'cancel_job'],
+    });
+    expect(policy.actions.delete_job.attended).toBe('approval_card');
+    expect(policy.actions.cancel_job.attended).toBe('approval_card');
+    expect(policy.actions.archive_job.attended).toBeUndefined();
+  });
+});

@@ -61,3 +61,55 @@ describe('checkConfirmationPolicy', () => {
     expect(findings).toEqual([]);
   });
 });
+
+describe('attended: approval_card (sprigr-team decision 0167)', () => {
+  const src = {
+    irreversible: { delete_job: 'Delete job {input.uuid}' },
+    always: { update_job: 'Update job {input.uuid}', send_sms: 'Send an SMS to {input.to}' },
+  };
+
+  it('stamps the key on gated actions an approval spec covers, and only those', () => {
+    const policy = buildConfirmationPolicy({ ...src, approvalCovered: ['delete_job', 'send_sms', 'record_payment'] });
+    expect(policy.actions?.delete_job?.attended).toBe('approval_card');
+    expect(policy.actions?.send_sms?.attended).toBe('approval_card');
+    expect(policy.actions?.update_job?.attended).toBeUndefined();
+    // A spec with no rule stays without one: it already asks once.
+    expect(policy.actions?.record_payment).toBeUndefined();
+  });
+
+  const registry = ['delete_job', 'update_job', 'send_sms'];
+
+  it('passes a policy built from the same specs it is checked against', () => {
+    const covered = ['delete_job', 'send_sms'];
+    const policy = buildConfirmationPolicy({ ...src, approvalCovered: covered });
+    expect(checkConfirmationPolicy({ policy, registry, approvalCovered: covered })).toEqual([]);
+  });
+
+  it('fails a covered, gated action that lacks the key (it asks twice)', () => {
+    const policy = buildConfirmationPolicy(src);
+    expect(checkConfirmationPolicy({ policy, registry, approvalCovered: ['delete_job'] }))
+      .toEqual(["delete_job: an approval spec covers it but the rule lacks attended: 'approval_card', so it asks twice"]);
+  });
+
+  it('fails a key no spec covers (it removes the only prompt)', () => {
+    const policy = buildConfirmationPolicy({ ...src, approvalCovered: ['update_job'] });
+    expect(checkConfirmationPolicy({ policy, registry, approvalCovered: [] }))
+      .toEqual(["update_job: attended: 'approval_card' but no approval spec covers it, so it removes the only prompt"]);
+  });
+
+  it('fails a key it cannot vouch for when approvalCovered is not passed', () => {
+    const policy = buildConfirmationPolicy({ ...src, approvalCovered: ['delete_job'] });
+    expect(checkConfirmationPolicy({ policy, registry }))
+      .toEqual(["delete_job: attended: 'approval_card' cannot be checked; pass approvalCovered (the approval spec keys)"]);
+  });
+
+  it('fails a value the platform would ignore', () => {
+    const policy = { actions: { delete_job: { always: true, describe: 'Delete', attended: 'card' as never } } };
+    expect(checkConfirmationPolicy({ policy, registry: ['delete_job'], approvalCovered: ['delete_job'] }))
+      .toEqual([`delete_job: attended must be 'approval_card' (got "card"); the platform ignores anything else`]);
+  });
+
+  it('leaves a policy with no keys and no approvalCovered exactly as before', () => {
+    expect(checkConfirmationPolicy({ policy: buildConfirmationPolicy(src), registry })).toEqual([]);
+  });
+});

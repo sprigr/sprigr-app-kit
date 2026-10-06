@@ -19,6 +19,14 @@ export interface PolicySource {
   always?: Record<string, string>;
   /** Full rules, for thresholds and anything the two maps above cannot express. */
   rules?: Record<string, ConfirmRule>;
+  /**
+   * The actions an approval spec covers: pass the keys of the specs object you
+   * hand to `dispatcherApproval` (`Object.keys(APPROVAL_SPECS)`). Each one that
+   * also has a rule here gets `attended: 'approval_card'`, so the person is
+   * asked once on an attended turn (the card) instead of twice. An action with
+   * a spec and no rule is left alone: it already asks once.
+   */
+  approvalCovered?: Iterable<string>;
 }
 
 /** Build a sorted `{ actions }` policy. An action named in two groups throws. */
@@ -31,6 +39,9 @@ export function buildConfirmationPolicy(src: PolicySource): ConfirmationPolicy {
   for (const [name, describe] of Object.entries(src.irreversible ?? {})) put(name, { always: true, describe, irreversible: true }, 'irreversible');
   for (const [name, describe] of Object.entries(src.always ?? {})) put(name, { always: true, describe }, 'always');
   for (const [name, rule] of Object.entries(src.rules ?? {})) put(name, rule, 'rules');
+  for (const name of src.approvalCovered ?? []) {
+    if (actions[name]) actions[name] = { ...actions[name], attended: 'approval_card' };
+  }
   return { actions: Object.fromEntries(Object.entries(actions).sort(([a], [b]) => a.localeCompare(b))) };
 }
 
@@ -77,12 +88,42 @@ export interface PolicyCheckInput {
    */
   nestedUnderInput?: boolean;
   moneyFields?: readonly string[];
+  /**
+   * The actions an approval spec covers (the keys of your `dispatcherApproval`
+   * specs). With it, the check fails a rule carrying `attended:
+   * 'approval_card'` that no spec covers (that key removes the person's only
+   * prompt) and a covered, gated action that lacks the key (it asks twice).
+   * Without it, any `attended` key is itself a finding, because nothing can
+   * vouch for it.
+   */
+  approvalCovered?: Iterable<string>;
 }
 
 const PLACEHOLDER = /\{([a-zA-Z0-9_.]+)\}/g;
 
 function conditions(rule: ConfirmRule) {
   return !rule.when ? [] : Array.isArray(rule.when) ? rule.when : [rule.when];
+}
+
+/**
+ * Findings for one rule's `attended` key against the approval specs. Exported
+ * for apps whose gated tools are flat (`requireApproval`) rather than one
+ * dispatcher: run it over each tool-level rule with the tool names the specs
+ * cover.
+ */
+export function attendedFindings(name: string, rule: ConfirmRule, covered: ReadonlySet<string> | null): string[] {
+  const out: string[] = [];
+  const attended = (rule as { attended?: unknown }).attended;
+  const gated = rule.always === true || conditions(rule).length > 0;
+  if (attended !== undefined && attended !== 'approval_card') {
+    out.push(`${name}: attended must be 'approval_card' (got ${JSON.stringify(attended)}); the platform ignores anything else`);
+  } else if (attended === 'approval_card') {
+    if (!covered) out.push(`${name}: attended: 'approval_card' cannot be checked; pass approvalCovered (the approval spec keys)`);
+    else if (!covered.has(name)) out.push(`${name}: attended: 'approval_card' but no approval spec covers it, so it removes the only prompt`);
+  } else if (covered?.has(name) && gated) {
+    out.push(`${name}: an approval spec covers it but the rule lacks attended: 'approval_card', so it asks twice`);
+  }
+  return out;
 }
 
 /**
@@ -96,9 +137,11 @@ export function checkConfirmationPolicy(input: PolicyCheckInput): string[] {
   const nested = input.nestedUnderInput ?? true;
   const money = new Set(input.moneyFields ?? DEFAULT_MONEY_FIELDS);
   const actions = input.policy.actions ?? {};
+  const covered = input.approvalCovered ? new Set(input.approvalCovered) : null;
   const out: string[] = [];
 
   for (const [name, rule] of Object.entries(actions)) {
+    out.push(...attendedFindings(name, rule, covered));
     if (!registry.has(name)) out.push(`dead rule: "${name}" is not in the registry, so it gates nothing`);
     if (!rule.always && conditions(rule).length === 0) out.push(`${name}: rule says nothing (no always, no when)`);
     if (!rule.describe || !rule.describe.trim()) out.push(`${name}: describe missing`);

@@ -30,6 +30,7 @@ export {
   DEFAULT_MONEY_FIELDS,
   DEFAULT_WRITE_PREFIXES,
   buildConfirmationPolicy,
+  attendedFindings,
   checkConfirmationPolicy,
 } from './confirmation-policy';
 export type { PolicyCheckInput, PolicySource } from './confirmation-policy';

@@ -185,6 +185,17 @@ send_email: {
 },
 ```
 
+**Asking once when T1 and T2 both gate an action.** An action with a confirmation rule and an approval spec asks a person twice on a chat turn: first in chat for `confirm: true`, then again on the card. Mark the rule `attended: 'approval_card'` and the platform skips the confirmation whenever the card will be raised, so the card is the one prompt. On an unattended run (where `unattended: 'proceed'` or a standing approval can write with no card) the confirmation still applies. Do not write the key by hand: pass the spec keys and let the builder stamp it, and let the check prove it matches.
+
+```ts
+const covered = Object.keys(APPROVAL_SPECS);
+export const POLICY = buildConfirmationPolicy({ irreversible, always, approvalCovered: covered });
+// in the test
+expect(checkConfirmationPolicy({ policy: POLICY, registry, approvalCovered: covered })).toEqual([]);
+```
+
+The check fails a key no spec covers (it would remove the person's only prompt) and a covered, gated action without one (it asks twice). `sprigr-check-write-protection` refuses a key with any other value, or one on a rule that gates nothing. It needs a platform carrying sprigr-team decision 0167; an older one ignores the key and keeps asking twice, so shipping early is harmless.
+
 ### Dispatcher tools
 
 A dispatcher (one tool, many actions) cannot wrap handlers, so it builds the gate once and calls it from the dispatch loop:

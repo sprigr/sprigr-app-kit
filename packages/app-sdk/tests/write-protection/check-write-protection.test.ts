@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore plain mjs, no types
-import { applyAllowlist, isDestructiveName, run, scanManifest } from '../../bin/check-write-protection.mjs';
+import { applyAllowlist, isDestructiveName, run, scanAttended, scanManifest } from '../../bin/check-write-protection.mjs';
 
 const tool = (name: string, extra: Record<string, unknown> = {}) => ({ name, description: '', handler: 'x', input_schema: { type: 'object', properties: {} }, ...extra });
 
@@ -43,6 +43,26 @@ describe('scanManifest', () => {
       tool('cw', { dispatch: { actionField: 'op' }, input_schema: { properties: { op: { enum: ['delete'] } } }, confirmation: { always: true, describe: 'all' } }),
     ] };
     expect(scanManifest(m)).toEqual(['xero:void_invoice', 'gorgias:<unenumerated>']);
+  });
+});
+
+describe('scanAttended', () => {
+  const tool = (confirmation: unknown) => ({ tools: [{ name: 'servicem8', confirmation }] });
+
+  it('accepts approval_card on a gated action or tool rule', () => {
+    expect(scanAttended(tool({ actions: { delete_job: { always: true, attended: 'approval_card' } } }))).toEqual([]);
+    expect(scanAttended(tool({ always: true, attended: 'approval_card' }))).toEqual([]);
+    expect(scanAttended(tool({ always: true }))).toEqual([]);
+  });
+
+  it('refuses any other value', () => {
+    expect(scanAttended(tool({ actions: { delete_job: { always: true, attended: true } } })))
+      .toEqual(["servicem8:delete_job: attended must be 'approval_card', got true"]);
+  });
+
+  it('refuses the key on a rule that gates nothing', () => {
+    expect(scanAttended(tool({ actions: { delete_job: { attended: 'approval_card', describe: 'x' } } })))
+      .toEqual(['servicem8:delete_job: attended on a rule with no always or when, so it gates nothing']);
   });
 });
 
