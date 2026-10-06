@@ -308,14 +308,20 @@ export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts {
    */
   createIfNotExists?: boolean;
   /**
-   * Re-stamp `acl_principals` on rows already in the app's `-acl-files`
-   * index without rewriting the rest of each row. Every object must be
-   * exactly `{ objectID, acl_principals }` with a non-empty, valid principal
-   * list; `createIfNotExists` and `index` are refused alongside it. Use it
-   * when the source changes who may see an item without reporting the item
-   * as changed (OneDrive's delta omits sharing-only changes). Needs a
-   * platform with sprigr/sprigr-team#9843; older wrappers drop the flag,
-   * which `partialUpdateData` detects and throws on.
+   * Patch rows already in the app's `-acl-files` index without rewriting
+   * the rest of each row. Each object carries `objectID` plus
+   * `acl_principals` (a non-empty, valid list: re-stamps who may see it)
+   * and/or label fields the manifest declares in
+   * `data_index.acl_patchable_fields` (for example `tags`, `properties`).
+   * An object that omits `acl_principals` keeps its stored ones. `content`
+   * is never patchable, and `createIfNotExists` and `index` are refused. Use
+   * it when the source changes who may see an item, or only its labels,
+   * without changing its content (OneDrive's delta omits sharing-only
+   * changes; a Dropbox tag edit leaves the file's text as it was). The
+   * re-stamp needs a platform with sprigr/sprigr-team#9843, label fields one
+   * with #10371 (an older one answers `acl_partial_update_fields`: fall back
+   * to a whole-row import). Older wrappers drop the flag, which
+   * `partialUpdateData` detects and throws on.
    */
   withAcl?: boolean;
 }

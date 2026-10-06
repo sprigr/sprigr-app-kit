@@ -158,9 +158,12 @@ export function buildPartialUpdateBody(
 
 /**
  * The structural half of the platform's `withAcl` rules, checked before
- * sending. The principal grammar (`user:`, `group:`, `org:`, `public`) is
- * left to the platform, which owns it; this only rejects a batch that could
- * never be accepted.
+ * sending. The principal grammar (`user:`, `group:`, `org:`, `public`) and
+ * the app's declared label fields (manifest `data_index.acl_patchable_fields`,
+ * sprigr/sprigr-team#10371) are left to the platform, which owns them; this
+ * only rejects a batch that could never be accepted: a create, a logical
+ * index, `content` (never patchable), an object that sets nothing, or an
+ * empty principal list.
  */
 function checkAclRestamp(objects: SprigrDataPatch[], opts: SprigrDataPartialUpdateOpts | undefined, at: string): void {
   if (opts?.createIfNotExists === true) {
@@ -176,19 +179,26 @@ function checkAclRestamp(objects: SprigrDataPatch[], opts: SprigrDataPartialUpda
   }
   for (let i = 0; i < objects.length; i++) {
     const o = objects[i] as Record<string, unknown>;
-    const extra = Object.keys(o).find((k) => k !== 'objectID' && k !== 'acl_principals');
-    if (extra !== undefined) {
+    if ('content' in o) {
       throw new SprigrDataValidationError(
-        `${at}: objects[${i}] carries "${extra}"; a withAcl partial update sets only objectID and acl_principals (write content with data.import withAcl)`,
+        `${at}: objects[${i}] carries "content"; a withAcl partial update never writes extracted text (write content with data.import withAcl)`,
         { error: 'acl_partial_update_fields', index: i },
       );
     }
-    const principals = o.acl_principals;
-    if (!Array.isArray(principals) || principals.length === 0) {
-      throw new SprigrDataValidationError(`${at}: objects[${i}] needs a non-empty acl_principals: string[]`, {
-        error: 'missing_acl_principals',
-        index: i,
-      });
+    if (!Object.keys(o).some((k) => k !== 'objectID')) {
+      throw new SprigrDataValidationError(
+        `${at}: objects[${i}] sets nothing; send acl_principals or a field your manifest declares in data_index.acl_patchable_fields`,
+        { error: 'acl_partial_update_empty', index: i },
+      );
+    }
+    if ('acl_principals' in o) {
+      const principals = o.acl_principals;
+      if (!Array.isArray(principals) || principals.length === 0) {
+        throw new SprigrDataValidationError(`${at}: objects[${i}] needs a non-empty acl_principals: string[]`, {
+          error: 'missing_acl_principals',
+          index: i,
+        });
+      }
     }
   }
 }

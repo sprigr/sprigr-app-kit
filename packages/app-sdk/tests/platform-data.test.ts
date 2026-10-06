@@ -236,7 +236,7 @@ describe('partialUpdateData with the injected host member', () => {
   });
 });
 
-describe('withAcl: principals-only re-stamp', () => {
+describe('withAcl: re-stamp and label patch', () => {
   const restamp = { objectID: 'ms:file:a:1:d:i1', acl_principals: ['user:alice@corp.com'] };
   const aclIndex = 'comp_1-app-microsoft-365-acl-files';
   const codeOf = (fn: () => unknown): string | undefined => {
@@ -256,9 +256,19 @@ describe('withAcl: principals-only re-stamp', () => {
   it('rejects what the platform would refuse, before sending', () => {
     expect(codeOf(() => buildPartialUpdateBody([restamp], { withAcl: true, createIfNotExists: true }))).toBe('acl_partial_update_create_unsupported');
     expect(codeOf(() => buildPartialUpdateBody([restamp], { withAcl: true, index: 'files' }))).toBe('acl_index_combination_unsupported');
-    expect(codeOf(() => buildPartialUpdateBody([restamp, { ...restamp, name: 'x' }], { withAcl: true }))).toBe('acl_partial_update_fields');
-    expect(codeOf(() => buildPartialUpdateBody([{ objectID: 'f1' }], { withAcl: true }))).toBe('missing_acl_principals');
+    expect(codeOf(() => buildPartialUpdateBody([restamp, { ...restamp, content: 'x' }], { withAcl: true }))).toBe('acl_partial_update_fields');
+    expect(codeOf(() => buildPartialUpdateBody([{ objectID: 'f1' }], { withAcl: true }))).toBe('acl_partial_update_empty');
     expect(codeOf(() => buildPartialUpdateBody([{ objectID: 'f1', acl_principals: [] }], { withAcl: true }))).toBe('missing_acl_principals');
+    expect(codeOf(() => buildPartialUpdateBody([{ objectID: 'f1', tags: ['x'], acl_principals: null }], { withAcl: true }))).toBe('missing_acl_principals');
+  });
+
+  it('passes label fields through for the platform to check against the manifest (sprigr-team#10371)', () => {
+    const labels = { objectID: 'dbx:file:a:/q3.pdf', tags: ['status_paid'], properties: 'Invoice: status: paid' };
+    expect(buildPartialUpdateBody([labels, { ...labels, objectID: 'f2', acl_principals: ['user:bob@corp.com'] }], { withAcl: true })).toEqual({
+      objects: [labels, { ...labels, objectID: 'f2', acl_principals: ['user:bob@corp.com'] }],
+      createIfNotExists: false,
+      withAcl: true,
+    });
   });
 
   it('sends withAcl over the install-token bridge', async () => {
