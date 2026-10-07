@@ -437,6 +437,16 @@ export interface SprigrDataApi {
     objectIDs: string[],
     opts?: SprigrDataIndexOpts & { withAcl?: boolean },
   ): Promise<{ ok: boolean; deleted: number; index: string }>;
+  /**
+   * List the objectIDs that start with `prefix` (non-empty, so a listing is
+   * always scoped). Returns at most 50000 with `truncated: true` past that.
+   * `?`-optional for older wrapper builds; `makeDataClient` and
+   * `purgeIndexByPrefix` fall back to the install-token route.
+   */
+  listIds?(
+    prefix: string,
+    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
+  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean }>;
 }
 
 /**
@@ -724,3 +734,20 @@ export {
   callerKeyRefusal,
 } from './stored-file-keys';
 export type { CallerKeyResolution } from './stored-file-keys';
+
+export {
+  makeDataClient,
+  snapshotIndexIds,
+  deleteSnapshotIds,
+  purgeIndexByPrefix,
+  DATA_DELETE_MAX_IDS,
+} from './data-purge';
+export type {
+  DataClient,
+  DataIdsOpts,
+  DataListIdsResult,
+  DataTransport,
+  IdPrefixSpec,
+  IdSnapshot,
+  PurgeResult,
+} from './data-purge';
