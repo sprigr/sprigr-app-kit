@@ -46,9 +46,10 @@ export interface ConfirmRule {
    * `'approval_card'`: this action's human-approval card (an approval spec)
    * covers it whenever a person is on the turn, so the platform skips the
    * confirmation there and the person is asked once, by the card. Unattended
-   * runs still confirm. Never hand-write it: pass `approvalCovered` to
-   * `buildConfirmationPolicy` / `deriveConfirmationPolicy` so it follows the
-   * specs, and to `checkConfirmationPolicy` so a stale key fails the test.
+   * runs still confirm. Never hand-write it: pass `approval: { covered,
+   * conditional }` to `buildConfirmationPolicy` / `deriveConfirmationPolicy`
+   * so it follows the specs, and to `checkConfirmationPolicy` so a stale or
+   * conditionally gated key fails the test.
    * Needs a platform with sprigr-team decision 0167; an older one ignores it
    * and keeps asking twice.
    */

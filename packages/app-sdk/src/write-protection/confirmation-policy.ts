@@ -20,17 +20,47 @@ export interface PolicySource {
   /** Full rules, for thresholds and anything the two maps above cannot express. */
   rules?: Record<string, ConfirmRule>;
   /**
-   * The actions an approval spec covers: pass the keys of the specs object you
-   * hand to `dispatcherApproval` (`Object.keys(APPROVAL_SPECS)`). Each one that
-   * also has a rule here gets `attended: 'approval_card'`, so the person is
-   * asked once on an attended turn (the card) instead of twice. An action with
-   * a spec and no rule is left alone: it already asks once.
-   *
-   * Leave out any action your app gates conditionally around the gate (for
-   * example a delete that only reaches `gate.run` with `force: true`): on the
-   * shapes that skip the card, the confirmation would be the only prompt.
+   * Which actions an approval card covers; see {@link ApprovalCoverage}. Each
+   * covered action that also has a rule here, and is not `conditional`, gets
+   * `attended: 'approval_card'`, so the person is asked once on an attended
+   * turn (the card) instead of twice.
    */
-  approvalCovered?: Iterable<string>;
+  approval?: ApprovalCoverage;
+}
+
+/**
+ * Which actions an approval card covers, for deriving and checking
+ * `attended: 'approval_card'` (sprigr-team decision 0167).
+ *
+ * Both fields are required on purpose. The SDK can see an app's approval
+ * specs but not any condition the app wraps around the gate (simpro sends its
+ * deletes to the gate only with `force: true`), and an action marked attended
+ * whose call skips the card would skip the confirmation too: no prompt at all.
+ * So every app states its conditional actions, `[]` when it has none, and the
+ * builder and the check refuse to mark them.
+ */
+export interface ApprovalCoverage {
+  /** Every action with an approval spec: the keys of the specs object you hand to the gate. */
+  covered: Iterable<string>;
+  /**
+   * Covered actions the app sends through the gate only under a condition of
+   * its own (simpro's `GATE_ONLY_WHEN`). Never marked attended; they keep the
+   * confirmation. Pass `[]` when every covered action always reaches the gate.
+   */
+  conditional: Iterable<string>;
+}
+
+interface CoverageSets {
+  covered: ReadonlySet<string>;
+  conditional: ReadonlySet<string>;
+}
+
+function coverageSets(c: ApprovalCoverage | undefined): CoverageSets | null {
+  if (!c) return null;
+  if (c.covered == null || c.conditional == null) {
+    throw new Error('approval coverage needs both `covered` and `conditional` (pass [] when no action is gated conditionally)');
+  }
+  return { covered: new Set(c.covered), conditional: new Set(c.conditional) };
 }
 
 /** Build a sorted `{ actions }` policy. An action named in two groups throws. */
@@ -43,8 +73,9 @@ export function buildConfirmationPolicy(src: PolicySource): ConfirmationPolicy {
   for (const [name, describe] of Object.entries(src.irreversible ?? {})) put(name, { always: true, describe, irreversible: true }, 'irreversible');
   for (const [name, describe] of Object.entries(src.always ?? {})) put(name, { always: true, describe }, 'always');
   for (const [name, rule] of Object.entries(src.rules ?? {})) put(name, rule, 'rules');
-  for (const name of src.approvalCovered ?? []) {
-    if (actions[name]) actions[name] = { ...actions[name], attended: 'approval_card' };
+  const cov = coverageSets(src.approval);
+  for (const name of cov?.covered ?? []) {
+    if (actions[name] && !cov?.conditional.has(name)) actions[name] = { ...actions[name], attended: 'approval_card' };
   }
   return { actions: Object.fromEntries(Object.entries(actions).sort(([a], [b]) => a.localeCompare(b))) };
 }
@@ -93,14 +124,14 @@ export interface PolicyCheckInput {
   nestedUnderInput?: boolean;
   moneyFields?: readonly string[];
   /**
-   * The actions an approval spec covers (the keys of your `dispatcherApproval`
-   * specs). With it, the check fails a rule carrying `attended:
-   * 'approval_card'` that no spec covers (that key removes the person's only
-   * prompt) and a covered, gated action that lacks the key (it asks twice).
-   * Without it, any `attended` key is itself a finding, because nothing can
-   * vouch for it.
+   * Which actions an approval card covers. With it, the check fails a rule
+   * carrying `attended: 'approval_card'` on an action no spec covers or that
+   * the app gates conditionally (either way the key removes the person's only
+   * prompt), a covered, unconditional, gated action that lacks the key (it asks
+   * twice), and a `conditional` entry with no spec. Without it, any `attended`
+   * key is itself a finding, because nothing can vouch for it.
    */
-  approvalCovered?: Iterable<string>;
+  approval?: ApprovalCoverage;
 }
 
 const PLACEHOLDER = /\{([a-zA-Z0-9_.]+)\}/g;
@@ -110,21 +141,23 @@ function conditions(rule: ConfirmRule) {
 }
 
 /**
- * Findings for one rule's `attended` key against the approval specs. Exported
- * for apps whose gated tools are flat (`requireApproval`) rather than one
- * dispatcher: run it over each tool-level rule with the tool names the specs
- * cover.
+ * Findings for one rule's `attended` key against the approval coverage.
+ * Exported for apps whose gated tools are flat (`requireApproval`) rather than
+ * one dispatcher: run it over each tool-level rule with the tool names the
+ * specs cover and the ones gated conditionally.
  */
-export function attendedFindings(name: string, rule: ConfirmRule, covered: ReadonlySet<string> | null): string[] {
+export function attendedFindings(name: string, rule: ConfirmRule, coverage: ApprovalCoverage | null): string[] {
+  const cov = coverageSets(coverage ?? undefined);
   const out: string[] = [];
   const attended = (rule as { attended?: unknown }).attended;
   const gated = rule.always === true || conditions(rule).length > 0;
   if (attended !== undefined && attended !== 'approval_card') {
     out.push(`${name}: attended must be 'approval_card' (got ${JSON.stringify(attended)}); the platform ignores anything else`);
   } else if (attended === 'approval_card') {
-    if (!covered) out.push(`${name}: attended: 'approval_card' cannot be checked; pass approvalCovered (the approval spec keys)`);
-    else if (!covered.has(name)) out.push(`${name}: attended: 'approval_card' but no approval spec covers it, so it removes the only prompt`);
-  } else if (covered?.has(name) && gated) {
+    if (!cov) out.push(`${name}: attended: 'approval_card' cannot be checked; pass approval: { covered, conditional }`);
+    else if (!cov.covered.has(name)) out.push(`${name}: attended: 'approval_card' but no approval spec covers it, so it removes the only prompt`);
+    else if (cov.conditional.has(name)) out.push(`${name}: attended: 'approval_card' on a conditionally gated action, so a call that skips the card gets no prompt at all`);
+  } else if (cov?.covered.has(name) && !cov.conditional.has(name) && gated) {
     out.push(`${name}: an approval spec covers it but the rule lacks attended: 'approval_card', so it asks twice`);
   }
   return out;
@@ -141,11 +174,14 @@ export function checkConfirmationPolicy(input: PolicyCheckInput): string[] {
   const nested = input.nestedUnderInput ?? true;
   const money = new Set(input.moneyFields ?? DEFAULT_MONEY_FIELDS);
   const actions = input.policy.actions ?? {};
-  const covered = input.approvalCovered ? new Set(input.approvalCovered) : null;
+  const cov = coverageSets(input.approval);
   const out: string[] = [];
+  for (const name of cov?.conditional ?? []) {
+    if (!cov?.covered.has(name)) out.push(`approval.conditional: "${name}" has no approval spec (not in covered)`);
+  }
 
   for (const [name, rule] of Object.entries(actions)) {
-    out.push(...attendedFindings(name, rule, covered));
+    out.push(...attendedFindings(name, rule, input.approval ?? null));
     if (!registry.has(name)) out.push(`dead rule: "${name}" is not in the registry, so it gates nothing`);
     if (!rule.always && conditions(rule).length === 0) out.push(`${name}: rule says nothing (no always, no when)`);
     if (!rule.describe || !rule.describe.trim()) out.push(`${name}: describe missing`);
