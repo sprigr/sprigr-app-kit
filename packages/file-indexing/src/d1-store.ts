@@ -33,7 +33,7 @@
 
 import { actorKey, type D1Like } from '@sprigr/apps-app-sdk';
 import { CONTENT_FILL_TOKEN_PREFIX, contentFillToken } from './content-fill';
-import { actorOfFileRow } from './indexer';
+import { actorOfFileRow, emptyWalkMarkerKey } from './indexer';
 import type { FileIndexingRow, FileIndexingScope, FileIndexingStore, PendingExtractionRow } from './types';
 
 export interface D1FileIndexingStoreConfig {
@@ -212,6 +212,8 @@ export function createD1FileIndexingStore(
       // previous enablement's queue would only double-count (sprigr-apps#2702).
       const key = store.walkKey(scope);
       if (key) await store.deletePendingContentFills!(contentFillToken(key));
+      // ...and a previous enablement's empty-walk run (sprigr-apps#2690).
+      if (key) await store.clearWalkSeen(emptyWalkMarkerKey(key));
       const now = clock();
       const user = scope.actor.platformUserId ?? null;
       const agent = user && !storeAgentIdForUsers ? null : (scope.actor.agentId ?? null);
