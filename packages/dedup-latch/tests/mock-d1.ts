@@ -60,8 +60,27 @@ export function sqliteNow(expression: string): string {
   return expression.startsWith('strftime') ? iso : iso.slice(0, 19).replace('T', ' ');
 }
 
+/** The bounded opportunistic sweep (0.2.0): DELETE ... WHERE id IN (SELECT ... LIMIT ?). */
+const DELETE_BATCH_RX =
+  /^DELETE FROM (\w+) WHERE id IN \(SELECT id FROM \1 WHERE expires_at <= strftime\('%Y-%m-%dT%H:%M:%fZ', 'now'\) LIMIT \?\)$/;
+
 function execStatement(sql: string, args: unknown[], state: MockState): D1RunResult {
   const normalized = sql.replace(/\s+/g, ' ').trim();
+
+  const batch = DELETE_BATCH_RX.exec(normalized);
+  if (batch) {
+    const now = new Date().toISOString();
+    let deleted = 0;
+    const limit = Number(args[0]);
+    for (const [id, row] of state.rows) {
+      if (deleted >= limit) break;
+      if (row.expires_at <= now) {
+        state.rows.delete(id);
+        deleted += 1;
+      }
+    }
+    return { meta: { changes: deleted } };
+  }
 
   const ins = INSERT_RX.exec(normalized);
   if (ins) {

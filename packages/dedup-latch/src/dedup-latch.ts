@@ -71,7 +71,25 @@ export interface MakeDedupLatchOpts {
   table: string;
   /** Time-to-live for each claim, in seconds. */
   ttlSec: number;
+  /**
+   * Opportunistic sweep from inside tryClaim, so a dedup table stays bounded
+   * even when the app never schedules sweep() (0.2.0). On roughly one claim in
+   * `everyNClaims` (default 100) the latch deletes up to `batch` (default
+   * 500) expired rows. Bounded so the first claim after an upgrade does not
+   * pay for a years-long backlog in one statement; a backlog drains over
+   * successive draws. Best effort: a failed sweep never fails the claim.
+   * `false` switches it off (for a lease table whose rows another job sweeps
+   * on a schedule it controls). A scheduled sweep() keeps working as before.
+   */
+  autoSweep?: false | { everyNClaims?: number; batch?: number };
+  /** Test seam for the 1-in-N draw. Defaults to Math.random. */
+  random?: () => number;
 }
+
+const DEFAULT_EVERY_N_CLAIMS = 100;
+const DEFAULT_SWEEP_BATCH = 500;
+/** "now" in the exact format tryClaim writes expires_at in; see sweep(). */
+const NOW_ISO = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 
 export function makeDedupLatch(opts: MakeDedupLatchOpts): DedupLatch {
   const { db, table, ttlSec } = opts;
@@ -79,6 +97,32 @@ export function makeDedupLatch(opts: MakeDedupLatchOpts): DedupLatch {
   if (!Number.isFinite(ttlSec) || ttlSec <= 0) {
     throw new Error(`dedup-latch: ttlSec must be a positive number, got ${ttlSec}`);
   }
+  const auto = opts.autoSweep === false ? null : {
+    everyNClaims: opts.autoSweep?.everyNClaims ?? DEFAULT_EVERY_N_CLAIMS,
+    batch: opts.autoSweep?.batch ?? DEFAULT_SWEEP_BATCH,
+  };
+  if (auto && (!Number.isInteger(auto.everyNClaims) || auto.everyNClaims < 1)) {
+    throw new Error(`dedup-latch: autoSweep.everyNClaims must be a positive integer, got ${auto.everyNClaims}`);
+  }
+  if (auto && (!Number.isInteger(auto.batch) || auto.batch < 1)) {
+    throw new Error(`dedup-latch: autoSweep.batch must be a positive integer, got ${auto.batch}`);
+  }
+  const random = opts.random ?? Math.random;
+
+  /**
+   * Delete at most `limit` expired rows. D1 has no DELETE ... LIMIT (SQLite
+   * needs a compile flag for it), so the bound goes through the indexed
+   * subquery instead.
+   */
+  const sweepBatch = async (limit: number): Promise<number> => {
+    const raw = await db
+      .prepare(
+        `DELETE FROM ${table} WHERE id IN (SELECT id FROM ${table} WHERE expires_at <= ${NOW_ISO} LIMIT ?)`,
+      )
+      .bind(limit)
+      .run();
+    return (raw as D1RunResult | null)?.meta?.changes ?? 0;
+  };
 
   return {
     async tryClaim(id) {
@@ -92,6 +136,15 @@ export function makeDedupLatch(opts: MakeDedupLatchOpts): DedupLatch {
         .bind(id, expiresAt)
         .run();
       const changes = (raw as D1RunResult | null)?.meta?.changes ?? 0;
+      if (auto && random() < 1 / auto.everyNClaims) {
+        try {
+          await sweepBatch(auto.batch);
+        } catch (err) {
+          console.warn(
+            `[dedup-latch] opportunistic sweep of ${table} failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
       return changes > 0;
     },
     async sweep() {
