@@ -36,6 +36,7 @@ import type {
   ChangePage,
   ExtraScopesResult,
   FileIndexingContext,
+  FileIndexingDataApi,
   FileIndexingEnv,
   FileIndexingRow,
   FileIndexingScope,
@@ -106,6 +107,11 @@ export interface FileIndexingOutcome {
   extraScopesDeferred?: number;
   /** Stale rows removed by a completed full walk's reconcile. */
   reconciled?: number;
+  /** 0.1.4 (sprigr-apps#2690): this walk saw zero entries, the adapter
+   *  confirmed the account empty, and another full walk was requested for the
+   *  next pass: to make the second confirmation before rows go, or to finish
+   *  a purge the deadline or a truncated listing cut short. */
+  emptyWalkFollowUp?: boolean;
   eventsEmitted?: number;
   /** The deadline stopped the walk early; the cursor resumes from the cut. */
   cut?: boolean;
@@ -566,6 +572,7 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
 
   // ── full-walk reconcile, still before the cursor ──
   let reconciled: number | undefined;
+  let emptyWalkFollowUp = false;
   if (walkComplete && inFullWalk) {
     // Only for the walk this pass belongs to (sprigr-apps#2304): if another
     // invocation completed or restarted it meanwhile, its reconcile already
@@ -579,9 +586,12 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
     } else {
       try {
         // sprigr-apps#2690: the walk reached its final page with no error,
-        // cut or hold (walkComplete) AND established a cursor, so an empty
-        // seen set proves the source is empty and every row is stale.
-        reconciled = await reconcileWalk(adapter, store, ctx, { completedWalk: nextCursor !== null });
+        // cut or hold (walkComplete) AND established a cursor. That alone is
+        // not enough to wipe an account on an empty seen set: the reconcile
+        // also needs the adapter's confirmEmpty and a second such walk.
+        const rec = await reconcileWalkDetailed(adapter, store, ctx, { completedWalk: nextCursor !== null });
+        reconciled = rec.removed;
+        emptyWalkFollowUp = rec.followUpWalk;
       } catch (err) {
         const detail = `reconcile_failed: ${errMsg(err)}`;
         await store.recordError(scope, detail);
@@ -653,6 +663,10 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
       indexed,
       skipped,
     });
+  } else if (emptyWalkFollowUp) {
+    // A NULL cursor makes the next pass a fresh full walk (both encodings),
+    // instead of waiting for someone to toggle indexing (sprigr-apps#2690).
+    await store.recordSuccess(scope, null, indexed, skipped);
   } else {
     await store.recordSuccess(scope, nextCursor ?? row.cursor, indexed, skipped);
   }
@@ -688,6 +702,7 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
     ...(fill.filled > 0 ? { contentFilled: fill.filled } : {}),
     ...(fill.pending !== undefined ? { contentPending: fill.pending } : {}),
     ...(reconciled !== undefined ? { reconciled } : {}),
+    ...(emptyWalkFollowUp ? { emptyWalkFollowUp: true } : {}),
     ...(eventsEmitted !== undefined ? { eventsEmitted } : {}),
     ...(cut ? { cut: true } : {}),
     ...(held ? { held: true } : {}),
@@ -806,6 +821,23 @@ async function logContentFillOutcome(
   }
 }
 
+/** Consecutive completed, confirmed empty walks before an empty walk deletes
+ *  rows (sprigr-apps#2690). The first one only records the marker and asks for
+ *  another full walk; the second purges. */
+export const EMPTY_WALKS_BEFORE_PURGE = 2;
+
+/**
+ * The walk-seen key holding a scope's empty-walk marker: one row per
+ * consecutive completed, confirmed empty walk, object ids `walk:1`, `walk:2`,
+ * and so on. It lives in the walk-seen table every app already has, under a
+ * key no real walk key takes (they are actor keys, `u:` / `a:`, optionally
+ * behind a connection), so it needs no migration, and `clearWalkSeen(walkKey)`
+ * at the start and end of a walk leaves it alone.
+ */
+export function emptyWalkMarkerKey(walkKey: string): string {
+  return `${walkKey}#empty-walk`;
+}
+
 /**
  * Remove index rows whose source files no longer exist, at the completion of
  * a FULL walk: list the index under each reconcile prefix and delete what the
@@ -816,17 +848,25 @@ async function logContentFillOutcome(
  * Always clears the seen set and the walk marker. THROWS on a listing or
  * delete failure so the caller keeps the cursor. Emits no events.
  *
- * An EMPTY seen set (sprigr-apps#2690: the user emptied the drive) deletes
- * every row under the prefixes, but only with `opts.completedWalk`, which
- * the caller sets when the walk provably finished (final page, no error, no
- * cut, no hold, cursor established). The prefixes are then
- * `reconcilePrefixes([], ctx)` when the adapter has it (so an adapter that
- * keeps some rows out of the diff, such as microsoft-365's SharePoint rows,
- * still decides), else `objectIdPrefix(ctx)`. A truncated listing in that
- * case deletes the listed subset (every listed row is stale) and logs that
- * more remain for the next completed walk. A
- * direct caller that omits `opts` keeps the 0.1.0 behaviour: an empty seen
- * set deletes nothing.
+ * An EMPTY seen set (sprigr-apps#2690: the user emptied the drive) is where a
+ * broken listing would do the most harm, since every row would look stale.
+ * Rows go only when ALL of these hold:
+ *   1. `opts.completedWalk`: the caller saw the walk reach its final page with
+ *      no error, cut or hold, and establish a cursor;
+ *   2. the adapter implements `confirmEmpty` and it resolves true now (false
+ *      or a throw deletes nothing and leaves the marker where it was; a throw
+ *      propagates, so the caller keeps its cursor and walks again);
+ *   3. this is the EMPTY_WALKS_BEFORE_PURGE-th consecutive such walk, counted
+ *      by the marker under `emptyWalkMarkerKey`. The first only records the
+ *      marker and returns `followUpWalk: true`; any completed walk that sees
+ *      entries clears it.
+ * The purge itself lists each prefix (`reconcilePrefixes([], ctx)` when the
+ * adapter has it, else `objectIdPrefix(ctx)`), warns with the prefix and row
+ * count, and deletes PURGE_DELETE_CHUNK ids at a time while at least
+ * MIN_PURGE_LEG_MS of `ctx.deadline` is left. A cut or truncated listing keeps
+ * the marker and asks for another walk, whose own confirmation resumes it.
+ * With nothing listed under the prefixes there is nothing to protect, so the
+ * marker is cleared and confirmEmpty is not asked.
  */
 export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
   adapter: FileSourceAdapter<TEntry, TEnv>,
@@ -834,9 +874,25 @@ export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
   ctx: FileIndexingContext<TEnv>,
   opts: { completedWalk?: boolean } = {},
 ): Promise<number> {
+  return (await reconcileWalkDetailed(adapter, store, ctx, opts)).removed;
+}
+
+interface ReconcileResult {
+  removed: number;
+  /** Ask the caller to make the next pass a full walk (empty-walk path). */
+  followUpWalk: boolean;
+}
+
+async function reconcileWalkDetailed<TEntry, TEnv extends FileIndexingEnv>(
+  adapter: FileSourceAdapter<TEntry, TEnv>,
+  store: FileIndexingStore,
+  ctx: FileIndexingContext<TEnv>,
+  opts: { completedWalk?: boolean },
+): Promise<ReconcileResult> {
   const label = adapter.logLabel ?? DEFAULT_LABEL;
   const data = ctx.env.SPRIGR?.data;
   let removed = 0;
+  let followUpWalk = false;
   if (data?.listIds && data.delete) {
     const seen = await store.listWalkSeen(ctx.walkKey);
     const seenSet = new Set(seen);
@@ -854,23 +910,27 @@ export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
         }
       }
     }
-    for (const prefix of prefixes) {
-      const listing = await data.listIds(prefix, { withAcl: true });
-      if (listing.truncated && emptyWalk) {
-        // The walk proved the source empty, so every listed row is stale:
-        // delete what the listing shows; the next completed walk continues.
-        console.warn(
-          `${label} reconcile of an empty walk: listing truncated for ${prefix}; deleting the listed subset, more rows remain for the next completed walk`,
-        );
-      } else if (listing.truncated) {
-        console.warn(`${label} reconcile listing truncated for ${prefix}; healing the listed subset only`);
+    if (emptyWalk) {
+      if (prefixes.length > 0) {
+        const out = await purgeConfirmedEmptyWalk(adapter, store, ctx, data, prefixes, label);
+        removed += out.removed;
+        followUpWalk = out.followUpWalk;
       }
-      const stale = listing.objectIDs.filter((id) => id.startsWith(prefix) && !seenSet.has(id));
-      for (let i = 0; i < stale.length; i += MAX_OBJECTS_PER_IMPORT) {
-        await data.delete(stale.slice(i, i + MAX_OBJECTS_PER_IMPORT), { withAcl: true });
+    } else {
+      // A walk that saw entries ends any run of empty walks.
+      await store.clearWalkSeen(emptyWalkMarkerKey(ctx.walkKey));
+      for (const prefix of prefixes) {
+        const listing = await data.listIds(prefix, { withAcl: true });
+        if (listing.truncated) {
+          console.warn(`${label} reconcile listing truncated for ${prefix}; healing the listed subset only`);
+        }
+        const stale = listing.objectIDs.filter((id) => id.startsWith(prefix) && !seenSet.has(id));
+        for (let i = 0; i < stale.length; i += MAX_OBJECTS_PER_IMPORT) {
+          await data.delete(stale.slice(i, i + MAX_OBJECTS_PER_IMPORT), { withAcl: true });
+        }
+        await forgetPendingExtractions(store, stale);
+        removed += stale.length;
       }
-      await forgetPendingExtractions(store, stale);
-      removed += stale.length;
     }
     const plainPrefix = adapter.plainIndexSweepPrefix?.(ctx);
     if (plainPrefix) {
@@ -888,7 +948,85 @@ export async function reconcileWalk<TEntry, TEnv extends FileIndexingEnv>(
   }
   await store.clearWalkSeen(ctx.walkKey);
   await store.setFullWalkActive(ctx.scope, false);
-  return removed;
+  return { removed, followUpWalk };
+}
+
+/** The empty-walk half of the reconcile (sprigr-apps#2690); see reconcileWalk. */
+async function purgeConfirmedEmptyWalk<TEntry, TEnv extends FileIndexingEnv>(
+  adapter: FileSourceAdapter<TEntry, TEnv>,
+  store: FileIndexingStore,
+  ctx: FileIndexingContext<TEnv>,
+  /** The caller checked that listIds and delete exist. */
+  data: FileIndexingDataApi,
+  prefixes: string[],
+  label: string,
+): Promise<ReconcileResult> {
+  const markerKey = emptyWalkMarkerKey(ctx.walkKey);
+  const listings: Array<{ prefix: string; ids: string[]; truncated: boolean }> = [];
+  for (const prefix of prefixes) {
+    const listing = await data.listIds!(prefix, { withAcl: true });
+    listings.push({
+      prefix,
+      ids: listing.objectIDs.filter((id) => id.startsWith(prefix)),
+      truncated: listing.truncated === true,
+    });
+  }
+  if (listings.every((l) => l.ids.length === 0 && !l.truncated)) {
+    // Nothing indexed under the prefixes: nothing to protect or delete.
+    await store.clearWalkSeen(markerKey);
+    return { removed: 0, followUpWalk: false };
+  }
+  const held = listings.reduce((n, l) => n + l.ids.length, 0);
+  if (!adapter.confirmEmpty) {
+    console.warn(
+      `${label} empty walk for ${ctx.walkKey}: ${held} row(s) still indexed, but the adapter has no confirmEmpty, so nothing is deleted`,
+    );
+    return { removed: 0, followUpWalk: false };
+  }
+  // Throws propagate: the caller records reconcile_failed and keeps its cursor.
+  const confirmed = await adapter.confirmEmpty(ctx);
+  if (confirmed !== true) {
+    console.warn(
+      `${label} empty walk for ${ctx.walkKey}: confirmEmpty says the account is not empty; ${held} row(s) kept, marker unchanged`,
+    );
+    return { removed: 0, followUpWalk: false };
+  }
+  const marks = (await store.listWalkSeen(markerKey)).length;
+  await store.recordWalkSeen(markerKey, [`walk:${marks + 1}`]);
+  if (marks + 1 < EMPTY_WALKS_BEFORE_PURGE) {
+    console.warn(
+      `${label} confirmed empty walk ${marks + 1} of ${EMPTY_WALKS_BEFORE_PURGE} for ${ctx.walkKey}: ${held} row(s) kept until the next full walk confirms it; that walk is requested`,
+    );
+    return { removed: 0, followUpWalk: true };
+  }
+  let removed = 0;
+  let incomplete = false;
+  for (const l of listings) {
+    if (l.truncated) incomplete = true;
+    if (l.ids.length === 0) continue;
+    console.warn(
+      `${label} purging ${l.ids.length}${l.truncated ? '+' : ''} row(s) under ${l.prefix} for ${ctx.walkKey}: ${marks + 1} consecutive completed full walks saw nothing and confirmEmpty agreed`,
+    );
+    for (let i = 0; i < l.ids.length; i += PURGE_DELETE_CHUNK) {
+      if (budgetBelow(MIN_PURGE_LEG_MS, ctx.deadline, ctx.now)) {
+        incomplete = true;
+        break;
+      }
+      const chunk = l.ids.slice(i, i + PURGE_DELETE_CHUNK);
+      await data.delete!(chunk, { withAcl: true });
+      removed += chunk.length;
+      await forgetPendingExtractions(store, chunk);
+    }
+  }
+  if (incomplete) {
+    // Resume on the next full walk, which confirms the account empty again
+    // first. No re-list in this pass: a read right after a delete can still
+    // return deleted ids.
+    console.warn(`${label} empty-walk purge for ${ctx.walkKey} not finished (deadline or truncated listing); another full walk is requested`);
+    return { removed, followUpWalk: true };
+  }
+  await store.clearWalkSeen(markerKey);
+  return { removed, followUpWalk: false };
 }
 
 /** Rows in the ACL index under `prefix`, read from the index itself (the
@@ -1065,6 +1203,7 @@ export async function purgeActor<TEntry, TEnv extends FileIndexingEnv>(
   result.complete = allComplete && result.errors.length === 0 && !result.purgeSkipped;
   try {
     await store.clearWalkSeen(ctx.walkKey);
+    if (ctx.walkKey) await store.clearWalkSeen(emptyWalkMarkerKey(ctx.walkKey));
     if (row) await store.setFullWalkActive(scope, false);
   } catch (err) {
     result.errors.push(`walk_state: ${errMsg(err)}`);
