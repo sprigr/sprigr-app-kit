@@ -18,6 +18,23 @@ export {
 } from './file';
 export type { FetchFileResult } from './file';
 export {
+  resolveFileRef,
+  readFileRef,
+  FileRefError,
+  SPRIGR_FILE_HOSTS,
+  DEFAULT_FILE_READ_TIMEOUT_MS,
+  WORKSPACE_FILE_HOW_TO,
+} from './file-ref';
+export type {
+  FileRef,
+  FileRefErrorCode,
+  ResolveFileRefOptions,
+  ResolvedFileRef,
+  FileRefEnv,
+  ReadFileRefOptions,
+  FileRefContent,
+} from './file-ref';
+export {
   resolvePlatformWebhookBase,
   buildMarketplaceWebhookUrl,
   isStagingHost,

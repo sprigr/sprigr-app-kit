@@ -79,6 +79,7 @@ export default {
 - `putAppFile` / `putAppFileStream` / `appFileUrl` / `getAppFile` / `listAppFiles` / `deleteAppFile` — durable app-scoped file storage from outside the injected bridge
 - `fetchFileBytes` / `fetchFileAsBase64` / `bytesToBase64` / `base64ToBytes` — file byte helpers
 - `readableStoredKey(appKey, downloadUrl)` / `agentFileKeyFromUrl` — turn the install-relative key your app stored a file under into the absolute key the platform's `read_file` tool opens (read off the signed URL `appFileUrl` minted). Return it as a tool's `file_key` so an agent can open the file. `appKeyFromCallerKey` / `callerKeyRefusal` go the other way, for a key an agent hands back to your tool (0.17.0)
+- `readFileRef(env, { file_key } | { file_url }, { maxBytes })` / `resolveFileRef` — accept a file an agent hands your tool. `resolveFileRef` only validates (run it before an approval card): a key in this install's store in any form, or an https link on `files.sprigr.com` (a link into this install is read as its key; a company link must be signed and in this company; workspace keys, other installs and every other host are refused with a `FileRefError` whose message says what to pass instead). `readFileRef` then reads the bytes with a size cap, a 20 s time cap and no redirects (0.21.0)
 
 Full platform semantics: [`docs/platform-reference.md`](../../docs/platform-reference.md).
 
