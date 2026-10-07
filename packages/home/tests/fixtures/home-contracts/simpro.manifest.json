@@ -1,0 +1,41 @@
+{
+  "sprigr_app": { "version": "1" },
+  "metadata": {
+    "name": "simPRO",
+    "slug": "simpro",
+    "version": "1.0.0",
+    "description": "Jobs, schedules and leads from simPRO",
+    "author": { "name": "Sprigr" }
+  },
+  "runtime": { "entry": "index.js" },
+  "permissions": { "scopes": ["tools:register"] },
+  "tools": [
+    { "name": "get_simpro_home", "internal": true, "handler": "src/handlers/home.ts",
+      "description": "Platform-only: answers Sprigr Home contracts for one provider id",
+      "input_schema": { "type": "object", "properties": { "provider": { "type": "string" } }, "required": ["provider"] } }
+  ],
+  "home": {
+    "tool": "get_simpro_home",
+    "links": [
+      { "id": "job", "page": "/jobs/{ref}", "opens_in": "Simpro" }
+    ],
+    "identity": {
+      "contract": "sprigr/home_identity", "version": "^1.0", "provider": "whoami",
+      "methods": ["native", "email_match", "picker"]
+    },
+    "rate": { "group": "simpro_company", "max_dispatches_per_minute": 30 },
+    "provides": [
+      { "id": "my_day", "contract": "sprigr/home_schedule", "version": "^1.0",
+        "scope": "me", "audience": "per_user", "roles": ["owner", "admin", "manager", "member"],
+        "requires_person": true, "ttl_seconds": 900,
+        "fixtures": "home/fixtures/my_day.json" },
+      { "id": "crew_day", "contract": "sprigr/home_schedule", "version": "^1.0",
+        "scope": "crew", "audience": "per_user", "roles": ["owner", "admin", "manager"],
+        "ttl_seconds": 900, "fixtures": "home/fixtures/crew_day.json" },
+      { "id": "new_enquiries", "contract": "sprigr/home_queue", "version": "^1.0",
+        "scope": "company", "audience": "per_user", "roles": ["owner", "admin"],
+        "reasons": ["customer_waiting"], "whys": ["enquiry_new"],
+        "ttl_seconds": 1800, "fixtures": "home/fixtures/new_enquiries.json" }
+    ]
+  }
+}

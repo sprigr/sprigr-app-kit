@@ -1,0 +1,132 @@
+[
+  {
+    "name": "a normal day",
+    "request": {
+      "contract": "sprigr/home_subject_facts",
+      "version": "1.0.0",
+      "provider": "overdue_facts",
+      "scope": "me",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "mode": {
+        "kind": "bulk"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "vendor": {
+      "invoices": [
+        {
+          "InvoiceNumber": "INV-0042"
+        }
+      ]
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "ok",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": [
+        {
+          "id": "inv-0042",
+          "subjects": [
+            {
+              "key": "email",
+              "value": "owner@harbourcafe.example"
+            },
+            {
+              "key": "invoice_ref",
+              "value": "INV-0042",
+              "issuer": "xero-accounting"
+            },
+            {
+              "key": "abn",
+              "value": "51824753556"
+            }
+          ],
+          "fact": "overdue_invoice",
+          "date": "2026-09-30",
+          "amount": {
+            "minor": 64000,
+            "currency": "AUD"
+          },
+          "ref": {
+            "id": "3b1f0c8e-0042",
+            "label": "INV-0042",
+            "link": "invoice"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "nothing today",
+    "request": {
+      "contract": "sprigr/home_subject_facts",
+      "version": "1.0.0",
+      "provider": "overdue_facts",
+      "scope": "me",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "mode": {
+        "kind": "bulk"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "vendor": {
+      "rows": []
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "empty",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  },
+  {
+    "name": "viewer has not connected",
+    "request": {
+      "contract": "sprigr/home_subject_facts",
+      "version": "1.0.0",
+      "provider": "overdue_facts",
+      "scope": "me",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "mode": {
+        "kind": "bulk"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "not_connected",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  }
+]

@@ -1,0 +1,43 @@
+{
+  "sprigr_app": { "version": "1" },
+  "metadata": {
+    "name": "Xero",
+    "slug": "xero-accounting",
+    "version": "1.0.0",
+    "description": "Invoices, bills and bank balances from Xero",
+    "author": { "name": "Sprigr" }
+  },
+  "runtime": { "entry": "index.js" },
+  "permissions": { "scopes": ["tools:register"], "network_domains": ["login.xero.com", "identity.xero.com", "api.xero.com"] },
+  "tools": [
+    { "name": "get_xero_accounting_home", "internal": true, "handler": "src/handlers/home.ts",
+      "description": "Platform-only: answers Sprigr Home contracts for one provider id",
+      "input_schema": { "type": "object", "properties": { "provider": { "type": "string" } }, "required": ["provider"] } }
+  ],
+  "home": {
+    "tool": "get_xero_accounting_home",
+    "link_hosts": ["go.xero.com"],
+    "links": [
+      { "id": "invoice", "url": "https://go.xero.com/app/invoicing/view/{ref}", "opens_in": "Xero" }
+    ],
+    "identity": {
+      "contract": "sprigr/home_identity", "version": "^1.0", "provider": "whoami",
+      "methods": ["native"]
+    },
+    "rate": { "group": "xero_org", "max_dispatches_per_minute": 30 },
+    "provides": [
+      { "id": "money", "contract": "sprigr/home_metrics", "version": "^1.0",
+        "scope": "company", "audience": "per_user", "roles": ["owner", "admin"],
+        "metrics": ["receivables.overdue", "receivables.outstanding", "payables.to_approve"],
+        "ttl_seconds": 1800, "fixtures": "home/fixtures/money.json" },
+      { "id": "overdue_facts", "contract": "sprigr/home_subject_facts", "version": "^1.0",
+        "scope": "me", "audience": "per_user", "roles": ["owner", "admin", "manager", "member"],
+        "modes": ["bulk"], "facts": ["overdue_invoice"],
+        "ttl_seconds": 1800, "fixtures": "home/fixtures/overdue_facts.json" },
+      { "id": "alerts", "contract": "sprigr/home_queue", "version": "^1.0",
+        "scope": "me", "audience": "per_user", "roles": ["owner", "admin"],
+        "reasons": ["broken", "assigned"], "whys": ["connection_expiring", "sync_broken", "bill_awaiting_approval"],
+        "ttl_seconds": 1800, "fixtures": "home/fixtures/alerts.json" }
+    ]
+  }
+}

@@ -1,0 +1,111 @@
+[
+  {
+    "name": "a normal day",
+    "request": {
+      "contract": "sprigr/home_queue",
+      "version": "1.0.0",
+      "provider": "new_enquiries",
+      "scope": "company",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "vendor": {
+      "leads": [
+        {
+          "ID": 77
+        }
+      ]
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "ok",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": [
+        {
+          "id": "lead-77",
+          "reason": "customer_waiting",
+          "why": "enquiry_new",
+          "title": "New enquiry from Harbour Cafe",
+          "waiting_since": "2026-10-06T19:40:00Z",
+          "subjects": [
+            {
+              "key": "email",
+              "value": "owner@harbourcafe.example"
+            }
+          ],
+          "ref": {
+            "id": "77",
+            "label": "Lead 77"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "nothing today",
+    "request": {
+      "contract": "sprigr/home_queue",
+      "version": "1.0.0",
+      "provider": "new_enquiries",
+      "scope": "company",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "vendor": {
+      "rows": []
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "empty",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  },
+  {
+    "name": "viewer has not connected",
+    "request": {
+      "contract": "sprigr/home_queue",
+      "version": "1.0.0",
+      "provider": "new_enquiries",
+      "scope": "company",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "not_connected",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  }
+]
