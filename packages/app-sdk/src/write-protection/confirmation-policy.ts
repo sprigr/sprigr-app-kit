@@ -25,6 +25,10 @@ export interface PolicySource {
    * also has a rule here gets `attended: 'approval_card'`, so the person is
    * asked once on an attended turn (the card) instead of twice. An action with
    * a spec and no rule is left alone: it already asks once.
+   *
+   * Leave out any action your app gates conditionally around the gate (for
+   * example a delete that only reaches `gate.run` with `force: true`): on the
+   * shapes that skip the card, the confirmation would be the only prompt.
    */
   approvalCovered?: Iterable<string>;
 }

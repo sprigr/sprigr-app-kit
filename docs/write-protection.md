@@ -194,7 +194,7 @@ export const POLICY = buildConfirmationPolicy({ irreversible, always, approvalCo
 expect(checkConfirmationPolicy({ policy: POLICY, registry, approvalCovered: covered })).toEqual([]);
 ```
 
-The check fails a key no spec covers (it would remove the person's only prompt) and a covered, gated action without one (it asks twice). `sprigr-check-write-protection` refuses a key with any other value, or one on a rule that gates nothing. It needs a platform carrying sprigr-team decision 0167; an older one ignores the key and keeps asking twice, so shipping early is harmless.
+The check fails a key no spec covers (it would remove the person's only prompt) and a covered, gated action without one (it asks twice). If your app only routes an action through the gate under a condition of its own (a delete that cards only with `force: true`, a payment that cards only with an amount), leave that action out of `approvalCovered`, in the builder and the check alike: on the shapes that skip the card, the confirmation is the only prompt. `sprigr-check-write-protection` refuses a key with any other value, or one on a rule that gates nothing. It needs a platform carrying sprigr-team decision 0167; an older one ignores the key and keeps asking twice, so shipping early is harmless.
 
 ### Dispatcher tools
 
