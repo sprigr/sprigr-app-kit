@@ -62,7 +62,7 @@ describe('dropbox shape', () => {
 });
 
 
-describe('sprigr-apps#2690: an emptied account sheds its rows only after two confirmed empty walks', () => {
+describe('sprigr-apps#2690: an emptied account sheds its rows only after two consecutive (confirmed) empty walks', () => {
   type R = Awaited<ReturnType<typeof rig>>;
   /** 63 stale rows of this account (the staging count) plus one of another account. */
   function seedStale(r: R, n = 63): void {
@@ -110,27 +110,31 @@ describe('sprigr-apps#2690: an emptied account sheds its rows only after two con
     expect(r.src.confirmEmptyCalls).toBe(2);
   });
 
-  it('an adapter without confirmEmpty never deletes on an empty walk (microsoft-365 and google-workspace unchanged)', async () => {
+  it('an adapter without confirmEmpty still purges, but only on the second consecutive empty walk, never the first', async () => {
     const r = await rig('dropbox');
     seedStale(r);
     const { confirmEmpty: _drop, ...noHook } = r.adapter;
-    for (let i = 0; i < 3; i++) {
-      const out = await walk(r, noHook);
-      expect(out).toMatchObject({ reconciled: 0 });
-      expect(out.emptyWalkFollowUp).toBeUndefined();
-      await r.store.resetCursor(r.scope); // force another full walk
-    }
-    expect(ours(r)).toHaveLength(63);
+    const first = await walk(r, noHook);
+    expect(first).toMatchObject({ reconciled: 0, emptyWalkFollowUp: true });
     expect(r.fp.deletes).toEqual([]);
+    expect(ours(r)).toHaveLength(63);
+    expect(await marks(r)).toBe(1);
+    expect((await r.store.load(r.scope))!.cursor).toBeNull(); // the follow-up walk is requested
+    const second = await walk(r, noHook);
+    expect(second).toMatchObject({ reconciled: 63 });
+    expect(second.emptyWalkFollowUp).toBeUndefined();
+    expect(ours(r)).toEqual([]);
+    expect(r.fp.acl.has('dbx:file:u:user_bob:keep')).toBe(true);
     expect(await marks(r)).toBe(0);
+    expect(r.src.confirmEmptyCalls).toBe(0);
 
+    // google-workspace shape (no hook, install-scoped ids, the only indexer): heals one walk later than 0.1.3.
     const gw = await rig('drive');
     for (const id of ['gw:file:x', 'gw:file:y']) gw.fp.acl.set(id, { objectID: id, acl_principals: ['user:alice@corp.com'] });
-    for (let i = 0; i < 2; i++) {
-      expect(await walk(gw)).toMatchObject({ reconciled: 0 });
-      await gw.store.resetCursor(gw.scope);
-    }
+    expect(await walk(gw)).toMatchObject({ reconciled: 0, emptyWalkFollowUp: true });
     expect(gw.fp.acl.size).toBe(2);
+    expect(await walk(gw)).toMatchObject({ reconciled: 2 });
+    expect(gw.fp.acl.size).toBe(0);
   });
 
   it('confirmEmpty false: nothing deleted, marker not advanced, no follow-up walk', async () => {
@@ -181,12 +185,13 @@ describe('sprigr-apps#2690: an emptied account sheds its rows only after two con
 
   it("other actors' rows are untouched: install-scoped ids with another indexer never purge", async () => {
     const gw = await rig('drive');
-    const adapter = { ...gw.adapter, confirmEmpty: async () => true };
     for (const id of ['gw:file:x', 'gw:file:y']) gw.fp.acl.set(id, { objectID: id, acl_principals: ['user:alice@corp.com'] });
     await gw.store.enable({ actor: BOB }, { connectedEmail: 'bob@corp.com' });
-    for (let i = 0; i < 3; i++) {
-      expect(await walk(gw, adapter)).toMatchObject({ reconciled: 0 });
-      await gw.store.resetCursor(gw.scope);
+    for (const adapter of [gw.adapter, { ...gw.adapter, confirmEmpty: async () => true }]) {
+      for (let i = 0; i < 3; i++) {
+        expect(await walk(gw, adapter)).toMatchObject({ reconciled: 0 });
+        await gw.store.resetCursor(gw.scope);
+      }
     }
     expect(gw.fp.acl.size).toBe(2);
     expect(gw.fp.deletes).toEqual([]);
@@ -200,14 +205,15 @@ describe('sprigr-apps#2690: an emptied account sheds its rows only after two con
     expect(solo.fp.acl.size).toBe(0);
   });
 
-  it('an adapter with reconcilePrefixes still decides which prefixes an empty walk covers', async () => {
+  it('an adapter with reconcilePrefixes still decides which prefixes an empty walk covers (microsoft-365 shape, as in 0.1.3)', async () => {
     const r = await rig('delta');
-    const adapter = { ...r.adapter, confirmEmpty: async () => true };
     const sp = 'ms:file:u:user_alice:sp-lib:doc';
     r.fp.acl.set(sp, { objectID: sp, acl_principals: ['user:alice@corp.com'] });
-    for (let i = 0; i < 2; i++) {
-      expect(await walk(r, adapter)).toMatchObject({ reconciled: 0 });
-      await r.store.resetCursor(r.scope);
+    for (const adapter of [r.adapter, { ...r.adapter, confirmEmpty: async () => true }]) {
+      for (let i = 0; i < 2; i++) {
+        expect(await walk(r, adapter)).toMatchObject({ reconciled: 0 });
+        await r.store.resetCursor(r.scope);
+      }
     }
     expect(r.fp.acl.has(sp)).toBe(true);
   });

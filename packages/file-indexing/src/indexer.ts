@@ -588,7 +588,8 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
         // sprigr-apps#2690: the walk reached its final page with no error,
         // cut or hold (walkComplete) AND established a cursor. That alone is
         // not enough to wipe an account on an empty seen set: the reconcile
-        // also needs the adapter's confirmEmpty and a second such walk.
+        // also needs a second such walk, each confirmed by the adapter's
+        // confirmEmpty when it has one.
         const rec = await reconcileWalkDetailed(adapter, store, ctx, { completedWalk: nextCursor !== null });
         reconciled = rec.removed;
         emptyWalkFollowUp = rec.followUpWalk;
@@ -821,9 +822,10 @@ async function logContentFillOutcome(
   }
 }
 
-/** Consecutive completed, confirmed empty walks before an empty walk deletes
- *  rows (sprigr-apps#2690). The first one only records the marker and asks for
- *  another full walk; the second purges. */
+/** Consecutive completed empty walks (each confirmed, when the adapter has
+ *  confirmEmpty) before an empty walk deletes rows (sprigr-apps#2690).
+ *  The first only records the marker and asks for another full walk; the
+ *  second purges. */
 export const EMPTY_WALKS_BEFORE_PURGE = 2;
 
 /**
@@ -853,9 +855,10 @@ export function emptyWalkMarkerKey(walkKey: string): string {
  * Rows go only when ALL of these hold:
  *   1. `opts.completedWalk`: the caller saw the walk reach its final page with
  *      no error, cut or hold, and establish a cursor;
- *   2. the adapter implements `confirmEmpty` and it resolves true now (false
+ *   2. when the adapter implements `confirmEmpty`, it resolves true now (false
  *      or a throw deletes nothing and leaves the marker where it was; a throw
- *      propagates, so the caller keeps its cursor and walks again);
+ *      propagates, so the caller keeps its cursor and walks again). Without
+ *      the hook the walks alone decide;
  *   3. this is the EMPTY_WALKS_BEFORE_PURGE-th consecutive such walk, counted
  *      by the marker under `emptyWalkMarkerKey`. The first only records the
  *      marker and returns `followUpWalk: true`; any completed walk that sees
@@ -977,14 +980,10 @@ async function purgeConfirmedEmptyWalk<TEntry, TEnv extends FileIndexingEnv>(
     return { removed: 0, followUpWalk: false };
   }
   const held = listings.reduce((n, l) => n + l.ids.length, 0);
-  if (!adapter.confirmEmpty) {
-    console.warn(
-      `${label} empty walk for ${ctx.walkKey}: ${held} row(s) still indexed, but the adapter has no confirmEmpty, so nothing is deleted`,
-    );
-    return { removed: 0, followUpWalk: false };
-  }
-  // Throws propagate: the caller records reconcile_failed and keeps its cursor.
-  const confirmed = await adapter.confirmEmpty(ctx);
+  // Without the hook the two consecutive completed walks are the whole proof
+  // (0.1.3 purged after one). Throws propagate: the caller records
+  // reconcile_failed and keeps its cursor.
+  const confirmed = adapter.confirmEmpty ? await adapter.confirmEmpty(ctx) : true;
   if (confirmed !== true) {
     console.warn(
       `${label} empty walk for ${ctx.walkKey}: confirmEmpty says the account is not empty; ${held} row(s) kept, marker unchanged`,
@@ -995,7 +994,7 @@ async function purgeConfirmedEmptyWalk<TEntry, TEnv extends FileIndexingEnv>(
   await store.recordWalkSeen(markerKey, [`walk:${marks + 1}`]);
   if (marks + 1 < EMPTY_WALKS_BEFORE_PURGE) {
     console.warn(
-      `${label} confirmed empty walk ${marks + 1} of ${EMPTY_WALKS_BEFORE_PURGE} for ${ctx.walkKey}: ${held} row(s) kept until the next full walk confirms it; that walk is requested`,
+      `${label} empty walk ${marks + 1} of ${EMPTY_WALKS_BEFORE_PURGE} for ${ctx.walkKey}: ${held} row(s) kept until the next full walk confirms it; that walk is requested`,
     );
     return { removed: 0, followUpWalk: true };
   }
@@ -1005,7 +1004,7 @@ async function purgeConfirmedEmptyWalk<TEntry, TEnv extends FileIndexingEnv>(
     if (l.truncated) incomplete = true;
     if (l.ids.length === 0) continue;
     console.warn(
-      `${label} purging ${l.ids.length}${l.truncated ? '+' : ''} row(s) under ${l.prefix} for ${ctx.walkKey}: ${marks + 1} consecutive completed full walks saw nothing and confirmEmpty agreed`,
+      `${label} purging ${l.ids.length}${l.truncated ? '+' : ''} row(s) under ${l.prefix} for ${ctx.walkKey}: ${marks + 1} consecutive completed full walks saw nothing${adapter.confirmEmpty ? ' and confirmEmpty agreed' : ''}`,
     );
     for (let i = 0; i < l.ids.length; i += PURGE_DELETE_CHUNK) {
       if (budgetBelow(MIN_PURGE_LEG_MS, ctx.deadline, ctx.now)) {

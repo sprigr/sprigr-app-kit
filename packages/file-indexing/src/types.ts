@@ -388,10 +388,10 @@ export interface FileSourceAdapter<TEntry = unknown, TEnv extends FileIndexingEn
    *  `has_more: false`); resolve false when the source shows anything; throw
    *  when the check itself failed. The deadline is on `ctx.deadline`.
    *
-   *  Optional. Without it an empty walk NEVER deletes rows: a broken or
-   *  transient empty listing must not wipe an account. With it, rows go only
-   *  on the second consecutive completed, confirmed empty walk (see the
-   *  README's "Empty walks"). */
+   *  Optional. Every empty walk needs two consecutive completed full walks
+   *  before rows go; with this hook each of those walks must ALSO be
+   *  confirmed, so a broken empty listing cannot wipe an account on its own
+   *  (see the README's "Empty walks"). */
   confirmEmpty?(ctx: FileIndexingContext<TEnv>): Promise<boolean>;
 
   /** sprigr-apps#2211: an IDs-and-parents enumeration of the whole source on
