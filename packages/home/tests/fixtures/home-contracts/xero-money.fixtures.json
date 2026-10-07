@@ -1,0 +1,130 @@
+[
+  {
+    "name": "a normal day",
+    "request": {
+      "contract": "sprigr/home_metrics",
+      "version": "1.0.0",
+      "provider": "money",
+      "scope": "company",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "vendor": {
+      "invoices": [
+        {
+          "InvoiceNumber": "INV-0042",
+          "DueDate": "/Date(1760000000000+0000)/",
+          "AmountDue": 640
+        }
+      ]
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "ok",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": [
+        {
+          "metric": "receivables.overdue",
+          "value": {
+            "kind": "money",
+            "amount": {
+              "minor": 189000,
+              "currency": "AUD"
+            }
+          },
+          "count": 2,
+          "period": {
+            "kind": "instant"
+          }
+        },
+        {
+          "metric": "receivables.outstanding",
+          "value": {
+            "kind": "money",
+            "amount": {
+              "minor": 1245000,
+              "currency": "AUD"
+            }
+          },
+          "count": 11,
+          "period": {
+            "kind": "instant"
+          },
+          "series": [
+            980000,
+            1102000,
+            1245000
+          ]
+        }
+      ],
+      "stale_after": "2026-10-06T21:32:00Z"
+    }
+  },
+  {
+    "name": "nothing today",
+    "request": {
+      "contract": "sprigr/home_metrics",
+      "version": "1.0.0",
+      "provider": "money",
+      "scope": "company",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "vendor": {
+      "rows": []
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "empty",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  },
+  {
+    "name": "viewer has not connected",
+    "request": {
+      "contract": "sprigr/home_metrics",
+      "version": "1.0.0",
+      "provider": "money",
+      "scope": "company",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "not_connected",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  }
+]
