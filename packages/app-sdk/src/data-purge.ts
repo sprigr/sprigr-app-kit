@@ -211,7 +211,11 @@ export async function snapshotIndexIds(env: WfpBridgeEnv, prefixes: readonly IdP
         byGroup.set(key, group);
       }
       const r = await client.listIds(s.prefix, { index: s.index, withAcl: s.withAcl });
-      r.objectIDs.forEach((id) => group!.ids.add(id));
+      // The platform filters by prefix; this guard keeps a listing bug from
+      // ever widening a purge past what the caller named.
+      r.objectIDs.forEach((id) => {
+        if (id.startsWith(s.prefix)) group!.ids.add(id);
+      });
       snap.truncated ||= r.truncated;
     }
   } catch (err) {

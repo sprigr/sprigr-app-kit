@@ -91,6 +91,14 @@ describe('snapshotIndexIds + deleteSnapshotIds', () => {
     expect(snap.listed).toBe(2);
   });
 
+  it('never deletes an id outside the prefix, even if a listing returns one', async () => {
+    const listIds = vi.fn(async () => ({ objectIDs: ['variant_1', 'other_9'], truncated: false }));
+    const del = vi.fn(async (ids: string[]) => ({ ok: true, deleted: ids.length }));
+    const res = await purgeIndexByPrefix({ SPRIGR: { data: { listIds, delete: del } } }, ['variant_']);
+    expect(res.deleted).toBe(1);
+    expect(del).toHaveBeenCalledWith(['variant_1'], { index: undefined, withAcl: undefined });
+  });
+
   it('reports a truncated listing instead of hiding it', async () => {
     stubPlatform({ default: ['u:1', 'u:2', 'u:3'] }, { truncateAt: 2 });
     const res = await purgeIndexByPrefix(BRIDGE_ENV, ['u:']);
