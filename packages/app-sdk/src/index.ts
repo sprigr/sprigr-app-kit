@@ -772,3 +772,6 @@ export type {
   IdSnapshot,
   PurgeResult,
 } from './data-purge';
+
+export { getCompanyTimezone } from './company';
+export type { CompanyTimezoneEnv } from './company';

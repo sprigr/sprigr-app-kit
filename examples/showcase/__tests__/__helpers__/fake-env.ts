@@ -210,6 +210,7 @@ export function makeEnv(overrides: Partial<ShowcaseEnv> = {}): ShowcaseEnv {
     INSTALL_ID: 'inst_test',
     COMPANY_ID: 'comp_test',
     APP_SLUG: 'showcase',
+    COMPANY_TIMEZONE: 'Australia/Brisbane',
     ...overrides,
   };
 }

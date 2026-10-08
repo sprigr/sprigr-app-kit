@@ -295,6 +295,7 @@ After [sprigr-team #836] + [#851], every per-install WFP script gets these bindi
 | `INSTALL_ID` | plain_text | `app_installations.id` | OAuth state, webhook URLs, audit row stamping |
 | `COMPANY_ID` | plain_text | `app_installations.company_id` | Stamp on outbound requests |
 | `APP_SLUG` | plain_text | `marketplace_apps.slug` | Self-identification in logs |
+| `COMPANY_TIMEZONE` | plain_text | `companies.timezone`, only when it is a valid IANA zone (sprigr-team #11038) | The tenant's "today" or a local cut-off. Read it with `getCompanyTimezone(env)` (app-sdk 0.24.0), which returns `undefined` rather than a default when the company has no zone. Fixed at upload: a zone change reaches the install on its next build |
 | `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for `env.SPRIGR.emit()` calls back to platform |
 | `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | `https://api.team.sprigr.com` (prod) or `https://staging-api-team.sprigr.com` |
 | Plus every manifest `secrets[]` entry | secret_text | the install's `SECRETS_KV` row | Per-install OAuth keys, webhook signing keys, etc. |
@@ -312,6 +313,7 @@ export interface ProcoreEnv {
   INSTALL_ID?: string;     // populated post-#851
   COMPANY_ID?: string;
   APP_SLUG?: string;
+  COMPANY_TIMEZONE?: string;   // the company's IANA zone, when it has one
   INTERNAL_TRIGGER_SECRET?: string;
   [key: string]: unknown;  // pacifies CloudflareEnv constraint
 }
