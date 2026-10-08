@@ -74,6 +74,14 @@ export interface ApprovalSpec<P = unknown, E = unknown> {
   /**
    * Extra identity parts beyond `rawId + connection`, e.g. a sorted tag set.
    * Use `set()` / `seq()` from `approval-hash`. Never include `confirm`.
+   *
+   * Omitted, the wrapper appends a canonical form of every OTHER argument:
+   * not the `keys` fields, not `confirm` / `_approval_granted`, and not the
+   * gate's `connectionArgs` (sprigr-apps#2605). So a grant approved for one
+   * payload cannot be spent on another; before, a hash-less refund hashed the
+   * same for 10.00 and 250.00. Supply `hash` when that default is too strict
+   * (an order-insensitive set, a free-text field the model rewords) or
+   * `() => []` when the id and connection really are the whole operation.
    */
   hash?: (args: ToolArgs) => Array<string | number | undefined | null>;
   /**
@@ -158,6 +166,14 @@ export interface ApprovalGateOptions<E, P = E> {
    */
   resolveConnection: (env: E, args: ToolArgs) => Promise<string>;
   /**
+   * Argument names that only CHOOSE the connection (e.g. `['store']`). They
+   * are left out of the default payload hash (see `ApprovalSpec.hash`)
+   * because the connection is already in the hash in its RESOLVED form, and
+   * the model usually omits the raw argument on the retry. Omit for a
+   * single-connection app.
+   */
+  connectionArgs?: string[];
+  /**
    * Re-pin to a resolved connection so lookups and captures hit it. Omit when
    * `P` is `E` and the env needs no pin (a single-connection app).
    */
@@ -207,6 +223,37 @@ export interface DispatcherApprovalGate<E> {
    * `_undo` beside its result.
    */
   run(action: string, args: ToolArgs, env: E, write: () => Promise<unknown>): Promise<unknown>;
+}
+
+/** Keys never part of an operation's identity: the attestation flags. */
+const ATTESTATION_KEYS = ['confirm', APPROVAL_GRANTED_KEY];
+
+/** JSON with object keys sorted at every depth, so key order cannot move a hash. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const entries = Object.keys(value as Record<string, unknown>)
+      .filter((k) => (value as Record<string, unknown>)[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`);
+    return `{${entries.join(',')}}`;
+  }
+  return JSON.stringify(value ?? null);
+}
+
+/**
+ * The default identity for a spec with no `hash` (sprigr-apps#2605): every
+ * argument that is not the target id, an attestation flag, or a
+ * connection-choosing argument, canonicalised. Empty when nothing is left,
+ * so an id-only call keeps exactly the hash it always had.
+ */
+function defaultPayloadParts(params: ToolArgs, keys: string[], connectionArgs: string[] = []): string[] {
+  const skip = new Set([...keys, ...ATTESTATION_KEYS, ...connectionArgs]);
+  const rest: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(params)) {
+    if (!skip.has(k) && v !== undefined) rest[k] = v;
+  }
+  return Object.keys(rest).length ? [canonicalJson(rest)] : [];
 }
 
 function rawIdOf(args: ToolArgs, keys: string[]): string {
@@ -272,7 +319,7 @@ async function askPass<E, P>(
   const pinned = await pin(opts, env, connection);
   const describeTarget = spec.describeTarget ?? opts.describeTarget;
   const target = rawId && describeTarget ? await safeLabel(describeTarget, pinned, rawId, name) : rawId || '(unknown id)';
-  const extra = spec.hash ? spec.hash(params) : [];
+  const extra = spec.hash ? spec.hash(params) : defaultPayloadParts(params, spec.keys, opts.connectionArgs);
   const count = countOf(spec as ApprovalSpec<unknown>, params, rawId);
   return {
     ok: false,

@@ -10,6 +10,8 @@ function opts(overrides: Partial<RequireApprovalOptions<Env>> = {}): RequireAppr
   return {
     scope: 'test-undo',
     resolveConnection: async (env, args) => (typeof args.store === 'string' ? `${args.store}.myshopify.com` : env.pinned ?? env.defaultStore),
+    // `store` only picks the shop, so it stays out of the default payload hash (#2605).
+    connectionArgs: ['store'],
     pinEnv: (env, connection) => ({ ...env, pinned: connection }),
     describeTarget: async (env, id) => `"Blue Snowboard" (${id}) via ${env.pinned}`,
     stampConnection: (r, c) => ({ ...(r as object), store: c }),
