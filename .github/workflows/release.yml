@@ -137,7 +137,11 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          for tgz in dist-tarballs/*.tgz; do
+          # The leading ./ matters: npm reads a bare `dir/file.tgz` argument as
+          # a GitHub `owner/repo` shorthand and tries `git ls-remote
+          # ssh://git@github.com/dir/file.tgz.git`, which fails with
+          # "Permission denied (publickey)" (run 37759912582, 2026-10-08).
+          for tgz in ./dist-tarballs/*.tgz; do
             echo "publishing $tgz"
             # `npm view` in the build job can lag a publish by minutes, so a
             # release that starts right after another one's publish can see a
