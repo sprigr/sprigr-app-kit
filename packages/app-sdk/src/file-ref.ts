@@ -268,9 +268,18 @@ export async function openFileRef(env: FileRefEnv, ref: FileRef | null | undefin
   const openUrl = async (url: string, via: FileRefVia, filename: string): Promise<FileRefStream> => {
     let res: Response;
     try {
-      res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
+      // 'manual', not 'error': the Workers runtime throws on redirect: 'error'
+      // ("does not make sense at the edge; use "manual" and check the response
+      // status code"), so 0.21.0 failed every link read (sprigr-team#10981).
+      // Under 'manual' a redirect comes back as a 3xx (or an opaqueredirect,
+      // status 0) and is refused below without being followed.
+      res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'manual' });
     } catch (err) {
       throw failure(err);
+    }
+    if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
+      await res.body?.cancel().catch(() => {});
+      throw new FileRefError('read_failed', `Could not read ${label}: the link redirected; refusing to follow.`);
     }
     if (!res.ok) {
       await res.body?.cancel().catch(() => {});
