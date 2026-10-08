@@ -144,7 +144,8 @@ Object.assign(registry, requireApproval(registry, SPECS, {
 What the wrapper guarantees:
 
 - The **connection is resolved and pinned inside the wrapper**, before the label lookup, the hash and the capture. An approval gate that sits outside the app's own pin sees the install's default connection and gets all three wrong. Shopify shipped exactly that.
-- The **hash is `rawId + connection + your extra parts`**, so a tap survives the model dropping `store` on the retry. Never put `confirm` in it.
+- The **grant hash covers the payload by default** (0.23.0, sprigr-apps#2605). A spec with no `hash` hashes the target id, the resolved connection, and a canonical form of every other argument except the `keys` fields, `confirm` / `_approval_granted`, and the gate's `connectionArgs`. Before, a hash-less refund hashed the same for 10.00 and 250.00, so a tap on one could be spent on the other. Declare `connectionArgs: ['store']` (or whatever argument only picks the connection) on the gate, or a retry that drops it moves the hash and asks again. Give a spec its own `hash` when the default is too strict (an order-insensitive set via `set()`, a free-text field the model rewords), or `hash: () => []` when the id and connection really are the whole operation.
+- The **hash is `rawId + connection + your extra parts`** (or the default payload parts above when the spec has no `hash`), so a tap survives the model dropping `store` on the retry as long as `store` is in `connectionArgs`. Never put `confirm` in it.
 - On the granted pass it **captures before the write, mints only after the write reported `ok`**, and never returns `_undo` when the capture or the journal failed. A failed capture does not fail the write.
 - A spec naming a tool absent from the registry **throws at build time** rather than silently ungating a rename.
 
