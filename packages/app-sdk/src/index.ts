@@ -20,10 +20,12 @@ export type { FetchFileResult } from './file';
 export {
   resolveFileRef,
   readFileRef,
+  openFileRef,
   FileRefError,
   SPRIGR_FILE_HOSTS,
   DEFAULT_FILE_READ_TIMEOUT_MS,
   WORKSPACE_FILE_HOW_TO,
+  FILE_REF_SOURCES_HELP,
 } from './file-ref';
 export type {
   FileRef,
@@ -33,6 +35,8 @@ export type {
   FileRefEnv,
   ReadFileRefOptions,
   FileRefContent,
+  FileRefStream,
+  FileRefVia,
 } from './file-ref';
 export {
   resolvePlatformWebhookBase,

@@ -13,10 +13,10 @@
  *
  *   resolveFileRef  validation only, no I/O. Run it before an approval card or
  *                   any other side effect, so a malformed call fails first.
- *   readFileRef     resolve, then read the bytes into memory with a size cap,
- *                   a time cap and no redirects. For files an app buffers; an
- *                   app that streams a large file keeps its own reader and
- *                   still calls resolveFileRef.
+ *   openFileRef     resolve, then open the bytes as a stream with a size cap,
+ *                   a time cap and no redirects, so a large attachment is
+ *                   passed on without being buffered first.
+ *   readFileRef     openFileRef, read into memory, for files an app buffers.
  *
  * What a reference may be:
  *   - file_key: a key in THIS install's file store, in any form a tool hands
@@ -30,7 +30,7 @@
  *     host, and every host it can reach is the platform's own.
  */
 
-import { base64ToBytes, fetchFileBytes } from './file';
+import { base64ToBytes } from './file';
 import { getAppFile, type AppFilesEnv } from './app-files';
 import { APP_FILES_ROOT, appKeyFromCallerKey, callerKeyRefusal } from './stored-file-keys';
 
@@ -46,6 +46,14 @@ const STORED_READ_URL_TTL_SECONDS = 300;
 /** How an agent gets a workspace file to an app: a short-lived signed link. */
 export const WORKSPACE_FILE_HOW_TO =
   "Apps cannot open a file in your own Sprigr storage by key. Mint a short-lived download link for it (the files tool's generate_url; a few minutes is enough) and pass that link as file_url: the app fetches it itself, so the link never leaves Sprigr.";
+
+/**
+ * The sources a file argument accepts, written for the agent. Put it in a
+ * tool's input description so the agent knows what to pass before it calls;
+ * the not_one and not_sprigr_host refusals repeat it.
+ */
+export const FILE_REF_SOURCES_HELP =
+  "Pass exactly one of: file_key, a key this app's own tools returned; or file_url, an https Sprigr file link (on files.sprigr.com), either the download_url another app's tool returned or, for a file in your own Sprigr storage, a short-lived link from the files tool's generate_url.";
 
 export type FileRefErrorCode =
   | 'not_one'
@@ -130,7 +138,7 @@ export function resolveFileRef(ref: FileRef | null | undefined, opts: ResolveFil
   const key = str(ref?.file_key);
   const url = str(ref?.file_url);
   if ((key === null) === (url === null)) {
-    throw new FileRefError('not_one', `${label} takes exactly one of file_key (a key this app's tools returned) or file_url (a Sprigr file link).`);
+    throw new FileRefError('not_one', `${label} takes exactly one of file_key or file_url. ${FILE_REF_SOURCES_HELP}`);
   }
 
   if (url !== null) {
@@ -145,7 +153,7 @@ export function resolveFileRef(ref: FileRef | null | undefined, opts: ResolveFil
     if (u.protocol !== 'https:' || !SPRIGR_FILE_HOSTS.has(u.hostname.toLowerCase())) {
       throw new FileRefError(
         'not_sprigr_host',
-        `${label}.file_url must be an https Sprigr file link (on files.sprigr.com), such as the download_url a tool returned. Other web addresses are not fetched.`,
+        `${label}.file_url is not a Sprigr file link, and other web addresses are not fetched. ${FILE_REF_SOURCES_HELP}`,
       );
     }
     if (path.startsWith(APP_FILES_ROOT)) {
@@ -191,67 +199,146 @@ export interface FileRefEnv extends Partial<AppFilesEnv> {
 export interface ReadFileRefOptions extends Omit<ResolveFileRefOptions, 'installId' | 'companyId'> {
   /** Byte ceiling for one file (required: pick the downstream API's limit). */
   maxBytes: number;
-  /** Default {@link DEFAULT_FILE_READ_TIMEOUT_MS}. */
+  /**
+   * Time for the whole read, headers and body, default
+   * {@link DEFAULT_FILE_READ_TIMEOUT_MS}. A streaming caller sending a large
+   * file onward should raise it to cover the upload too.
+   */
   timeoutMs?: number;
 }
+
+/** How the bytes were read: a minted link to a stored key, the install-token fallback, or the caller's link. */
+export type FileRefVia = 'bridge' | 'install_token' | 'url';
 
 export interface FileRefContent {
   bytes: Uint8Array;
   size: number;
   contentType: string;
   filename: string;
-  /** How the bytes were read: a minted link to a stored key, the install-token fallback, or the caller's link. */
-  via: 'bridge' | 'install_token' | 'url';
+  via: FileRefVia;
 }
 
-const mb = (n: number) => Math.round((n / (1024 * 1024)) * 10) / 10;
+export interface FileRefStream {
+  /**
+   * The file's bytes. Errors with a FileRefError (`too_large`, `timeout`,
+   * `read_failed`) if the cap or the time runs out mid-read; cancel it if you
+   * stop early.
+   */
+  body: ReadableStream<Uint8Array>;
+  /** The declared length when the source sent one, else null. */
+  size: number | null;
+  contentType: string;
+  filename: string;
+  via: FileRefVia;
+}
+
+const round1 = (n: number) => Math.round(n * 10) / 10;
+/** A size for a message: MB, KB or bytes, so a small cap does not read as "0 MB". */
+const human = (n: number) => (n >= 1024 * 1024 ? `${round1(n / (1024 * 1024))} MB` : n >= 1024 ? `${round1(n / 1024)} KB` : `${n} bytes`);
 
 /**
- * Resolve a reference (with the env's install and company) and read it into
- * memory. Every fetch is time-capped, size-capped, and refuses redirects, so
- * a Sprigr link cannot bounce the read to another host. Throws FileRefError.
+ * Resolve a reference (with the env's install and company) and open it as a
+ * stream, so a large attachment is passed on without being buffered first.
+ * Every fetch is time-capped, size-capped (on the declared length up front and
+ * on the bytes as they arrive), and refuses redirects, so a Sprigr link cannot
+ * bounce the read to another host. The install-token fallback returns its
+ * bytes in one chunk (that transport is base64 JSON). Throws FileRefError.
  */
-export async function readFileRef(env: FileRefEnv, ref: FileRef | null | undefined, opts: ReadFileRefOptions): Promise<FileRefContent> {
+export async function openFileRef(env: FileRefEnv, ref: FileRef | null | undefined, opts: ReadFileRefOptions): Promise<FileRefStream> {
   const label = opts.label ?? 'file';
   const resolved = resolveFileRef(ref, { ...opts, installId: env.INSTALL_ID, companyId: env.COMPANY_ID });
   const timeoutMs = opts.timeoutMs ?? DEFAULT_FILE_READ_TIMEOUT_MS;
-  const tooLarge = (size: number) =>
-    new FileRefError('too_large', `${label} is ${mb(size)} MB, over the ${mb(opts.maxBytes)} MB limit, so it was not read.`);
-
-  const fetchCapped = async (url: string) => {
-    try {
-      return await fetchFileBytes(url, { maxBytes: opts.maxBytes, init: { signal: AbortSignal.timeout(timeoutMs), redirect: 'error' } });
-    } catch (err) {
-      const name = err instanceof Error ? err.name : '';
-      const message = err instanceof Error ? err.message : String(err);
-      if (name === 'TimeoutError' || name === 'AbortError') {
-        throw new FileRefError('timeout', `Reading ${label} took longer than ${Math.round(timeoutMs / 1000)}s, so it was not read.`);
-      }
-      if (/over the \d+-byte cap/.test(message)) throw tooLarge(opts.maxBytes + 1);
-      if (/HTTP 404/.test(message)) throw new FileRefError('not_found', `There is no file at ${label} (the link or key may have expired or been deleted).`);
-      throw new FileRefError('read_failed', `Could not read ${label}: ${message}`);
+  const tooLarge = (size: number | null) =>
+    new FileRefError(
+      'too_large',
+      size === null
+        ? `${label} is over the ${human(opts.maxBytes)} limit, so it was not read.`
+        : `${label} is ${human(size)}, over the ${human(opts.maxBytes)} limit, so it was not read.`,
+    );
+  const failure = (err: unknown): FileRefError => {
+    if (err instanceof FileRefError) return err;
+    const name = err instanceof Error ? err.name : '';
+    const message = err instanceof Error ? err.message : String(err);
+    if (name === 'TimeoutError' || name === 'AbortError') {
+      return new FileRefError('timeout', `Reading ${label} took longer than ${Math.round(timeoutMs / 1000)}s, so it was not read.`);
     }
+    return new FileRefError('read_failed', `Could not read ${label}: ${message}`);
   };
 
-  if (resolved.kind === 'url') {
-    const got = await fetchCapped(resolved.url);
-    return { bytes: got.bytes, size: got.size, contentType: got.contentType, filename: resolved.filename, via: 'url' };
-  }
+  const openUrl = async (url: string, via: FileRefVia, filename: string): Promise<FileRefStream> => {
+    let res: Response;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: 'error' });
+    } catch (err) {
+      throw failure(err);
+    }
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      if (res.status === 404) throw new FileRefError('not_found', `There is no file at ${label} (the link or key may have expired or been deleted).`);
+      throw new FileRefError('read_failed', `Could not read ${label}: the file host answered HTTP ${res.status}.`);
+    }
+    const declared = Number(res.headers.get('content-length') || '');
+    const size = Number.isFinite(declared) && declared >= 0 && res.headers.has('content-length') ? declared : null;
+    if (size !== null && size > opts.maxBytes) {
+      await res.body?.cancel().catch(() => {});
+      throw tooLarge(size);
+    }
+    const contentType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream';
+    const reader = (res.body ?? new ReadableStream<Uint8Array>({ start: (c) => c.close() })).getReader();
+    let total = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(ctrl) {
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await reader.read();
+        } catch (err) {
+          ctrl.error(failure(err));
+          return;
+        }
+        if (chunk.done) {
+          ctrl.close();
+          return;
+        }
+        total += chunk.value.byteLength;
+        if (total > opts.maxBytes) {
+          await reader.cancel().catch(() => {});
+          ctrl.error(tooLarge(null));
+          return;
+        }
+        ctrl.enqueue(chunk.value);
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    });
+    return { body, size, contentType, filename, via };
+  };
+
+  if (resolved.kind === 'url') return openUrl(resolved.url, 'url', resolved.filename);
 
   const files = (env.SPRIGR as { files?: { url?: (key: string, o: { expiresIn: number }) => Promise<{ url?: string } | null> } } | undefined)?.files;
   if (typeof files?.url === 'function') {
     const minted = await files.url(resolved.appKey, { expiresIn: STORED_READ_URL_TTL_SECONDS });
     if (!minted?.url) throw new FileRefError('not_found', `This app's file store has no file at "${resolved.appKey}".`);
-    const got = await fetchCapped(minted.url);
-    return { bytes: got.bytes, size: got.size, contentType: got.contentType, filename: resolved.filename, via: 'bridge' };
+    return openUrl(minted.url, 'bridge', resolved.filename);
   }
   if (env.SPRIGR_INSTALL_TOKEN && env.SPRIGR_PLATFORM_BASE) {
-    const got = await getAppFile(env as AppFilesEnv, resolved.appKey);
+    let got: Awaited<ReturnType<typeof getAppFile>>;
+    try {
+      got = await getAppFile(env as AppFilesEnv, resolved.appKey);
+    } catch (err) {
+      throw failure(err);
+    }
     if (got.bytes > opts.maxBytes) throw tooLarge(got.bytes);
     const bytes = base64ToBytes(got.base64 ?? '');
     if (bytes.byteLength > opts.maxBytes) throw tooLarge(bytes.byteLength);
     return {
-      bytes,
+      body: new ReadableStream<Uint8Array>({
+        start(ctrl) {
+          ctrl.enqueue(bytes);
+          ctrl.close();
+        },
+      }),
       size: bytes.byteLength,
       contentType: got.contentType || 'application/octet-stream',
       filename: got.filename || resolved.filename,
@@ -262,4 +349,31 @@ export async function readFileRef(env: FileRefEnv, ref: FileRef | null | undefin
     'no_file_store',
     `This runtime has no file store to read ${label}.file_key from (no env.SPRIGR.files and no install token). Pass a Sprigr file link as file_url instead.`,
   );
+}
+
+/**
+ * {@link openFileRef}, read into memory. For files an app sends on in one
+ * request body; use openFileRef to pass a large file on as a stream.
+ * Throws FileRefError.
+ */
+export async function readFileRef(env: FileRefEnv, ref: FileRef | null | undefined, opts: ReadFileRefOptions): Promise<FileRefContent> {
+  const opened = await openFileRef(env, ref, opts);
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = opened.body.getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.byteLength;
+  }
+  const bytes = chunks.length === 1 ? chunks[0]! : new Uint8Array(size);
+  if (chunks.length !== 1) {
+    let at = 0;
+    for (const c of chunks) {
+      bytes.set(c, at);
+      at += c.byteLength;
+    }
+  }
+  return { bytes, size, contentType: opened.contentType, filename: opened.filename, via: opened.via };
 }
