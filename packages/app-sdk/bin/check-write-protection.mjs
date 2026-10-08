@@ -93,6 +93,33 @@ export function scanManifest(manifest) {
   return out;
 }
 
+/**
+ * Malformed `attended` keys (sprigr-team decision 0167), as `tool` or
+ * `tool:action` findings. Not baselined: no app may ship one.
+ *
+ * A manifest cannot say whether an approval card really covers the action,
+ * because the specs are code. That half is `checkConfirmationPolicy` /
+ * `attendedFindings` with `approvalCovered`, in the app's own test. What a
+ * manifest CAN show is a key the platform would ignore (any value but
+ * 'approval_card', so the person is quietly asked twice) and a key on a rule
+ * that gates nothing (so there is no confirmation for it to step aside from,
+ * which means it was written by hand).
+ */
+export function scanAttended(manifest) {
+  const out = [];
+  const check = (label, rule) => {
+    if (!rule || typeof rule !== 'object' || !('attended' in rule)) return;
+    if (rule.attended !== 'approval_card') out.push(`${label}: attended must be 'approval_card', got ${JSON.stringify(rule.attended)}`);
+    else if (!isGatedRule(rule)) out.push(`${label}: attended on a rule with no always or when, so it gates nothing`);
+  };
+  for (const tool of manifest.tools || []) {
+    if (!tool || !tool.confirmation || typeof tool.confirmation !== 'object') continue;
+    check(tool.name, tool.confirmation);
+    for (const [a, rule] of Object.entries(tool.confirmation.actions || {})) check(`${tool.name}:${a}`, rule);
+  }
+  return out;
+}
+
 /** Apply the app's allowlist. Returns { violations, stale, unreasoned }. */
 export function applyAllowlist(violations, allowlist) {
   const allow = (allowlist && allowlist.allow) || {};
@@ -151,6 +178,7 @@ export function run(argv, cwd = process.cwd()) {
     const allowlist = existsSync(allowPath) ? readJson(allowPath) : null;
     const raw = scanManifest(manifest);
     const { violations, stale, unreasoned } = applyAllowlist(raw, allowlist);
+    for (const f of scanAttended(manifest)) failures.push(`${slug}: ${f}`);
     for (const k of unreasoned) failures.push(`${slug}: write-protection.json allow entry "${k}" has no reason`);
     for (const k of stale) failures.push(`${slug}: write-protection.json allow entry "${k}" is stale (no longer destructive-and-ungated); remove it`);
 

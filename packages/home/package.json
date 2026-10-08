@@ -1,0 +1,35 @@
+{
+  "name": "@sprigr/apps-home",
+  "version": "0.1.0",
+  "description": "Sprigr Home contracts for marketplace apps: the record types, the manifest home block validator, the fixture checker and the display-text cleaner, identical to the platform's own.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsup src/index.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/home"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

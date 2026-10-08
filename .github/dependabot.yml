@@ -1,0 +1,8 @@
+# Keeps the commit-SHA pins in .github/workflows current (sprigr-apps#2643):
+# pinned actions don't move on their own, so without this they go stale.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

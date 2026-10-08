@@ -1,0 +1,189 @@
+[
+  {
+    "name": "a normal day",
+    "request": {
+      "contract": "sprigr/home_schedule",
+      "version": "1.0.0",
+      "provider": "my_day",
+      "scope": "me",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "person": {
+        "vendor_person_id": "7",
+        "method": "native"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "vendor": {
+      "rows": [
+        {
+          "staffId": 7,
+          "jobId": 1182
+        },
+        {
+          "staffId": 7,
+          "jobId": 1190
+        }
+      ]
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "ok",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": [
+        {
+          "id": "sched-5501",
+          "kind": "block",
+          "start": "2026-10-06T23:30:00Z",
+          "end": "2026-10-07T01:00:00Z",
+          "status": "scheduled",
+          "category": "job",
+          "title": "Job 1182, hot water service",
+          "location": {
+            "text": "12 Example Street, Paddington QLD"
+          },
+          "subjects": [
+            {
+              "key": "email",
+              "value": "owner@harbourcafe.example"
+            },
+            {
+              "key": "customer_ref",
+              "value": "C-311",
+              "issuer": "simpro"
+            },
+            {
+              "key": "job_ref",
+              "value": "1182",
+              "issuer": "simpro"
+            }
+          ],
+          "vendor_tz": "Australia/Brisbane",
+          "ref": {
+            "id": "1182",
+            "label": "Job 1182",
+            "link": "job"
+          },
+          "detail": [
+            {
+              "label": "Site contact",
+              "value": "Priya",
+              "type": "string"
+            }
+          ]
+        },
+        {
+          "id": "sched-5502",
+          "kind": "window",
+          "start": "2026-10-07T02:00:00Z",
+          "end": "2026-10-07T04:00:00Z",
+          "status": "tentative",
+          "category": "inspection",
+          "title": "Job 1190, roof inspection",
+          "ref": {
+            "id": "1190",
+            "label": "Job 1190",
+            "link": "job"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "name": "nothing today",
+    "request": {
+      "contract": "sprigr/home_schedule",
+      "version": "1.0.0",
+      "provider": "my_day",
+      "scope": "me",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "person": {
+        "vendor_person_id": "7",
+        "method": "native"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "vendor": {
+      "rows": []
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "empty",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  },
+  {
+    "name": "viewer has not connected",
+    "request": {
+      "contract": "sprigr/home_schedule",
+      "version": "1.0.0",
+      "provider": "my_day",
+      "scope": "me",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "not_connected",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  },
+  {
+    "name": "viewer is not linked to a vendor person",
+    "request": {
+      "contract": "sprigr/home_schedule",
+      "version": "1.0.0",
+      "provider": "my_day",
+      "scope": "me",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane",
+        "window_start": "2026-10-06T14:00:00Z",
+        "window_end": "2026-10-07T14:00:00Z"
+      },
+      "purpose": "read",
+      "deadline_ms": 3500
+    },
+    "expect": {
+      "v": "1.0.0",
+      "state": "unmapped",
+      "as_of": "2026-10-06T21:02:00Z",
+      "basis": {
+        "day": "2026-10-07",
+        "tz": "Australia/Brisbane"
+      },
+      "records": []
+    }
+  }
+]

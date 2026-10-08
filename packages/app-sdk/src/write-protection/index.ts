@@ -30,9 +30,10 @@ export {
   DEFAULT_MONEY_FIELDS,
   DEFAULT_WRITE_PREFIXES,
   buildConfirmationPolicy,
+  attendedFindings,
   checkConfirmationPolicy,
 } from './confirmation-policy';
-export type { PolicyCheckInput, PolicySource } from './confirmation-policy';
+export type { ApprovalCoverage, PolicyCheckInput, PolicySource } from './confirmation-policy';
 export { offerUndo, safeCapture } from './undo-capture';
 export type { OfferUndoArgs } from './undo-capture';
 export { applyConfirmationPolicies, manifestIsFresh, serializeManifest } from './manifest';
