@@ -37,6 +37,20 @@ function stubFetch(handler: (url: string) => Response | Promise<Response>) {
   });
   return seen;
 }
+
+/** A redirect as Workers hands it back under `redirect: 'manual'`, with a body we can watch for release. */
+function redirectResponse(status = 302) {
+  const state = { cancelled: false };
+  const body = new ReadableStream<Uint8Array>({
+    pull(c) {
+      c.enqueue(new TextEncoder().encode('moved'));
+    },
+    cancel() {
+      state.cancelled = true;
+    },
+  });
+  return { res: new Response(body, { status, headers: { location: 'https://evil.example/x.png' } }), state };
+}
 const png = () => new Response(PNG, { status: 200, headers: { 'content-type': 'image/png', 'content-length': String(PNG.byteLength) } });
 
 afterEach(() => vi.unstubAllGlobals());
@@ -111,7 +125,7 @@ describe('readFileRef', () => {
     const got = await readFileRef(env, { file_url: link }, { maxBytes: 1024 });
     expect(got).toEqual({ bytes: PNG, size: PNG.byteLength, contentType: 'image/png', filename: 'photo.png', via: 'url' });
     expect(seen).toEqual([link]);
-    expect(inits[0]).toMatchObject({ redirect: 'error' });
+    expect(inits[0]).toMatchObject({ redirect: 'manual' });
     expect(inits[0]!.signal).toBeInstanceOf(AbortSignal);
   });
 
@@ -160,9 +174,31 @@ describe('readFileRef', () => {
     expect(await codeOf(readFileRef(env, { file_url: link }, { maxBytes: 1024 }))).toBe('not_found');
 
     stubFetch(() => {
-      throw new TypeError('redirect was not allowed');
+      throw new TypeError('network connection lost');
     });
     expect(await codeOf(readFileRef(env, { file_url: link }, { maxBytes: 1024 }))).toBe('read_failed');
+  });
+
+  it('refuses a redirect with the redirect error and releases its body', async () => {
+    for (const status of [301, 302, 303, 307, 308]) {
+      const { res, state } = redirectResponse(status);
+      const seen = stubFetch(() => res);
+      await expect(readFileRef(env, { file_url: link }, { maxBytes: 1024 })).rejects.toMatchObject({
+        code: 'read_failed',
+        message: 'Could not read file: the link redirected; refusing to follow.',
+      });
+      expect(seen).toEqual([link]);
+      expect(state.cancelled, String(status)).toBe(true);
+    }
+  });
+
+  it('refuses an opaque redirect (status 0) the same way', async () => {
+    const opaque = { status: 0, type: 'opaqueredirect', ok: false, headers: new Headers(), body: null } as unknown as Response;
+    stubFetch(() => opaque);
+    await expect(readFileRef(env, { file_url: link }, { maxBytes: 1024 })).rejects.toMatchObject({
+      code: 'read_failed',
+      message: 'Could not read file: the link redirected; refusing to follow.',
+    });
   });
 
   it('reads another install\'s signed link as the link it is, with no install credential', async () => {
@@ -245,7 +281,7 @@ describe('openFileRef', () => {
     );
     const opened = await openFileRef(env, { file_url: link }, { maxBytes: 1024 });
     expect(opened).toMatchObject({ size: null, filename: 'big.bin', via: 'url', contentType: 'application/octet-stream' });
-    expect(inits[0]).toMatchObject({ redirect: 'error' });
+    expect(inits[0]).toMatchObject({ redirect: 'manual' });
     const got: number[][] = [];
     const reader = opened.body.getReader();
     for (;;) {
@@ -262,6 +298,16 @@ describe('openFileRef', () => {
     const reader = opened.body.getReader();
     await reader.read();
     await expect(reader.read()).rejects.toMatchObject({ code: 'too_large' });
+  });
+
+  it('refuses a redirect before handing back a stream, and releases its body', async () => {
+    const { res, state } = redirectResponse(302);
+    stubFetch(() => res);
+    await expect(openFileRef(env, { file_url: link }, { maxBytes: 1024, label: 'attachment' })).rejects.toMatchObject({
+      code: 'read_failed',
+      message: 'Could not read attachment: the link redirected; refusing to follow.',
+    });
+    expect(state.cancelled).toBe(true);
   });
 
   it('refuses before fetching, like readFileRef', async () => {
