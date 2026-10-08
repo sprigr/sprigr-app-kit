@@ -21,10 +21,31 @@ name: release
 # workflow safe to re-run.
 #
 # Feature branches never publish; only merges into main do, so two open PRs
-# can't race the registry.
+# can't race the registry. Every job in THIS file carries
+# `if: github.ref == 'refs/heads/main'`, so a workflow_dispatch from a branch
+# that carries this file runs nothing. That is NOT a full guard: a dispatch
+# runs the release.yml of the branch it names, so an older branch (or one
+# that edits this file) still holds the unguarded version and can publish.
+# The real boundary is NPM_TOKEN in a protected `npm-publish` environment
+# that only main may use; until that repo setting exists, S033-01 stays
+# open (sprigr-apps#2643).
+#
+# THE TOKEN NEVER MEETS THIRD-PARTY SETUP CODE (sprigr-apps#2643, S033-03).
+# Two jobs:
+#   - `build` has no secret and no id-token. It installs (pnpm), tests,
+#     decides which versions npm does not have yet, builds and `npm pack`s
+#     exactly those, and uploads the tarballs.
+#   - `publish` holds NPM_TOKEN and id-token: write and runs no pnpm, no
+#     install and no build: setup-node, download the tarballs, and
+#     `npm publish <tarball> --ignore-scripts --provenance`. So neither a
+#     rewritten setup-action tag nor a package's prepublishOnly runs with
+#     the token in the environment.
+# Every action is pinned to a commit SHA; .github/dependabot.yml keeps the
+# pins current.
 #
 # Required repo secret: NPM_TOKEN (automation token with publish rights
-# on the @sprigr npm scope).
+# on the @sprigr npm scope). Moving it into a protected `npm-publish`
+# environment restricted to main is a repo-settings follow-up.
 
 on:
   push:
@@ -36,7 +57,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write # npm provenance
 
 # Serialise releases: a second merge landing mid-publish would otherwise race
 # the registry read that decides what to skip.
@@ -45,24 +65,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      count: ${{ steps.pack.outputs.count }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4 (resolved 2026-10-08)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (resolved 2026-10-08)
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - name: Test
         run: pnpm -r --filter './packages/*' test
-      - name: Publish (skips versions already on npm)
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Pack every version npm does not have yet
+        id: pack
         run: |
           set -euo pipefail
+          mkdir -p dist-tarballs
+          count=0
           # Every non-private package under packages/. Opt a package out with
           # `"private": true` in its package.json; there is no list to edit.
           for dir in packages/*/; do
@@ -78,19 +101,55 @@ jobs:
               echo "skip: $name@$version already published"
               continue
             fi
-            echo "publishing $name@$version"
-            # `npm view` above can lag a publish by minutes, so a release that
-            # starts right after another one's publish can see a version as
-            # missing that npm has already accepted. npm then refuses the
-            # re-publish with E403 "cannot publish over the previously
-            # published versions". That means the version IS published:
-            # skip it and keep going, instead of aborting the loop before the
-            # packages after it publish (2026-10-04, runs 37164141724 and
-            # 37164165483). Any other publish failure still fails the job.
-            if ! out=$(cd "$dir" && pnpm run --if-present build && npm publish --access public --provenance 2>&1); then
+            echo "packing $name@$version"
+            # Built here, with no token in the environment; the tarball is
+            # what gets published, so prepublishOnly never has to run.
+            (cd "$dir" && pnpm run --if-present build && npm pack --ignore-scripts --pack-destination "$GITHUB_WORKSPACE/dist-tarballs")
+            count=$((count + 1))
+          done
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - if: steps.pack.outputs.count != '0'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (resolved 2026-10-08)
+        with:
+          name: npm-tarballs
+          path: dist-tarballs/*.tgz
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' && needs.build.outputs.count != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (resolved 2026-10-08)
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4 (resolved 2026-10-08)
+        with:
+          name: npm-tarballs
+          path: dist-tarballs
+      - name: Publish the packed tarballs
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          for tgz in dist-tarballs/*.tgz; do
+            echo "publishing $tgz"
+            # `npm view` in the build job can lag a publish by minutes, so a
+            # release that starts right after another one's publish can see a
+            # version as missing that npm has already accepted. npm then
+            # refuses the re-publish with E403 "cannot publish over the
+            # previously published versions". That means the version IS
+            # published: skip it and keep going (2026-10-04, runs 37164141724
+            # and 37164165483). Any other publish failure still fails the job.
+            if ! out=$(npm publish "$tgz" --access public --provenance --ignore-scripts 2>&1); then
               echo "$out"
               if grep -q "cannot publish over the previously published versions" <<<"$out"; then
-                echo "skip: $name@$version already published (npm view had not caught up)"
+                echo "skip: $tgz already published (npm view had not caught up)"
                 continue
               fi
               exit 1
