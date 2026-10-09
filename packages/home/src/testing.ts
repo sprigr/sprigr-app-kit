@@ -76,9 +76,30 @@ export interface FakeHome {
   /** A request the platform would send this provider (or the identity provider). */
   request(provider: string, overrides?: FakeHomeRequestOverrides): HomeRequest;
   /** Dispatch one provider through the tool, as the platform's wrapper would, and check the answer. */
-  call<Env>(tool: HomeToolHandler<Env>, provider: string, opts: { env: Env; request?: HomeRequest; actor?: Actor | null }): Promise<FakeHomeCall>;
+  call<Env>(tool: AnyHomeTool<Env>, provider: string, opts: { env: Env; request?: HomeRequest; actor?: Actor | null }): Promise<FakeHomeCall>;
   /** Run every case of every provider's fixtures file through the tool. */
-  runFixtures<Env>(tool: HomeToolHandler<Env>, opts: { env: (c: HomeFixtureCase) => Env; actor?: Actor }): Promise<FakeHomeFixtureRun[]>;
+  runFixtures<Env>(tool: AnyHomeTool<Env>, opts: { env: (c: HomeFixtureCase) => Env; actor?: Actor }): Promise<FakeHomeFixtureRun[]>;
+}
+
+/**
+ * A Home tool: one built with `homeTool` (returns `{ ok, result }`), or a
+ * hand-written one that returns the answer itself. The platform accepts both
+ * (it unwraps one nested `{ ok, result }`), so the fake does too.
+ */
+export type AnyHomeTool<Env> = HomeToolHandler<Env> | ((args: { provider?: string; _home?: unknown; actor?: unknown }, env: Env) => Promise<unknown>);
+
+/**
+ * The platform's reading of a Home tool's return (sprigr-team
+ * `unwrapToolDispatchBody`): a `{ ok, result }` or `{ ok: false, error }`
+ * envelope when it has a boolean `ok` and a `result` or a string `error`,
+ * otherwise the answer itself.
+ */
+export function homeToolOutcome(value: unknown): ToolResult<HomeResult<unknown>> {
+  if (value && typeof value === 'object') {
+    const v = value as { ok?: unknown; result?: unknown; error?: unknown };
+    if (typeof v.ok === 'boolean' && ('result' in v || typeof v.error === 'string')) return v as ToolResult<HomeResult<unknown>>;
+  }
+  return { ok: true, result: value as HomeResult<unknown> };
 }
 
 export interface FakeHomeRequestOverrides extends Partial<Omit<HomeRequest, 'basis'>> {
@@ -127,7 +148,7 @@ export function fakeHome(manifest: unknown, opts: FakeHomeOptions = {}): FakeHom
   }
 
   async function call<Env>(
-    tool: HomeToolHandler<Env>,
+    tool: AnyHomeTool<Env>,
     provider: string,
     o: { env: Env; request?: HomeRequest; actor?: Actor | null },
   ): Promise<FakeHomeCall> {
@@ -138,7 +159,7 @@ export function fakeHome(manifest: unknown, opts: FakeHomeOptions = {}): FakeHom
     // The wrapper's shape on a Home dispatch: the body is { provider }, and it
     // adds `_home` and `actor` from platform headers.
     const args = { provider, _home: req, ...(actor ? { actor } : {}) };
-    const outcome = await tool(args, o.env);
+    const outcome = homeToolOutcome(await tool(args, o.env));
     let answer: HomeResult<unknown> | null = null;
     let dropped: FakeHomeCall['dropped'] = [];
     if (outcome.ok) {
@@ -155,7 +176,7 @@ export function fakeHome(manifest: unknown, opts: FakeHomeOptions = {}): FakeHom
   }
 
   async function runFixtures<Env>(
-    tool: HomeToolHandler<Env>,
+    tool: AnyHomeTool<Env>,
     o: { env: (c: HomeFixtureCase) => Env; actor?: Actor },
   ): Promise<FakeHomeFixtureRun[]> {
     const readFile = opts.readFile;

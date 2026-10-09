@@ -7,7 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { home, homeRequestProblems, homeTool, queue, schedule, type HomeFixtureCase, type HomeResult } from '../src/index';
+import { home, homeRequestProblems, homeTool, queue, schedule, type HomeFixtureCase, type HomeRequest, type HomeResult } from '../src/index';
 import { FAKE_HOME_VIEWER, fakeHome, fakeSprigrData } from '../src/testing';
 
 function load(name: string): unknown {
@@ -89,6 +89,17 @@ describe('fakeHome', () => {
     const refused = await h.call(tool, 'my_day', { env: {}, actor: null });
     expect(refused.answer).toBeNull();
     expect(refused.problems.join(' ')).toMatch(/no_caller_identity/);
+  });
+
+  it('takes a hand-written tool that returns the answer itself, as the platform does', async () => {
+    const h = fakeHome(simpro);
+    const bare = async (args: { _home?: unknown }) => home.empty(args._home as HomeRequest);
+    const res = await h.call(bare, 'crew_day', { env: {} });
+    expect(res.outcome.ok).toBe(true);
+    expect(res.answer).toMatchObject({ state: 'empty' });
+    expect(res.problems).toEqual([]);
+    const refusal = await h.call(async () => ({ ok: false, error: 'nope' }), 'crew_day', { env: {} });
+    expect(refusal.problems).toEqual(['tool: nope']);
   });
 
   it('refuses a manifest whose home block the platform would refuse, naming why', () => {
