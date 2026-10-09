@@ -1,0 +1,50 @@
+{
+  "name": "@sprigr/apps-home-conformance",
+  "version": "0.1.0",
+  "description": "Conformance suite for an app's Sprigr Home tool: basis echo, the person rule, actor isolation, no writes, the 64 KB and time budgets, run the way the platform dispatches.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./vitest": {
+      "types": "./dist/vitest.d.ts",
+      "default": "./dist/vitest.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsup src/index.ts src/vitest.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "peerDependencies": {
+    "@sprigr/apps-home": ">=0.2.0 <1",
+    "vitest": ">=2"
+  },
+  "peerDependenciesMeta": {
+    "vitest": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@sprigr/apps-app-sdk": "0.18.0",
+    "@sprigr/apps-home": "0.2.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/home-conformance"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}
