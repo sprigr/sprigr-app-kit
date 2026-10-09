@@ -680,6 +680,15 @@ Make `category` a stable outcome name (`webhook.ok`, `webhook.duplicate`, `sync.
 
 Inline route handlers do not get `env.SPRIGR`, so use the SDK there: `logToPlatform(env, entry, { waitUntil: ctx.waitUntil.bind(ctx) })` picks the injected member when present and otherwise POSTs `{ entries }` to `${SPRIGR_PLATFORM_BASE}/internal/wfp/log` with the `SPRIGR_INSTALL_TOKEN` bearer (5s timeout, never throws after validation); `withSprigrLogFallback(env, { waitUntil })` installs `env.SPRIGR.log` once for many call sites, composable with `withSprigrEmitFallback`. Declare the member on your env type as `log?: SprigrLogFn` (optional: wrapper builds older than sprigr-team#7214 do not carry it; the SDK helpers degrade to the HTTP path). `validateLogEntries` is exported on its own for tests and for hand-rolled transports.
 
+### Feeding the Sprigr Home: the `home` block and `env.SPRIGR.home.invalidate`
+
+An app puts its data on each person's Home through five platform-owned contracts (`sprigr/home_schedule`, `home_queue`, `home_metrics`, `home_subject_facts`, `home_identity`). It declares them in a manifest `home` block and answers them from one read-only, `internal: true` tool named `get_<slug>_home`.
+- The platform calls that tool with `{ provider }`; the wrapper adds the request as `args._home` and the viewer as `args.actor`, on a genuine Home dispatch only.
+- On a Home dispatch, `env.SPRIGR` is read-only: a write rejects with `home_read_only`.
+- When a webhook or sync learns that the data behind a provider changed, call `env.SPRIGR.home.invalidate({ provider, owner? })`. It carries no records and never throws. From an inline route, post the same body to `/internal/wfp/home/invalidate` with the install token.
+
+Build the tool with `homeTool` from `@sprigr/apps-home`, test it with `@sprigr/apps-home/testing` and `@sprigr/apps-home-conformance`, and read [`docs/home-contracts.md`](home-contracts.md) (the guide) and [`docs/interfaces/sprigr-home-v1.md`](interfaces/sprigr-home-v1.md) (the rules).
+
 ## 4b. Platform-routed AI (billed per tenant)
 
 Your app (or an external service it provisions, like the intabot orchestrator on its own Linux box) can call OpenAI through the platform instead of carrying its own key. The platform injects its OpenAI key and bills the token usage to the install's company in `usage_daily` — the same ledger the quota enforcer and cost dashboard read.
