@@ -5,8 +5,8 @@
  */
 
 export { constantTimeEqual, hmacSha256Hex, randomHex } from './crypto';
-export { encodeState, decodeState } from './state';
-export type { OAuthState } from './state';
+export { encodeState, decodeState, encodeStateWithinEnvelope, oauthStateEnvelopeOverhead, OAUTH_STATE_ENVELOPE_MAX_CHARS } from './state';
+export type { OAuthState, EncodeStateWithinEnvelopeOptions, EncodedStateWithinEnvelope } from './state';
 export { fetchWithRetry } from './fetch';
 export type { FetchWithRetryOptions } from './fetch';
 export {
