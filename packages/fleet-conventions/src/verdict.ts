@@ -188,9 +188,18 @@ export function isUnparsedVerdictShaped(body: string): boolean {
  * format, not prose that happens to mention verdicts. Malformed rulings that
  * fail even the FORM pattern are prevented at post time instead
  * (add_pull_request_comment's marker validation).
+ *
+ * Reads the body's OWN anchored ruling. It used to be FORM-match AND
+ * `parseTechLeadVerdict === null`, and `parseTechLeadVerdict` is unanchored,
+ * so an escalation that quotes an older `[tech-lead-reviewer] VERDICT:
+ * APPROVE` further down its body read as NOT unactionable, and a merge gate
+ * built on this let it through after an approve on the same head. The github
+ * app's gate already read `parseAnchoredVerdictRuling === 'ESCALATE'` for that
+ * reason. The anchored reading is a strict superset of the old one: every body
+ * the old test called unactionable still is, plus the quoting escalations.
  */
 export function isUnactionableRuling(body: string): boolean {
-  return TECH_LEAD_VERDICT_FORM_RE.test(body) && parseTechLeadVerdict(body) === null;
+  return parseAnchoredVerdictRuling(body) === 'ESCALATE';
 }
 
 /** Anchored "this body opens as a reviewer comment" test. Same prefix the FORM
