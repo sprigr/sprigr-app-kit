@@ -83,3 +83,29 @@ describe('the bare form is admitted for ESCALATE only, and only at the top', () 
     expect(parseAnchoredVerdictRuling('[tech-lead-reviewer] VERDICT: REQUEST CHANGES | fix')).toBe('REQUEST_CHANGES');
   });
 });
+
+// #146 review note: isUnactionableRuling was FORM-match AND
+// parseTechLeadVerdict === null, and parseTechLeadVerdict is unanchored. An
+// escalation that quotes an older approve further down its own body therefore
+// read as NOT unactionable, so a gate built on isUnactionableRuling let it pass
+// when it followed an approve on the same head. The github app's gate already
+// read parseAnchoredVerdictRuling === 'ESCALATE' to avoid this.
+describe('an escalation that quotes an older APPROVE is still unactionable', () => {
+  const quotedApprove = '`[tech-lead-reviewer] VERDICT: APPROVE | looks right`';
+  const bodies: Record<string, string> = {
+    'bare form': `<!-- verdict sha=abc1234 -->\n[tech-lead-reviewer]\nESCALATE TO A HUMAN | Third round. My earlier ${quotedApprove} on the previous head no longer stands.`,
+    'VERDICT: form': `<!-- verdict sha=abc1234 -->\n[tech-lead-reviewer] VERDICT: ESCALATE TO A HUMAN | supersedes my earlier ${quotedApprove} note.`,
+  };
+  for (const [form, body] of Object.entries(bodies)) {
+    it(`${form}: reads as ESCALATE and is unactionable, never as an APPROVE`, () => {
+      expect(parseAnchoredVerdictRuling(body)).toBe('ESCALATE');
+      expect(isUnactionableRuling(body)).toBe(true);
+    });
+  }
+
+  it('a real APPROVE or REQUEST_CHANGES is still actionable, and a note quoting an escalation is still not one', () => {
+    expect(isUnactionableRuling('<!-- verdict sha=abc1234 -->\n[tech-lead-reviewer] VERDICT: APPROVE | ok')).toBe(false);
+    expect(isUnactionableRuling('[tech-lead-reviewer] VERDICT: REQUEST_CHANGES | fix it, unlike the `[tech-lead-reviewer] VERDICT: ESCALATE` I nearly posted')).toBe(false);
+    expect(isUnactionableRuling('[dev-fixer specialist] STATUS NOTE | the reviewer wrote `[tech-lead-reviewer] VERDICT: ESCALATE TO A HUMAN` last round.')).toBe(false);
+  });
+});
