@@ -46,6 +46,10 @@ The tech-lead-reviewer posts one machine-readable verdict per review round:
   Markdown emphasis (`**`, `_`), newlines and a leading heading are tolerated;
   free prose between the prefix and `VERDICT:` is not. `REQUEST CHANGES` with a
   space is folded to `REQUEST_CHANGES`.
+- An escalation may also be written without `VERDICT:`, as the prefix followed
+  directly by `ESCALATE TO A HUMAN` (the form the reviewer actually posts). It
+  parses as `ESCALATE`. The bare form is accepted for `ESCALATE` only: an
+  `APPROVE` or `REQUEST_CHANGES` still needs `VERDICT:`.
 - `APPROVE` and `REQUEST_CHANGES` are actionable by the merge gate. `ESCALATE`
   is a legitimate verdict for humans that the gate must fail closed on.
 

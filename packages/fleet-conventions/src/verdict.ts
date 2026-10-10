@@ -92,8 +92,19 @@ const VERDICT_SHAPED_RE = /\[tech-lead-reviewer\][\s\S]{0,80}?VERDICT/i;
  * merge gate must fail closed on. `[*_]*` ahead of the prefix admits the
  * emphasis the same way `[\s*_]*` already does between the prefix and
  * `VERDICT:`, without loosening the anchor itself.
+ *
+ * Bare escalation (sprigr-team #11402): the reviewer posts an escalation as
+ * `[tech-lead-reviewer]` then `ESCALATE TO A HUMAN | ...` with no `VERDICT:`
+ * (live examples on sprigr-team #10975 and #10959 and sprigr-private-apps
+ * #972). Requiring `VERDICT:` made every one of them invisible: not a ruling
+ * to `parseAnchoredVerdictRuling`, not unactionable to `isUnactionableRuling`,
+ * so a merge gate fell back to an older verdict, or to "no verdict", which
+ * passes. The bare form is admitted for ESCALATE ONLY, and only as the full
+ * phrase `ESCALATE TO A HUMAN` (`A` optional) directly after the identity
+ * prefix: a bare APPROVE or REQUEST_CHANGES still needs `VERDICT:`, so nothing
+ * new can authorize a merge, and prose after the prefix still does not parse.
  */
-export const TECH_LEAD_VERDICT_FORM_RE = /^(?:<!--\s*verdict\s+sha=[^>]*-->\s*\n?)?\s*(?:#{1,6}\s*)?[*_]*\[tech-lead-reviewer\][\s*_]*VERDICT:[\s*_]*(APPROVE|REQUEST[_ ]CHANGES|ESCALATE)/i;
+export const TECH_LEAD_VERDICT_FORM_RE = /^(?:<!--\s*verdict\s+sha=[^>]*-->\s*\n?)?\s*(?:#{1,6}\s*)?[*_]*\[tech-lead-reviewer\][\s*_]*(?:VERDICT:[\s*_]*|(?=ESCALATE[\s*_]+TO[\s*_]+(?:A[\s*_]+)?HUMAN\b))(APPROVE|REQUEST[_ ]CHANGES|ESCALATE)/i;
 
 export type TechLeadVerdict = 'APPROVE' | 'REQUEST_CHANGES';
 
