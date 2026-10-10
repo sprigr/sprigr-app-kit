@@ -462,6 +462,8 @@ const envTs = `/**
  * The marketplace runtime binds these onto the per-install WFP script:
  *   - DB          - per-install D1 (always)
  *   - INSTALL_ID / COMPANY_ID / APP_SLUG - runtime-injected identifiers
+ *   - COMPANY_TIMEZONE - the company's IANA zone, when it has one (read it
+ *     with getCompanyTimezone from @sprigr/apps-app-sdk)
  *   - SPRIGR_VIEWER_SECRET - verifies the signed viewer context
  *   - SPRIGR_INSTALL_TOKEN / SPRIGR_PLATFORM_BASE - platform API access${
    NO_OAUTH
@@ -492,6 +494,10 @@ export interface ${PASCAL}Env {
   COMPANY_ID?: string;
   /** Optional - only present when the runtime injects it. */
   APP_SLUG?: string;
+  /** The company's IANA zone (e.g. "Australia/Brisbane"). Absent when the
+   *  company has none; read it with getCompanyTimezone(env), which also
+   *  drops a value Intl does not accept. */
+  COMPANY_TIMEZONE?: string;
   /** Per-install key the platform derives and binds so the app can verify
    *  the signed \`X-Sprigr-Viewer\` context (resolveViewerContext in
    *  @sprigr/apps-app-sdk). Absent where the platform has no signing key
