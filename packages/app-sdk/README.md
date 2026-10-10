@@ -75,6 +75,7 @@ export default {
 - `fetchWithRetry` — rate-limit-header-aware, jittered retry
 - `constantTimeEqual(a, b)` — bearer-secret verification
 - `encodeState` / `decodeState` — OAuth state base64url
+- `encodeStateWithinEnvelope(state, { installId, appSlug, optional? })` — `encodeState` that leaves room for the platform's signed envelope (500 chars, decision 0190). An optional field (default `returnTo`) that does not fit is left out whole, never shortened, with a `console.warn` naming the lengths; without `returnTo` the bouncer lands the user on the install's dashboard. Use it for any state that carries a caller-supplied value. `oauthStateEnvelopeOverhead` and `OAUTH_STATE_ENVELOPE_MAX_CHARS` expose the arithmetic.
 - `parseActor` / `actorKey` / `ownerFromActorKey` — per-actor token scoping
 - `putAppFile` / `putAppFileStream` / `appFileUrl` / `getAppFile` / `listAppFiles` / `deleteAppFile` — durable app-scoped file storage from outside the injected bridge
 - `fetchFileBytes` / `fetchFileAsBase64` / `bytesToBase64` / `base64ToBytes` — file byte helpers
