@@ -1,7 +1,7 @@
 {
   "name": "@sprigr/apps-home",
-  "version": "0.1.0",
-  "description": "Sprigr Home contracts for marketplace apps: the record types, the manifest home block validator, the fixture checker and the display-text cleaner, identical to the platform's own.",
+  "version": "0.2.0",
+  "description": "Sprigr Home contracts for marketplace apps: the record types, the manifest home block validator, the fixture checker, the display-text cleaner, the Home SDK (homeTool) and its test fakes, with the platform's own rules.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,16 +9,24 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "build": "tsup src/index.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "build": "tsup src/index.ts src/testing.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
     "prepublishOnly": "npm run build"
   },
+  "peerDependencies": {
+    "@sprigr/apps-app-sdk": ">=0.18.0 <1"
+  },
   "devDependencies": {
+    "@sprigr/apps-app-sdk": "0.18.0",
     "typescript": "^5.6.0",
     "vitest": "^2.0.0"
   },

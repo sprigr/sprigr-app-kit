@@ -504,6 +504,9 @@ importers:
 
   packages/home:
     devDependencies:
+      '@sprigr/apps-app-sdk':
+        specifier: 0.18.0
+        version: 0.18.0
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -2477,6 +2480,10 @@ packages:
 
   '@sprigr/apps-app-sdk@0.15.1':
     resolution: {integrity: sha512-5vfc8BAZoPVrHxU8YzwEUTRDPX4XAZarcqUCmQpdFREQG71Sn7s2nxiD3PIQ/ZY1qa9pehlk+OVfWpXBFA89bQ==}
+    hasBin: true
+
+  '@sprigr/apps-app-sdk@0.18.0':
+    resolution: {integrity: sha512-zB4zz28rdXTh0a/28QVyl1B10xLAUiOt/hSkqpsKiKWKr9hpB+Sm6r4BKIKzG0NuMlkMsH0UTZt/5kKLnpB8ew==}
     hasBin: true
 
   '@sprigr/apps-d1-kv@0.2.0':
@@ -5719,6 +5726,8 @@ snapshots:
   '@sprigr/apps-app-sdk@0.14.0': {}
 
   '@sprigr/apps-app-sdk@0.15.1': {}
+
+  '@sprigr/apps-app-sdk@0.18.0': {}
 
   '@sprigr/apps-d1-kv@0.2.0': {}
 
