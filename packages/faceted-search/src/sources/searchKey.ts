@@ -3,7 +3,7 @@
  *
  * POSTs directly to the Sprigr search API with a search-only API key. Verified
  * against the sprigr-search query route (crates/search-core SearchRequest +
- * the worker response builder in src/lib.rs) and the boardcave.html client:
+ * the worker response builder in src/lib.rs) and a storefront embed client:
  *
  *   POST {host}/1/indexes/{indexName}/query
  *   header: X-Sprigr-API-Key: <apiKey>

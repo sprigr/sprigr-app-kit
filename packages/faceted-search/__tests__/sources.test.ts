@@ -74,11 +74,11 @@ describe('searchKeySearch', () => {
       nb_pages: 2,
       facets: { status: { active: 30, sold: 12 } },
     });
-    const search = searchKeySearch('boardcave_products', 'sk_test');
+    const search = searchKeySearch('demo_products', 'sk_test');
     const res = await search({ ...PARAMS, hitsPerPage: 24 });
 
     const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toBe(`${DEFAULT_SEARCH_HOST}/1/indexes/boardcave_products/query`);
+    expect(url).toBe(`${DEFAULT_SEARCH_HOST}/1/indexes/demo_products/query`);
     const headers = init!.headers as Record<string, string>;
     expect(headers['X-Sprigr-API-Key']).toBe('sk_test');
     const sent = JSON.parse(init!.body as string);

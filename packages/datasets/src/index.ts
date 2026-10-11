@@ -62,7 +62,7 @@ export function datasetRows<D extends { objectID: string }>(
 /** True for an append failure the platform or its storage reported as a
  *  5xx: `env.SPRIGR.datasets.append failed: 500 put: We encountered an
  *  internal error. Please try again. (10001)` is R2's transient error, seen
- *  by google-analytics on Showpo 2026-09-27 11:06Z. A 4xx
+ *  by a tenant's google-analytics install on 2026-09-27 11:06Z. A 4xx
  *  (contract_violation, undeclared) is a real refusal and is never retried. */
 export function isRetryableAppendError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
