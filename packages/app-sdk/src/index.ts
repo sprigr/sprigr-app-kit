@@ -461,13 +461,16 @@ export interface SprigrDataApi {
   /**
    * List the objectIDs that start with `prefix` (non-empty, so a listing is
    * always scoped). Returns at most 50000 with `truncated: true` past that.
+   * Pass `after` ('' to start) to page in objectID order: the response then
+   * carries `next_after` for the next call, null on the last page
+   * (sprigr-team#11515; absent on a platform or wrapper build without it).
    * `?`-optional for older wrapper builds; `makeDataClient` and
    * `purgeIndexByPrefix` fall back to the install-token route.
    */
   listIds?(
     prefix: string,
-    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
-  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean }>;
+    opts?: SprigrDataIndexOpts & { withAcl?: boolean; after?: string },
+  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean; next_after?: string | null }>;
 }
 
 /**
@@ -762,10 +765,12 @@ export {
   deleteSnapshotIds,
   purgeIndexByPrefix,
   DATA_DELETE_MAX_IDS,
+  MAX_LIST_PAGES,
 } from './data-purge';
 export type {
   DataClient,
   DataIdsOpts,
+  DataListIdsOpts,
   DataListIdsResult,
   DataTransport,
   IdPrefixSpec,
