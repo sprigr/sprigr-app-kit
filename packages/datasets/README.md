@@ -78,6 +78,12 @@ if (nextPosition === null) {
 
 Only track dates the walk can still revisit, and append the tombstones before `finishWalk` with a call that throws on a refusal, or a refused append would let the baseline move forward and the dropped keys would never be deleted.
 
+Three more rules for consumers:
+
+- **One walk of a scope and date at a time.** Two concurrent walks (an overlapping schedule fire, a manual run during the scheduled one) write the same page positions, so the chain read back mixes two answers and a key that moved between pages can be named while it is still live. Single-flight the walk (a run lease), or track pages only on the path that is single-flighted: a run that writes no page files only breaks the chain, which deletes nothing.
+- **Mind the 1,000-file listing.** `appFilesWalkKeyStore` lists through `listAppFiles`, which returns at most 1,000 files and takes no cursor. A day with more than 1,000 page files reads as `broken_chain` on every walk (the adapter warns); keep pages large enough that a day fits.
+- **Log every `skipped`.** A date whose source really does drop over half its keys stays `mass_drop` on every re-walk while it is in the window, and its old keys keep counting. Log the reason with `previous`, `current` and `wouldDelete` (for example through `env.SPRIGR.log`) so an operator can see a stuck date.
+
 ## Testing: check rows against the real manifest
 
 `@sprigr/apps-datasets/testing` mirrors the append route's row check (sprigr-team `validateDatasetRows`), so a field the manifest does not declare fails in your tests, not on prod:

@@ -62,7 +62,7 @@ export interface AppFilesFns<E> {
   getAppFile(env: E, key: string): Promise<{ base64: string }>;
   putAppFile(env: E, args: { key: string; base64: string; contentType?: string }): Promise<unknown>;
   deleteAppFile(env: E, key: string): Promise<unknown>;
-  listAppFiles(env: E, prefix?: string): Promise<{ files: Array<{ key: string }> }>;
+  listAppFiles(env: E, prefix?: string): Promise<{ files: Array<{ key: string }>; truncated?: boolean }>;
 }
 
 /**
@@ -89,7 +89,12 @@ export function appFilesWalkKeyStore<E extends { SPRIGR_INSTALL_TOKEN?: string; 
       await fns.deleteAppFile(env, key);
     },
     async list(prefix) {
-      return (await fns.listAppFiles(env, prefix)).files.map((f) => f.key);
+      const listed = await fns.listAppFiles(env, prefix);
+      // The platform lists at most 1,000 files per call and this list takes no
+      // cursor. A short list fails safe (a chain longer than it reads as
+      // broken; cleanup converges over later walks), but say so.
+      if ((listed as { truncated?: boolean }).truncated) console.warn(`[walk-keys] listing ${prefix} was truncated at ${listed.files.length} file(s); a longer walk reads as a broken chain`);
+      return listed.files.map((f) => f.key);
     },
   };
 }
