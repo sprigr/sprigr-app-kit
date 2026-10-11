@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FIRST_PAGE,
   MAX_TOMBSTONE_FRACTION,
+  appFilesWalkKeyStore,
   completeWalk,
   finishWalk,
   recordWalkPage,
@@ -123,5 +124,51 @@ describe('storage stays bounded', () => {
     const { files, store } = memoryStore();
     await finishWalk(store, scope('2026-09-01'), await walk(store, '2026-09-01', [['a']]), WINDOW);
     expect([...files.keys()]).toEqual([]);
+  });
+});
+
+describe('appFilesWalkKeyStore', () => {
+  /** Fakes of the app-sdk file helpers (getAppFile, putAppFile, deleteAppFile, listAppFiles). */
+  function fakeFiles() {
+    const files = new Map<string, string>();
+    const calls: string[] = [];
+    const notFound = Object.assign(new Error('app file get failed (404): not found'), { status: 404 });
+    return {
+      files,
+      calls,
+      fns: {
+        getAppFile: async (_env: unknown, key: string) => { calls.push(`get ${key}`); const b = files.get(key); if (b === undefined) throw notFound; return { base64: b }; },
+        putAppFile: async (_env: unknown, args: { key: string; base64: string }) => { calls.push(`put ${args.key}`); files.set(args.key, args.base64); return { ok: true }; },
+        deleteAppFile: async (_env: unknown, key: string) => { calls.push(`delete ${key}`); files.delete(key); return { ok: true }; },
+        listAppFiles: async (_env: unknown, prefix?: string) => ({ files: [...files.keys()].filter((k) => k.startsWith(prefix ?? '')).map((key) => ({ key })) }),
+      },
+    };
+  }
+  const ENV = { SPRIGR_INSTALL_TOKEN: 't', SPRIGR_PLATFORM_BASE: 'https://platform.example' };
+
+  it('is null without the install token or the platform base (no store, no tombstones)', () => {
+    const { fns } = fakeFiles();
+    expect(appFilesWalkKeyStore({}, fns)).toBeNull();
+    expect(appFilesWalkKeyStore({ SPRIGR_INSTALL_TOKEN: 't' }, fns)).toBeNull();
+  });
+
+  it('round-trips bytes through base64, reads a 404 as absent, and drives a whole walk', async () => {
+    const { fns, calls } = fakeFiles();
+    const store = appFilesWalkKeyStore(ENV, fns)!;
+    expect(await store.get('nope')).toBeNull();
+    await store.put('x', new Uint8Array([0, 1, 254, 255]));
+    expect([...(await store.get('x'))!]).toEqual([0, 1, 254, 255]);
+    await store.delete('x');
+    expect(await store.get('x')).toBeNull();
+
+    await finishWalk(store, scope(D), await walk(store, D, [['a', 'b'], ['c']]), WINDOW);
+    expect(await walk(store, D, [['a', 'b']])).toMatchObject({ kind: 'tombstone', rowKeys: keys(D, ['c']) });
+    expect(calls.some((c) => c.startsWith('put demo-walk-keys/'))).toBe(true);
+  });
+
+  it('rethrows any failure that is not a 404, so the page fails', async () => {
+    const { fns } = fakeFiles();
+    const store = appFilesWalkKeyStore(ENV, { ...fns, getAppFile: async () => { throw Object.assign(new Error('app file get failed (503)'), { status: 503 }); } })!;
+    await expect(store.get('k')).rejects.toThrow(/503/);
   });
 });
