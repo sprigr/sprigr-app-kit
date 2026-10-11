@@ -735,7 +735,7 @@ What happens server-side:
 ### Direct curl (for shakedown / scripting)
 ```bash
 API_KEY=sk_mcp_...                                          # from ~/.config/sprigr/credentials.json
-COMPANY_ID=comp_3vb6tmuvw089x4qpn8cf
+COMPANY_ID=comp_xxxxxxxxxxxxxxxxxxxx
 
 # Trigger upgrade
 curl -X POST "https://staging-api-team.sprigr.com/api/v1/data/apps/procore/install/upgrade?companyId=$COMPANY_ID" \

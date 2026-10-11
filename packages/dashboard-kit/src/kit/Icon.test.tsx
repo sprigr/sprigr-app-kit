@@ -12,8 +12,8 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { Icon, ICON_NAMES } from './Icon';
 
 const NAMES_IN_USE = [
-  // HubTabs + pagers + toolbars across fulfilment-hub, ascs-*, sinotrans,
-  // jsj-provider-connector, boardcave-*.
+  // HubTabs + pagers + toolbars across fulfilment-hub and several customer
+  // dashboards.
   'gauge', 'package-check', 'truck', 'boxes', 'alert-triangle', 'clock', 'file-text', 'sliders',
   'chevron-left', 'chevron-right', 'chevron-down', 'chevron-up', 'arrow-left', 'arrow-right',
   'download', 'search', 'copy', 'trash', 'target', 'megaphone', 'layout-dashboard',
