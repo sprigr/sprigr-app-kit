@@ -59,9 +59,11 @@ A keyed dataset upserts by key. When a source restates a day (an analytics prope
 | `recordWalkPage(store, scope, position, { next, truncated, keys })` | Saves one page's keys. Call it after the page's rows are stored and before the cursor moves past the page; fail the page if it throws. `position` is the source's own cursor (a page token, `request-offset`); the first page is `FIRST_PAGE`; `next` is the next page's position, or `null` on the page that completes the day. |
 | `completeWalk(store, scope)` | Reads the walk back from `FIRST_PAGE` and answers `tombstone` (`rowKeys` to delete), `first` (no baseline yet) or `skipped` (`broken_chain`, `truncated`, `mass_drop`: deletes nothing). Only reads. |
 | `finishWalk(store, scope, completion, windowStart)` | After the tombstones are stored: keeps the walk as the new baseline when the date is on or after `windowStart`, deletes the walk's page files, and prunes the scope's sets dated before `windowStart`. A skipped walk keeps the old baseline. |
+| `appFilesWalkKeyStore(env, { getAppFile, putAppFile, deleteAppFile, listAppFiles })` | A `WalkKeyStore` over the app's own R2 files, given the four app-sdk helpers. `null` when the install token or platform base is unbound (then keep no sets and write no tombstones). A 404 reads as absent; any other failure rethrows so the page fails. |
 | `WalkKeyStore`, `WalkScope`, `WalkPage`, `WalkCompletion`, `FIRST_PAGE`, `MAX_TOMBSTONE_FRACTION` | The store an app wires to its own file storage (`get`, `put`, `delete`, `list`), one walk's `{ dir, date, keyPrefix }`, and the guard (0.5). |
 
 ```ts
+const store = appFilesWalkKeyStore(env, { getAppFile, putAppFile, deleteAppFile, listAppFiles }); // from @sprigr/apps-app-sdk
 const scope = { dir: `walk-keys/${account}/${family}`, date, keyPrefix: `perf-${account}-${date}-` };
 await recordWalkPage(store, scope, position, { next: nextPosition, truncated, keys: docs.map((d) => d.objectID) });
 if (nextPosition === null) {

@@ -53,6 +53,60 @@ export interface WalkKeyStore {
   list(prefix: string): Promise<string[]>;
 }
 
+/**
+ * The app-sdk file helpers the adapter below needs (`getAppFile`,
+ * `putAppFile`, `deleteAppFile`, `listAppFiles` from @sprigr/apps-app-sdk),
+ * passed in so this package keeps no runtime dependency.
+ */
+export interface AppFilesFns<E> {
+  getAppFile(env: E, key: string): Promise<{ base64: string }>;
+  putAppFile(env: E, args: { key: string; base64: string; contentType?: string }): Promise<unknown>;
+  deleteAppFile(env: E, key: string): Promise<unknown>;
+  listAppFiles(env: E, prefix?: string): Promise<{ files: Array<{ key: string }> }>;
+}
+
+/**
+ * A WalkKeyStore over the app's own R2 files, or null when the install token
+ * or platform base is not bound (next dev, an inline route without the bus):
+ * the app then keeps no key sets and writes no tombstones. A 404 reads as
+ * absent; any other failure rethrows, so the page that needed it fails.
+ */
+export function appFilesWalkKeyStore<E extends { SPRIGR_INSTALL_TOKEN?: string; SPRIGR_PLATFORM_BASE?: string }>(env: E, fns: AppFilesFns<E>): WalkKeyStore | null {
+  if (!env.SPRIGR_INSTALL_TOKEN || !env.SPRIGR_PLATFORM_BASE) return null;
+  return {
+    async get(key) {
+      try {
+        return fromBase64((await fns.getAppFile(env, key)).base64);
+      } catch (err) {
+        if ((err as { status?: number }).status === 404) return null;
+        throw err;
+      }
+    },
+    async put(key, bytes) {
+      await fns.putAppFile(env, { key, base64: toBase64(bytes), contentType: 'application/gzip' });
+    },
+    async delete(key) {
+      await fns.deleteAppFile(env, key);
+    },
+    async list(prefix) {
+      return (await fns.listAppFiles(env, prefix)).files.map((f) => f.key);
+    },
+  };
+}
+
+function toBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+function fromBase64(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
 /** One walk: a scope directory, the date it covers, and the prefix every row
  *  key of that date and scope starts with. Keys outside the prefix are never
  *  recorded and never named for deletion. */
