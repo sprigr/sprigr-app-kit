@@ -141,6 +141,26 @@ describe('binaryStartReserveMs (0.1.4, sprigr-team#10300)', () => {
     expect(content('p')).toBe('');
   });
 
+  it('a deferred binary is DEFERRED, not dropped: the next pass fills its text through the content-fill drain', async () => {
+    const r = await rig('drive');
+    r.src.pageSize = 10;
+    r.src.put({ id: 'p', name: 'p.pdf', mime: PDF, perms: [] });
+    r.src.binary.set('p', bytes('pdf text'));
+    // Pass 1, a tight delivery: 5 s left against an 8 s reserve. Not started.
+    await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope, {
+      deadline: { at: 105_000 }, now: () => 100_000, binaryStartReserveMs: 8_000,
+    });
+    expect(r.fp.extractCalls).toHaveLength(0);
+    expect(r.fp.acl.get('gw:file:p')?.content).toBe('');
+    // Pass 2 (the next delivery or the scheduled walk) has room. The source
+    // has NOT changed, so only the recorded content fill can bring the text in.
+    await indexActorFiles(r.adapter, r.store, r.fp.env, r.scope, {
+      deadline: { at: 300_000 }, now: () => 200_000, binaryStartReserveMs: 8_000,
+    });
+    expect(r.fp.extractCalls).toHaveLength(1);
+    expect(r.fp.acl.get('gw:file:p')?.content).toBe('pdf text');
+  });
+
   it('with the reserve available, the binary is extracted as before', async () => {
     const { r, content } = await pass(8_000, 20_000);
     expect(r.fp.extractCalls).toHaveLength(1);

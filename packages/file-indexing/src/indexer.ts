@@ -774,6 +774,7 @@ async function runContentFills<TEntry, TEnv extends FileIndexingEnv>(
     budget: shared.budget,
     throttled: shared.throttled,
     label: shared.label,
+    ...(budget.binaryStartReserveMs !== undefined ? { binaryStartReserveMs: budget.binaryStartReserveMs } : {}),
   });
   const left = Math.max(0, pending - out.filled - out.converted - out.dropped);
   await logContentFillOutcome(ctx, shared.label, {
