@@ -91,9 +91,10 @@ export function appFilesWalkKeyStore<E extends { SPRIGR_INSTALL_TOKEN?: string; 
     async list(prefix) {
       const listed = await fns.listAppFiles(env, prefix);
       // The platform lists at most 1,000 files per call and this list takes no
-      // cursor. A short list fails safe (a chain longer than it reads as
-      // broken; cleanup converges over later walks), but say so.
-      if ((listed as { truncated?: boolean }).truncated) console.warn(`[walk-keys] listing ${prefix} was truncated at ${listed.files.length} file(s); a longer walk reads as a broken chain`);
+      // cursor. A short list fails safe: completeWalk reads a chain longer
+      // than it as broken, and finishWalk's page and window prune deletes
+      // only what it listed, so the rest goes on a later finish. Say so.
+      if (listed.truncated) console.warn(`[walk-keys] listing ${prefix} was truncated at ${listed.files.length} file(s); a longer walk reads as a broken chain and the prune leaves the rest for a later finish`);
       return listed.files.map((f) => f.key);
     },
   };
