@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-datasets",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -35,5 +35,5 @@
     "dist",
     "README.md"
   ],
-  "description": "Write keyed datasets through env.SPRIGR.datasets.append (decisions 0079, 0115): objectID to row_key rows, 5xx-only retry, batches of at most 1,000 rows, and a test helper that checks rows against the manifest's datasets contract."
+  "description": "Write keyed datasets through env.SPRIGR.datasets.append (decisions 0079, 0115): objectID to row_key rows, 5xx-only retry, batches of at most 1,000 rows, tombstones for the keys a completed re-walk drops, and a test helper that checks rows against the manifest's datasets contract."
 }

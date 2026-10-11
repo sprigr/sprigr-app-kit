@@ -169,3 +169,5 @@ export async function appendInBatches(
   await Promise.all(Array.from({ length: width }, worker));
   return stored.reduce((n, x) => n + x, 0);
 }
+
+export * from './walk-keys';
