@@ -10,6 +10,7 @@ End-to-end guide for building, publishing, and shipping a marketplace app on the
 - Per-install state lives in a per-install **D1 database** (`env.DB`) bound at upload time. The manifest declares migrations; the platform runs them after every successful build.
 - Every install gets its manifest **secrets** plus a set of runtime bindings stamped at upload time (`INSTALL_ID`, `COMPANY_ID`, `APP_SLUG`, an install token, the platform base URL) and the `env.SPRIGR.*` runtime object.
 - OAuth flows through the **shared bouncer** at `oauth-bouncer.sprigr.com`. One redirect URI per environment; the bouncer dispatches the callback back to the correct install via the WFP dispatcher namespace.
+- **Never buffer a file.** An app worker has about 128 MB, and a tool call must finish in 28 s (reads) or 25 s (writes). Stream a provider's body into `env.SPRIGR.files.putStream` (always pass `length`; cap 200 MB) and return a `file_key` plus `files.url`, never the bytes. Recipe and limits: "Large files: stream, never buffer" in [platform-reference](platform-reference.md); longer transfers go in a durable job ([section 2c](#2c-durable-jobs--the-scoped-store)).
 
 ---
 
