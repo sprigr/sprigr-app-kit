@@ -9,10 +9,10 @@
  * a blank line starts a new paragraph, a single line break becomes `<br>`, and
  * `&`, `<`, `>` and `"` are escaped so the text reads as written.
  *
- * The platform's approval card applies the same test (`hasHtmlMarkup`) to a
- * body bound with format 'html', so the card shows a plain-text body as text,
- * the way it will arrive. Keep the element list in step with
- * `packages/agent-core/src/approval-preview.ts` in sprigr-team.
+ * A tool that sends through this declares `emailPreview({ bodyFormat: 'auto' })`.
+ * The platform's approval card then applies the same test (`hasHtmlMarkup`) and
+ * shows a plain-text body as text, the way it will arrive. Keep the element
+ * list in step with `packages/agent-core/src/approval-preview.ts` in sprigr-team.
  */
 
 const HTML_ELEMENT =

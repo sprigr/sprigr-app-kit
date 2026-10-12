@@ -24,8 +24,11 @@ export interface EmailPreviewInput {
   subject?: ApprovalPreviewSlot;
   /** Argument name of the body. */
   body: string;
-  /** Defaults to 'html'. */
-  bodyFormat?: 'html' | 'text';
+  /**
+   * Defaults to 'html'. Use 'auto' when the tool sends the body through
+   * `emailBodyHtml`, so a plain-text body shows on the card with its lines.
+   */
+  bodyFormat?: 'html' | 'text' | 'auto';
   attachments?: string;
   sendAt?: ApprovalPreviewSlot;
   /** Defaults to ['irreversible']: a sent email cannot be recalled. */

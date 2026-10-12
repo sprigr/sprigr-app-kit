@@ -142,7 +142,12 @@ export interface ApprovalPreviewSpec {
   bcc?: ApprovalPreviewSlot;
   subject?: ApprovalPreviewSlot;
   /** Always an argument, never a stated value: the body must be what is sent. */
-  body?: { arg: string; format: 'html' | 'text' };
+  /**
+   * `format: 'auto'` declares that the tool sends the body through
+   * `emailBodyHtml`: the card shows a body with HTML markup as HTML and plain
+   * text as text. A platform that predates 'auto' reads it as 'html'.
+   */
+  body?: { arg: string; format: 'html' | 'text' | 'auto' };
   /** Argument holding an array of attachment names or `{ name, size }`. */
   attachments?: string;
   sendAt?: ApprovalPreviewSlot;
