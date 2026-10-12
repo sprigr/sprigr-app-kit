@@ -113,6 +113,41 @@ export interface AppApprovalEnvelope {
    * wrappers.
    */
   unattended?: 'proceed';
+  /**
+   * Lay the card out as the thing being sent: an email with its header and
+   * rendered body, an SMS, a document's rows (sprigr-team decision 0216).
+   * You bind slots to YOUR TOOL'S ARGUMENT NAMES (or dotted paths such as
+   * `input.body` for a dispatcher), and the platform fills them from the
+   * exact arguments it replays on the tap, so the card cannot show one email
+   * while another is sent. Build it with `emailPreview` / `smsPreview` /
+   * `fieldsPreview`. Keep writing `question` and `summary`: a platform
+   * without decision 0216, or a preview that resolves to nothing, falls
+   * back to them.
+   */
+  preview?: ApprovalPreviewSpec;
+}
+
+/** A slot bound to an argument name or dotted path, or a value you state. */
+export type ApprovalPreviewSlot = string | { value: string };
+
+/** Small facts shown as tags on the card. */
+export type ApprovalPreviewFact = 'irreversible' | 'costs_credits' | 'no_signature';
+
+/** The `_approval.preview` an app declares (sprigr-team decision 0216). */
+export interface ApprovalPreviewSpec {
+  kind: 'email' | 'sms' | 'document' | 'calendar' | 'fields';
+  from?: ApprovalPreviewSlot;
+  to?: ApprovalPreviewSlot;
+  cc?: ApprovalPreviewSlot;
+  bcc?: ApprovalPreviewSlot;
+  subject?: ApprovalPreviewSlot;
+  /** Always an argument, never a stated value: the body must be what is sent. */
+  body?: { arg: string; format: 'html' | 'text' };
+  /** Argument holding an array of attachment names or `{ name, size }`. */
+  attachments?: string;
+  sendAt?: ApprovalPreviewSlot;
+  fields?: Array<{ label: string; from: ApprovalPreviewSlot }>;
+  facts?: ApprovalPreviewFact[];
 }
 
 /**
