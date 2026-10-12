@@ -21,6 +21,10 @@ describe('approval preview builders (sprigr-team decision 0216)', () => {
     expect(p.facts).toEqual([]);
   });
 
+  it("emailPreview passes bodyFormat 'auto' through for a tool that sends via emailBodyHtml", () => {
+    expect(emailPreview({ to: 'to', body: 'body', bodyFormat: 'auto' }).body).toEqual({ arg: 'body', format: 'auto' });
+  });
+
   it('smsPreview is a text body', () => {
     expect(smsPreview({ to: 'to', body: 'message', facts: ['irreversible', 'costs_credits'] })).toEqual({
       kind: 'sms',

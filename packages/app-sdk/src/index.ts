@@ -775,3 +775,5 @@ export type {
 
 export { getCompanyTimezone } from './company';
 export type { CompanyTimezoneEnv } from './company';
+
+export { emailBodyHtml, hasHtmlMarkup } from './email-body';

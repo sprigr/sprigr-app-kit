@@ -167,6 +167,8 @@ Every string slot is the **name of one of your tool's arguments** (or a dotted p
 
 The card shows a From/To/Cc/Subject header, the body rendered as it will look (sanitised, no scripts, no remote images, links listed in full with tracking flagged and never opened), attachments and fact tags. An `email` or `sms` preview names the approve button "Send". Builders: `emailPreview`, `smsPreview`, `fieldsPreview('document' | 'calendar' | 'fields', rows)`. A preview the platform cannot resolve falls back to `question` and `summary`.
 
+If your mail API always sends the body as HTML (Outlook's `contentType: 'HTML'`, Gmail's `text/html`), pass the body through `emailBodyHtml(body)` before sending, and declare `emailPreview({ ..., bodyFormat: 'auto' })`. An agent often writes plain text, and rendered as HTML its line breaks collapse into one line. `emailBodyHtml` returns a body that already has HTML markup unchanged and turns plain text into paragraphs and `<br>` breaks, escaped. `bodyFormat: 'auto'` tells the card to apply the same `hasHtmlMarkup` test, so a plain-text body shows as the text it will arrive as. Leave the format at 'html' if the tool does not convert, because then the lines really do collapse in the sent email.
+
 ### One connection rule per spec, not per gate
 
 `resolveConnection`, `describeTarget` and `stampConnection` on the gate are **defaults**. A spec that reaches its connection by another rule overrides them for itself:
