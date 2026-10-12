@@ -197,6 +197,10 @@ export interface ContentFillOptions {
   /** Throttle keys that answered 429 this pass; they are not asked again. */
   throttled?: Set<string>;
   label?: string;
+  /** 0.1.4 (sprigr-team#10300): a binary row is not STARTED with less than
+   *  this left before the pass `deadline`; it stays waiting (no attempt is
+   *  spent) for a pass with room. */
+  binaryStartReserveMs?: number;
 }
 
 export interface ContentFillOutcome {
@@ -362,6 +366,12 @@ export async function drainContentFills<TEntry>(
       return null;
     }
     if (kind.kind === 'binary') {
+      // Same rule as the walk's enrichment: a binary started this late would
+      // run past the pass's ceiling. It waits, without spending an attempt.
+      if (opts.binaryStartReserveMs !== undefined && remainingBudgetMs(opts.deadline, now) < opts.binaryStartReserveMs) {
+        out.waiting++;
+        return null;
+      }
       if (budget.extracted >= MAX_EXTRACTIONS_PER_RUN) {
         budget.deferred++;
         out.waiting++;

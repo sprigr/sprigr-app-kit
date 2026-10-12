@@ -22,7 +22,7 @@
 
 import { deleteAppFile, hmacSha256Hex, randomHex, resolveInstallBridge } from '@sprigr/apps-app-sdk';
 import type { ExtractFormat, FileIndexingContext, FileSourceAdapter, FileIndexingStore, IndexedFileObject } from './types';
-import { deadlinePassed, type Deadline } from './tick-budget';
+import { deadlinePassed, remainingBudgetMs, type Deadline } from './tick-budget';
 import { recordContentFills } from './content-fill';
 
 /** Only TEXT-LIKE files at or under this many bytes are downloaded. */
@@ -398,6 +398,9 @@ export async function enrichObjectsWithContent<TEntry>(
      *  walk's fetches early so the drain keeps its slice. Fetches still run
      *  under `ctx`, so their own caps are unchanged. */
     deadline?: Deadline;
+    /** 0.1.4 (sprigr-team#10300): do not START a binary extraction with less
+     *  than this left before `deadline`; record it for a content fill. */
+    binaryStartReserveMs?: number;
   } = {},
 ): Promise<EnrichSummary> {
   const label = adapter.logLabel ?? '[file-indexing]';
@@ -438,6 +441,14 @@ export async function enrichObjectsWithContent<TEntry>(
       continue;
     }
     if (kind.kind === 'binary') {
+      // A started binary pipeline runs to the end (download body, stage,
+      // extract, its own bounds), so on a tight budget one started late
+      // overruns the caller's ceiling. Leave it to a content fill instead.
+      if (opts.binaryStartReserveMs !== undefined && remainingBudgetMs(stopAt, ctx.now) < opts.binaryStartReserveMs) {
+        deferredDeadline++;
+        waiting.push({ object: obj, mime });
+        continue;
+      }
       if (budget.extracted >= MAX_EXTRACTIONS_PER_RUN) {
         budget.deferred++;
         waiting.push({ object: obj, mime });
