@@ -149,6 +149,24 @@ What the wrapper guarantees:
 - On the granted pass it **captures before the write, mints only after the write reported `ok`**, and never returns `_undo` when the capture or the journal failed. A failed capture does not fail the write.
 - A spec naming a tool absent from the registry **throws at build time** rather than silently ungating a rename.
 
+### Show the thing being sent: `preview`
+
+A card made only of `question` and `summary` cannot show an email properly: the summary ends up as one squashed paragraph with no layout, links or formatting. For any tool that sends something to a person (an email, an SMS, an invoice email, a calendar invite), add a `preview` to what `describe` returns:
+
+```ts
+describe: (_target, a, mailbox) => ({
+  question: `Send an email to ${String(a.to)}: "${String(a.subject)}"?`,
+  header: 'Outlook',
+  summary: approvalPreview(a.body),          // keep it: older platforms show this
+  preview: emailPreview({ from: { value: mailbox }, to: 'to', cc: 'cc', bcc: 'bcc',
+                          subject: 'subject', body: 'body', attachments: 'attachments' }),
+}),
+```
+
+Every string slot is the **name of one of your tool's arguments** (or a dotted path such as `input.body` inside a dispatcher). The platform reads the values from the exact arguments it replays on the tap, never from your preview, so the card cannot show one email while another goes out (sprigr-team decision 0216). Bind the argument you actually send. A slot that is not an argument (the sending mailbox, a recipient read from a ticket) is a stated `{ value }`, and the card marks it. The body can never be a stated value.
+
+The card shows a From/To/Cc/Subject header, the body rendered as it will look (sanitised, no scripts, no remote images, links listed in full with tracking flagged and never opened), attachments and fact tags. An `email` or `sms` preview names the approve button "Send". Builders: `emailPreview`, `smsPreview`, `fieldsPreview('document' | 'calendar' | 'fields', rows)`. A preview the platform cannot resolve falls back to `question` and `summary`.
+
 ### One connection rule per spec, not per gate
 
 `resolveConnection`, `describeTarget` and `stampConnection` on the gate are **defaults**. A spec that reaches its connection by another rule overrides them for itself:
