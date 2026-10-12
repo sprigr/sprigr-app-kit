@@ -498,10 +498,12 @@ export interface SprigrFilesApi {
    * Stream bytes into the app's store under `key` (app-relative; the platform
    * adds/strips the `_apps/{installId}/` prefix). A `ReadableStream` is piped
    * straight through to R2 without buffering whole in the isolate, so use it
-   * for multi-MB blobs (videos, full-res photos, PDFs). Size cap: 50 MB.
+   * for multi-MB blobs (videos, full-res photos, PDFs). Size cap: 200 MB
+   * (`MAX_STREAM_PUT_BYTES` in sprigr-team `wfp-files.ts`).
    * `opts.length` declares the byte length so the platform can enforce the cap
    * before opening the write; forward it for streamed bodies, which carry no
-   * Content-Length (`bytes` comes back `null` when it is omitted).
+   * Content-Length. The platform checks the cap ONLY against a declared
+   * length, so always pass it (`bytes` comes back `null` when it is omitted).
    */
   putStream(
     key: string,
