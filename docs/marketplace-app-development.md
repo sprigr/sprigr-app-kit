@@ -753,8 +753,10 @@ Your install's site is **private by default**. Per-install sites are created wit
 
 | Path shape | Methods | For |
 |---|---|---|
-| `/api/webhook/*` | `POST` only | Third-party webhook receivers arriving with their own signature or bearer scheme |
+| `/api/webhook/*` | `POST`, `OPTIONS`, and on your install site `GET` and `HEAD` | Third-party webhook receivers arriving with their own signature, bearer scheme or path token. `OPTIONS` is for a browser caller's CORS preflight. `GET`/`HEAD` are for a provider's subscribe handshake or callback probe (ServiceM8's subscribe challenge, Shopify FulfillmentService's `fetch_stock.json`); they are exempt only on marketplace install sites (sprigr-team decision 0227) |
 | `/api/public/*` | any | Anything else a visitor with no Sprigr session must reach |
+
+**A `GET` or `HEAD` handler under `/api/webhook/` is public on every install from its first deploy.** Authenticate it the way the `POST` beside it is authenticated (a constant-time path token compared before any work, or the provider's signature), answer a mismatch with 404, and never return install data from it. sprigr-apps' servicem8 `[token]` route is the worked example.
 
 **Anything outside those two 302s an anonymous visitor to `team.sprigr.com/login`.** That redirect is the whole failure mode: it looks like a broken link to the person you sent it to, and it will not show up in your own testing, because you are signed in and your session sails straight through.
 
