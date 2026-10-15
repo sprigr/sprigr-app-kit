@@ -623,6 +623,7 @@ Every per-install WFP script gets these bindings stamped at upload time:
 | `APP_SLUG` | plain_text | your app slug | Self-identification in logs |
 | `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for `env.SPRIGR.*` calls back to platform |
 | `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | The platform API base for this environment |
+| `SITE_PUBLIC_BASE_URL` | plain_text | the install site's custom domain, else its `<app>-<tail>.apps.sprigr.com` host | Every URL you hand to an outside system; read it with `publicBaseUrl(env)` (below) |
 | Plus every manifest `secrets[]` entry | secret_text | the install's secret store | Per-install OAuth keys, webhook signing keys, etc. |
 
 Declare them in your env type so `getCloudflareContext({ async: true }).env` is typed:
@@ -659,6 +660,24 @@ const { env } = await getCloudflareContext({ async: true });
 // not env. Easy to misread the type signature.
 const { env } = await getCloudflareContext<MyEnv>();
 ```
+
+### Your install's own URL: `SITE_PUBLIC_BASE_URL`, never a request header
+
+Any URL you give to an outside system (a webhook or push callback, a link in outbound mail, a provider's return URL) must be built on the https origin the platform bound as `SITE_PUBLIC_BASE_URL`. Read it with `publicBaseUrl(env)` from `@sprigr/apps-app-sdk` (0.28.0+). It returns that origin, or `null` when the binding is absent (a unit test, a local dev run). When it is null, refuse and say why.
+
+**Until your app pins app-sdk 0.28.0 or later** (not yet published at the time of writing), read the binding directly. Use `env.SITE_PUBLIC_BASE_URL` only when it parses as a URL whose protocol is `https:`, and use its `origin` (no path, no trailing slash). Otherwise treat it as absent.
+
+```ts
+import { publicBaseUrl } from '@sprigr/apps-app-sdk'; // 0.28.0+
+
+const base = publicBaseUrl(env);
+if (!base) return { ok: false, error: 'no_public_base_url' };
+const callbackUrl = `${base}/api/public/my-crm/webhook/${subKey}`;
+```
+
+Never derive the origin from the request's `Host` or `X-Forwarded-Host`, and never store a request-derived origin for later use. A visitor sets those headers, so any member who could load your settings page could point your webhooks, and their signed payloads, at a host they own. The Trello app shipped exactly that until the fix in sprigr-apps#3454 (issue sprigr-apps#3453).
+
+The binding has no company slug in it, so it survives a company rename. It does change when the install adds or removes a custom domain (the platform rebinds the install), so reconcile registered callbacks against the current base on a schedule, not only at connect time.
 
 ## 5. The build / publish pipeline
 
