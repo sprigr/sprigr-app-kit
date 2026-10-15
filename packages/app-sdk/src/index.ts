@@ -44,8 +44,9 @@ export {
   isStagingHost,
   resolveOAuthBouncerBase,
   resolveOAuthBouncerCallbackUrl,
+  publicBaseUrl,
 } from './platform-host';
-export type { PlatformHostEnv, OAuthBouncerSignals } from './platform-host';
+export type { PlatformHostEnv, OAuthBouncerSignals, PublicBaseUrlEnv } from './platform-host';
 export {
   emitMarketplaceEvent,
   createMarketplaceEmitter,
