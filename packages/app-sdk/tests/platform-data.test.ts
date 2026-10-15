@@ -220,6 +220,30 @@ describe('partialUpdateData with the injected host member', () => {
     expect(seen).toEqual([{ createIfNotExists: false }]);
   });
 
+  it('forwards timeoutMs to the member, which bounds its own fetch (sprigr-team#11950)', async () => {
+    const seen: unknown[] = [];
+    const data = {
+      partialUpdate: async (_o: unknown, opts: unknown) => {
+        seen.push(opts);
+        return { ok: true as const, updated: 1, skippedMissing: 0, index: 'orders' };
+      },
+    };
+    await partialUpdateData(inlineEnv({ SPRIGR: { data } }), [patch], { index: 'orders', timeoutMs: 12_000 });
+    expect(seen).toEqual([{ index: 'orders', createIfNotExists: false, timeoutMs: 12_000 }]);
+  });
+
+  it('sends no timeoutMs to the member when the caller set none (default unchanged)', async () => {
+    const seen: unknown[] = [];
+    const data = {
+      partialUpdate: async (_o: unknown, opts: unknown) => {
+        seen.push(opts);
+        return { ok: true as const, updated: 1, skippedMissing: 0, index: 'orders' };
+      },
+    };
+    await partialUpdateData(inlineEnv({ SPRIGR: { data } }), [patch], { index: 'orders' });
+    expect(seen[0]).not.toHaveProperty('timeoutMs');
+  });
+
   it('propagates a rejection from the member untouched', async () => {
     const boom = Object.assign(new Error('data.partialUpdate failed: 400 unknown_data_index'), {
       status: 400,

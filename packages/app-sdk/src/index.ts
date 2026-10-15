@@ -305,8 +305,25 @@ export interface SprigrDataIndexOpts {
   index?: string;
 }
 
+/**
+ * Opt-in bound for one data write (`import`, `partialUpdate`, `delete`),
+ * the same knob `data.search` takes (sprigr/sprigr-team#11950).
+ */
+export interface SprigrDataWriteTimeoutOpts {
+  /**
+   * Abort the call after this many ms and throw a named error
+   * (`data_import_timeout`, `data_partial_update_timeout`,
+   * `data_delete_timeout`) whose message names the index. Omit it and the
+   * call is unbounded as before (`import` keeps the platform's 100 s
+   * backstop). The abort is client-side only: the platform call may still
+   * complete, so retry only idempotent writes. Ignored by wrapper builds
+   * older than sprigr/sprigr-team#11950.
+   */
+  timeoutMs?: number;
+}
+
 /** Options for `env.SPRIGR.data.import`. */
-export interface SprigrDataImportOpts extends SprigrDataIndexOpts {
+export interface SprigrDataImportOpts extends SprigrDataIndexOpts, SprigrDataWriteTimeoutOpts {
   /**
    * Write to the app's reserved ACL file index
    * (`<companyId>-app-<slug>-acl-files`) instead of its data index. Every
@@ -322,7 +339,7 @@ export interface SprigrDataImportOpts extends SprigrDataIndexOpts {
 }
 
 /** Options for `env.SPRIGR.data.partialUpdate`. */
-export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts {
+export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts, SprigrDataWriteTimeoutOpts {
   /**
    * Create an object that does not exist yet from the patch alone. Default
    * `false`: a patch never creates half an object unless asked, and a
@@ -457,7 +474,7 @@ export interface SprigrDataApi {
    */
   delete?(
     objectIDs: string[],
-    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
+    opts?: SprigrDataIndexOpts & SprigrDataWriteTimeoutOpts & { withAcl?: boolean },
   ): Promise<{ ok: boolean; deleted: number; index: string }>;
   /**
    * List the objectIDs that start with `prefix` (non-empty, so a listing is
