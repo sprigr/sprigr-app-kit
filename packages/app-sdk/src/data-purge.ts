@@ -76,6 +76,14 @@ export interface DataClient {
 
 /** Bridge call ceiling: a purge sits inside a connect or disconnect request. */
 const BRIDGE_TIMEOUT_MS = 20_000;
+/** data.import's single 503 retry (sprigr/sprigr-team#10234): its wait cap,
+ *  the window the time spent plus the wait must fit in, the total an import
+ *  may take when the caller sets no timeoutMs (inside a 28 s app dispatch),
+ *  and the least time worth giving a retry. */
+const IMPORT_RETRY_MAX_WAIT_MS = 3_000;
+const IMPORT_RETRY_WINDOW_MS = 12_000;
+const IMPORT_TOTAL_BUDGET_MS = 25_000;
+const IMPORT_RETRY_MIN_MS = 1_500;
 
 /** Max ids one delete call takes (the platform's per-call cap). */
 export const DATA_DELETE_MAX_IDS = 1000;
@@ -137,7 +145,35 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
   return {
     via: 'http',
     async import(objects, opts) {
-      const r = await post('/internal/wfp/data/import', { objects, ...(opts ?? {}) }, 'data.import');
+      const body = { objects, ...(opts ?? {}) };
+      const startedAt = Date.now();
+      // A caller's timeoutMs bounds the whole call, both attempts (#11950).
+      const callerMs = typeof opts?.timeoutMs === 'number' && opts.timeoutMs > 0 ? opts.timeoutMs : undefined;
+      const sendImport = (timeoutMs: number) =>
+        installTokenPost(bridge, '/internal/wfp/data/import', body, { label: 'data.import', timeoutMs });
+      let r: Record<string, unknown>;
+      try {
+        r = await sendImport(Math.min(BRIDGE_TIMEOUT_MS, callerMs ?? BRIDGE_TIMEOUT_MS));
+      } catch (err) {
+        // sprigr/sprigr-team#10234: a 503 (engine unavailable, or the index is
+        // still being created) is retried ONCE, the same as the injected
+        // env.SPRIGR.data binding: wait min(Retry-After, 3 s), and only while
+        // the time spent plus the wait stays inside 12 s, so the retry keeps
+        // most of a 28 s app dispatch. Import is an idempotent upsert.
+        const e = err as { status?: number; retryAfterSeconds?: number };
+        if (e?.status !== 503) throw err;
+        const waitMs = Math.min(
+          typeof e.retryAfterSeconds === 'number' ? e.retryAfterSeconds * 1000 : 1000,
+          IMPORT_RETRY_MAX_WAIT_MS,
+        );
+        // The retry gets only what is left of the caller's bound, or of the
+        // dispatch-safe total, never a fresh one.
+        const spentMs = Date.now() - startedAt;
+        const retryMs = Math.min(BRIDGE_TIMEOUT_MS, (callerMs ?? IMPORT_TOTAL_BUDGET_MS) - spentMs - waitMs);
+        if (spentMs + waitMs > IMPORT_RETRY_WINDOW_MS || retryMs < IMPORT_RETRY_MIN_MS) throw err;
+        if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+        r = await sendImport(retryMs);
+      }
       return { ok: r.ok !== false, indexed: typeof r.indexed === 'number' ? r.indexed : objects.length, index: String(r.index ?? opts?.index ?? '') };
     },
     async search(opts) {
