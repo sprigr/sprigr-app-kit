@@ -109,6 +109,57 @@ describe('makeDataClient http import retries a transient 503 once (sprigr/sprigr
     expect(bodies).toHaveLength(1);
   });
 
+  // Tech Lead review of #160: every attempt gets only what is left of the
+  // caller's timeoutMs, or of a 25 s dispatch-safe total without one.
+  async function withClock(run: (setOffset: (ms: number) => void, delays: number[]) => Promise<void>) {
+    const realNow = Date.now;
+    let offset = 0;
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    const stSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      delays.push(ms ?? 0);
+      return realSetTimeout(fn, ms);
+    }) as typeof setTimeout);
+    try {
+      await run((ms) => { offset = ms; }, delays);
+    } finally {
+      nowSpy.mockRestore();
+      stSpy.mockRestore();
+    }
+  }
+
+  it('with timeoutMs 5000, a 503 at about 4 s is not retried, and the first attempt honours timeoutMs', async () => {
+    await withClock(async (setOffset, delays) => {
+      const bodies = sequence([{ status: 503, retryAfter: '0', onCall: () => setOffset(4000) }, { status: 200 }]);
+      await expect(makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }], { timeoutMs: 5000 })).rejects.toMatchObject({ status: 503 });
+      expect(bodies).toHaveLength(1);
+      expect(delays[0]).toBe(5000);
+    });
+  });
+
+  it('with timeoutMs 5000, the retry is bounded by what is left of it', async () => {
+    await withClock(async (setOffset, delays) => {
+      const bodies = sequence([{ status: 503, retryAfter: '0', onCall: () => setOffset(3300) }, { status: 200 }]);
+      await makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }], { timeoutMs: 5000 });
+      expect(bodies).toHaveLength(2);
+      expect(delays[0]).toBe(5000);
+      expect(delays[1]).toBeGreaterThan(1500);
+      expect(delays[1]).toBeLessThanOrEqual(1700);
+    });
+  });
+
+  it('without timeoutMs, a 503 at about 9 s leaves the retry at most the rest of a 25 s total', async () => {
+    await withClock(async (setOffset, delays) => {
+      const bodies = sequence([{ status: 503, retryAfter: '0', onCall: () => setOffset(9000) }, { status: 200 }]);
+      await makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }]);
+      expect(bodies).toHaveLength(2);
+      expect(delays[0]).toBe(20000);
+      expect(delays[1]).toBeGreaterThan(15000);
+      expect(delays[1]).toBeLessThanOrEqual(16000);
+    });
+  });
+
   it('skips the retry when the first call already used most of the dispatch budget', async () => {
     const realNow = Date.now;
     let offset = 0;
