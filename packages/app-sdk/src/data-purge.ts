@@ -76,6 +76,10 @@ export interface DataClient {
 
 /** Bridge call ceiling: a purge sits inside a connect or disconnect request. */
 const BRIDGE_TIMEOUT_MS = 20_000;
+/** data.import's single 503 retry (sprigr/sprigr-team#10234): its wait cap,
+ *  and the window the time spent plus the wait must fit in. */
+const IMPORT_RETRY_MAX_WAIT_MS = 3_000;
+const IMPORT_RETRY_WINDOW_MS = 12_000;
 
 /** Max ids one delete call takes (the platform's per-call cap). */
 export const DATA_DELETE_MAX_IDS = 1000;
@@ -137,7 +141,27 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
   return {
     via: 'http',
     async import(objects, opts) {
-      const r = await post('/internal/wfp/data/import', { objects, ...(opts ?? {}) }, 'data.import');
+      const body = { objects, ...(opts ?? {}) };
+      const startedAt = Date.now();
+      let r: Record<string, unknown>;
+      try {
+        r = await post('/internal/wfp/data/import', body, 'data.import');
+      } catch (err) {
+        // sprigr/sprigr-team#10234: a 503 (engine unavailable, or the index is
+        // still being created) is retried ONCE, the same as the injected
+        // env.SPRIGR.data binding: wait min(Retry-After, 3 s), and only while
+        // the time spent plus the wait stays inside 12 s, so the retry keeps
+        // most of a 28 s app dispatch. Import is an idempotent upsert.
+        const e = err as { status?: number; retryAfterSeconds?: number };
+        if (e?.status !== 503) throw err;
+        const waitMs = Math.min(
+          typeof e.retryAfterSeconds === 'number' ? e.retryAfterSeconds * 1000 : 1000,
+          IMPORT_RETRY_MAX_WAIT_MS,
+        );
+        if (Date.now() - startedAt + waitMs > IMPORT_RETRY_WINDOW_MS) throw err;
+        if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+        r = await post('/internal/wfp/data/import', body, 'data.import');
+      }
       return { ok: r.ok !== false, indexed: typeof r.indexed === 'number' ? r.indexed : objects.length, index: String(r.index ?? opts?.index ?? '') };
     },
     async search(opts) {

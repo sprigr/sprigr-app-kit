@@ -67,6 +67,62 @@ describe('makeDataClient', () => {
   });
 });
 
+describe('makeDataClient http import retries a transient 503 once (sprigr/sprigr-team#10234)', () => {
+  // Provisioning answers an unavailable engine (and a still-creating index)
+  // with 503 + Retry-After. The install-token fallback retried nothing, so a
+  // blip dropped the batch; it now retries once, inside the dispatch budget.
+  function sequence(answers: Array<{ status: number; retryAfter?: string; onCall?: () => void }>) {
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      const a = answers[Math.min(bodies.length - 1, answers.length - 1)];
+      a.onCall?.();
+      const headers: Record<string, string> = {};
+      if (a.retryAfter !== undefined) headers['retry-after'] = a.retryAfter;
+      return a.status === 200
+        ? Response.json({ ok: true, indexed: 1, index: 'orders' }, { headers })
+        : Response.json({ error: a.status === 503 ? 'import_unavailable' : 'import_failed', detail: 'engine said no' }, { status: a.status, headers });
+    });
+    return bodies;
+  }
+
+  it('retries a 503 once, honouring Retry-After, and returns the retry result', async () => {
+    const bodies = sequence([{ status: 503, retryAfter: '0' }, { status: 200 }]);
+    const res = await makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }], { index: 'orders' });
+    expect(res).toMatchObject({ ok: true, indexed: 1, index: 'orders' });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+  });
+
+  it('retries at most once, then throws the 503 with its Retry-After', async () => {
+    const bodies = sequence([{ status: 503, retryAfter: '0' }, { status: 503, retryAfter: '0' }]);
+    const err = await makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }]).catch((e: unknown) => e) as Error & { status?: number; retryAfterSeconds?: number };
+    expect(bodies).toHaveLength(2);
+    expect(err.status).toBe(503);
+    expect(err.retryAfterSeconds).toBe(0);
+    expect(err.message).toBe('data.import failed: 503 import_unavailable');
+  });
+
+  it('does not retry a final 502', async () => {
+    const bodies = sequence([{ status: 502 }, { status: 200 }]);
+    await expect(makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }])).rejects.toMatchObject({ status: 502 });
+    expect(bodies).toHaveLength(1);
+  });
+
+  it('skips the retry when the first call already used most of the dispatch budget', async () => {
+    const realNow = Date.now;
+    let offset = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    try {
+      const bodies = sequence([{ status: 503, retryAfter: '0', onCall: () => { offset = 13_000; } }, { status: 200 }]);
+      await expect(makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }])).rejects.toMatchObject({ status: 503 });
+      expect(bodies).toHaveLength(1);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
+
 describe('snapshotIndexIds + deleteSnapshotIds', () => {
   it('lists every prefix per index, then deletes exactly that snapshot in chunks', async () => {
     const rows = { cards: ['trello:card:1', 'trello:card:2', 'trello:card:3'], boards: ['trello:board:1'] };
