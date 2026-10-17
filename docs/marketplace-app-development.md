@@ -10,6 +10,7 @@ End-to-end guide for building, publishing, and shipping a marketplace app on the
 - Per-install state lives in a per-install **D1 database** (`env.DB`) bound at upload time. The manifest declares migrations; the platform runs them after every successful build.
 - Every install gets its manifest **secrets** plus a set of runtime bindings stamped at upload time (`INSTALL_ID`, `COMPANY_ID`, `APP_SLUG`, an install token, the platform base URL) and the `env.SPRIGR.*` runtime object.
 - OAuth flows through the **shared bouncer** at `oauth-bouncer.sprigr.com`. One redirect URI per environment; the bouncer dispatches the callback back to the correct install via the WFP dispatcher namespace.
+- **Never buffer a file.** An app worker has about 128 MB, and a tool call must finish in 28 s (reads) or 25 s (writes). Stream a provider's body into `env.SPRIGR.files.putStream` (always pass `length`; cap 200 MB) and return a `file_key` plus `files.url`, never the bytes. Recipe and limits: "Large files: stream, never buffer" in [platform-reference](platform-reference.md); longer transfers go in a durable job ([section 2c](#2c-durable-jobs--the-scoped-store)).
 
 ---
 
@@ -622,6 +623,7 @@ Every per-install WFP script gets these bindings stamped at upload time:
 | `APP_SLUG` | plain_text | your app slug | Self-identification in logs |
 | `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for `env.SPRIGR.*` calls back to platform |
 | `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | The platform API base for this environment |
+| `SITE_PUBLIC_BASE_URL` | plain_text | the install site's custom domain, else its `<app>-<tail>.apps.sprigr.com` host | Every URL you hand to an outside system; read it with `publicBaseUrl(env)` (below) |
 | Plus every manifest `secrets[]` entry | secret_text | the install's secret store | Per-install OAuth keys, webhook signing keys, etc. |
 
 Declare them in your env type so `getCloudflareContext({ async: true }).env` is typed:
@@ -658,6 +660,24 @@ const { env } = await getCloudflareContext({ async: true });
 // not env. Easy to misread the type signature.
 const { env } = await getCloudflareContext<MyEnv>();
 ```
+
+### Your install's own URL: `SITE_PUBLIC_BASE_URL`, never a request header
+
+Any URL you give to an outside system (a webhook or push callback, a link in outbound mail, a provider's return URL) must be built on the https origin the platform bound as `SITE_PUBLIC_BASE_URL`. Read it with `publicBaseUrl(env)` from `@sprigr/apps-app-sdk` (0.28.0+). It returns that origin, or `null` when the binding is absent (a unit test, a local dev run). When it is null, refuse and say why.
+
+**Until your app pins app-sdk 0.28.0 or later** (not yet published at the time of writing), read the binding directly. Use `env.SITE_PUBLIC_BASE_URL` only when it parses as a URL whose protocol is `https:`, and use its `origin` (no path, no trailing slash). Otherwise treat it as absent.
+
+```ts
+import { publicBaseUrl } from '@sprigr/apps-app-sdk'; // 0.28.0+
+
+const base = publicBaseUrl(env);
+if (!base) return { ok: false, error: 'no_public_base_url' };
+const callbackUrl = `${base}/api/public/my-crm/webhook/${subKey}`;
+```
+
+Never derive the origin from the request's `Host` or `X-Forwarded-Host`, and never store a request-derived origin for later use. A visitor sets those headers, so any member who could load your settings page could point your webhooks, and their signed payloads, at a host they own. The Trello app shipped exactly that until the fix in sprigr-apps#3454 (issue sprigr-apps#3453).
+
+The binding has no company slug in it, so it survives a company rename. It does change when the install adds or removes a custom domain (the platform rebinds the install), so reconcile registered callbacks against the current base on a schedule, not only at connect time.
 
 ## 5. The build / publish pipeline
 
@@ -733,8 +753,10 @@ Your install's site is **private by default**. Per-install sites are created wit
 
 | Path shape | Methods | For |
 |---|---|---|
-| `/api/webhook/*` | `POST` only | Third-party webhook receivers arriving with their own signature or bearer scheme |
+| `/api/webhook/*` | `POST`, `OPTIONS`, and on your install site `GET` and `HEAD` | Third-party webhook receivers arriving with their own signature, bearer scheme or path token. `OPTIONS` is for a browser caller's CORS preflight. `GET`/`HEAD` are for a provider's subscribe handshake or callback probe (ServiceM8's subscribe challenge, Shopify FulfillmentService's `fetch_stock.json`); they are exempt only on marketplace install sites (sprigr-team decision 0227) |
 | `/api/public/*` | any | Anything else a visitor with no Sprigr session must reach |
+
+**A `GET` or `HEAD` handler under `/api/webhook/` is public on every install from its first deploy.** Authenticate it the way the `POST` beside it is authenticated (a constant-time path token compared before any work, or the provider's signature), answer a mismatch with 404, and never return install data from it. sprigr-apps' servicem8 `[token]` route is the worked example.
 
 **Anything outside those two 302s an anonymous visitor to `team.sprigr.com/login`.** That redirect is the whole failure mode: it looks like a broken link to the person you sent it to, and it will not show up in your own testing, because you are signed in and your session sails straight through.
 

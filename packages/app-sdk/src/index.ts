@@ -44,8 +44,9 @@ export {
   isStagingHost,
   resolveOAuthBouncerBase,
   resolveOAuthBouncerCallbackUrl,
+  publicBaseUrl,
 } from './platform-host';
-export type { PlatformHostEnv, OAuthBouncerSignals } from './platform-host';
+export type { PlatformHostEnv, OAuthBouncerSignals, PublicBaseUrlEnv } from './platform-host';
 export {
   emitMarketplaceEvent,
   createMarketplaceEmitter,
@@ -304,8 +305,25 @@ export interface SprigrDataIndexOpts {
   index?: string;
 }
 
+/**
+ * Opt-in bound for one data write (`import`, `partialUpdate`, `delete`),
+ * the same knob `data.search` takes (sprigr/sprigr-team#11950).
+ */
+export interface SprigrDataWriteTimeoutOpts {
+  /**
+   * Abort the call after this many ms and throw a named error
+   * (`data_import_timeout`, `data_partial_update_timeout`,
+   * `data_delete_timeout`) whose message names the index. Omit it and the
+   * call is unbounded as before (`import` keeps the platform's 100 s
+   * backstop). The abort is client-side only: the platform call may still
+   * complete, so retry only idempotent writes. Ignored by wrapper builds
+   * older than sprigr/sprigr-team#11950.
+   */
+  timeoutMs?: number;
+}
+
 /** Options for `env.SPRIGR.data.import`. */
-export interface SprigrDataImportOpts extends SprigrDataIndexOpts {
+export interface SprigrDataImportOpts extends SprigrDataIndexOpts, SprigrDataWriteTimeoutOpts {
   /**
    * Write to the app's reserved ACL file index
    * (`<companyId>-app-<slug>-acl-files`) instead of its data index. Every
@@ -321,7 +339,7 @@ export interface SprigrDataImportOpts extends SprigrDataIndexOpts {
 }
 
 /** Options for `env.SPRIGR.data.partialUpdate`. */
-export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts {
+export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts, SprigrDataWriteTimeoutOpts {
   /**
    * Create an object that does not exist yet from the patch alone. Default
    * `false`: a patch never creates half an object unless asked, and a
@@ -456,7 +474,7 @@ export interface SprigrDataApi {
    */
   delete?(
     objectIDs: string[],
-    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
+    opts?: SprigrDataIndexOpts & SprigrDataWriteTimeoutOpts & { withAcl?: boolean },
   ): Promise<{ ok: boolean; deleted: number; index: string }>;
   /**
    * List the objectIDs that start with `prefix` (non-empty, so a listing is
@@ -501,10 +519,12 @@ export interface SprigrFilesApi {
    * Stream bytes into the app's store under `key` (app-relative; the platform
    * adds/strips the `_apps/{installId}/` prefix). A `ReadableStream` is piped
    * straight through to R2 without buffering whole in the isolate, so use it
-   * for multi-MB blobs (videos, full-res photos, PDFs). Size cap: 50 MB.
+   * for multi-MB blobs (videos, full-res photos, PDFs). Size cap: 200 MB
+   * (`MAX_STREAM_PUT_BYTES` in sprigr-team `wfp-files.ts`).
    * `opts.length` declares the byte length so the platform can enforce the cap
    * before opening the write; forward it for streamed bodies, which carry no
-   * Content-Length (`bytes` comes back `null` when it is omitted).
+   * Content-Length. The platform checks the cap ONLY against a declared
+   * length, so always pass it (`bytes` comes back `null` when it is omitted).
    */
   putStream(
     key: string,
@@ -780,3 +800,5 @@ export type {
 
 export { getCompanyTimezone } from './company';
 export type { CompanyTimezoneEnv } from './company';
+
+export { emailBodyHtml, hasHtmlMarkup } from './email-body';

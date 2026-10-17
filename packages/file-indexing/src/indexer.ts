@@ -93,6 +93,14 @@ export interface IndexActorFilesBudget {
    *  `contentFillBudgetMs`). Still bounded by the deadline. Ignored when
    *  `contentFillBudgetMs` is 0. */
   idleContentFillBudgetMs?: number;
+  /** 0.1.4 (sprigr-team#10300): do not START a binary extraction (download,
+   *  stage, extract) when less than this much of the walk's content deadline
+   *  remains; the file is recorded for a content fill instead, exactly like a
+   *  deadline cut. A binary pipeline runs to completion once started, so on a
+   *  tight per-delivery budget (a webhook under the platform's 28 s dispatch
+   *  kill) one started near the deadline overruns it. Default: no reserve
+   *  (scheduled ticks keep their behaviour). */
+  binaryStartReserveMs?: number;
 }
 
 export interface FileIndexingOutcome {
@@ -433,6 +441,7 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
     budget: extractBudget,
     throttled,
     ...(enrichDeadline ? { deadline: enrichDeadline } : {}),
+    ...(budget.binaryStartReserveMs !== undefined ? { binaryStartReserveMs: budget.binaryStartReserveMs } : {}),
   });
   let contentDeferred = enriched.recorded;
   let contentAttempted = enriched.attempted;
@@ -470,6 +479,7 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
             budget: extractBudget,
             throttled,
             ...(enrichDeadline ? { deadline: enrichDeadline } : {}),
+            ...(budget.binaryStartReserveMs !== undefined ? { binaryStartReserveMs: budget.binaryStartReserveMs } : {}),
           });
           contentDeferred += scopeEnriched.recorded;
           contentAttempted += scopeEnriched.attempted;
@@ -764,6 +774,7 @@ async function runContentFills<TEntry, TEnv extends FileIndexingEnv>(
     budget: shared.budget,
     throttled: shared.throttled,
     label: shared.label,
+    ...(budget.binaryStartReserveMs !== undefined ? { binaryStartReserveMs: budget.binaryStartReserveMs } : {}),
   });
   const left = Math.max(0, pending - out.filled - out.converted - out.dropped);
   await logContentFillOutcome(ctx, shared.label, {
