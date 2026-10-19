@@ -522,6 +522,37 @@ export interface SprigrAssertionsApi {
   mint(audience: string): Promise<SprigrAssertionMintResult>;
 }
 
+/** The `error` values {@link SprigrMeApi.signature} can resolve with. */
+export type SprigrMeSignatureError = 'no_person' | 'actor_unverified' | 'invalid' | 'unavailable';
+
+/**
+ * The result of {@link SprigrMeApi.signature} (sprigr-team decision 0255).
+ * `ok: true` names the person whose signature it is (`platform_user_id`, a
+ * `usr_` id) and their sanitized HTML signature, or `html: null` when they set
+ * none. `ok: false` is a refusal; the method never rejects.
+ */
+export type SprigrMeSignatureResult =
+  | { ok: true; platform_user_id: string; html: string | null }
+  | { ok: false; error: SprigrMeSignatureError; message: string };
+
+/**
+ * `env.SPRIGR.me`: reads about the PERSON this dispatch acts for. The platform
+ * resolves the person from the signed actor assertion on the dispatch, which
+ * the bridge forwards itself; nothing an app passes can name another person.
+ */
+export interface SprigrMeApi {
+  /**
+   * The acting person's Inbox email signature for `channel` (the mail channel
+   * slug, e.g. `'outlook_mail'` or `'google_mail'`): their override for that
+   * channel's family if they set one, else their default. Append it only when
+   * `platform_user_id` owns the mailbox you are sending from (never from a
+   * shared mailbox), and skip it when the body already contains it.
+   * Resolves `no_person` when nobody is acting (a webhook, an agent with no
+   * person behind it, a member who left). Never rejects.
+   */
+  signature(input: { channel: string }): Promise<SprigrMeSignatureResult>;
+}
+
 /**
  * Durable app file storage exposed on `env.SPRIGR.files` by the platform
  * wrapper (the platform build-runner). Persists bytes into the install's
