@@ -203,6 +203,31 @@ export async function runFulfilmentProviderConformance(
     );
   }
 
+  // 5b. the ship-to change (1.4.0, optional). Driven only when the adapter
+  // CLAIMS it, because a provider written against 1.3.0 has no such handler
+  // and must stay conformant (see `optionalSince` on the op). Checked for
+  // AGREEMENT: a provider that claims the capability must not answer
+  // "unsupported", or the hub sends address changes into a void.
+  if (caps.supports_address_update === true) {
+    const readdressed = await driveOp(ctx, op('update_ship_to'), {
+      fulfilment_request_id: firstId,
+      provider_ref: firstRef ?? 'unknown',
+      ship_to: { name: 'Conformance', line1: '1 Conformance Way', city: 'Brisbane', postcode: '4000', country: 'AU' },
+      reason: 'fulfilment hub conformance address change',
+    });
+    if (readdressed) {
+      const unsupported =
+        readdressed.status === 'rejected' && String(readdressed.reason ?? '').includes('unsupported');
+      checks.add(
+        'update_ship_to.matches_capability',
+        !unsupported,
+        unsupported
+          ? 'capabilities say supports_address_update:true but update_ship_to answered "unsupported"; the hub would send address changes that silently do nothing'
+          : 'capabilities say supports_address_update:true and update_ship_to is implemented',
+      );
+    }
+  }
+
   // 6. get_stock + health.
   await driveOp(ctx, op('get_stock'), { warehouse_key: warehouseKey, skus: ['CONF-SKU-1'] });
   await driveOp(ctx, op('health'), {});
