@@ -862,3 +862,6 @@ export { getCompanyTimezone } from './company';
 export type { CompanyTimezoneEnv } from './company';
 
 export { emailBodyHtml, hasHtmlMarkup } from './email-body';
+
+// sprigr-team decision 0255: the sender's Inbox signature on app-sent mail.
+export { withSenderSignature } from './sender-signature';
