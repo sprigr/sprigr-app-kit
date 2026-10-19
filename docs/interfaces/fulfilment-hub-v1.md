@@ -189,13 +189,16 @@ Events (the adapter emits; the hub subscribes):
 
 | op | effects | input | output |
 |---|---|---|---|
-| `describe` | read | `{}` | `{ adapter_slug, capabilities: { supports_cancel, supports_split, supports_hold, tracking_mode: 'push' \| 'poll' \| 'scrape', stock_mode: 'snapshot' \| 'delta' \| 'none', countries: string[] } }` |
+| `describe` | read | `{}` | `{ adapter_slug, capabilities: { supports_cancel, supports_address_update?, supports_split, supports_hold, tracking_mode: 'push' \| 'poll' \| 'scrape', stock_mode: 'snapshot' \| 'delta' \| 'none', countries: string[] } }` |
 | `list_warehouses` | read | `{}` | `{ warehouses: [{ warehouse_key, name, country, cutoff_local_time?, active }] }` |
 | `push_order` | write | `{ fulfilment_request_id, order_id, source_number, warehouse_key, ship_to: address, customer_email?, lines: [{ line_id, sku, title, quantity, unit_price_minor, currency }], currency, total_minor, notes?, callback_hint? }` | `{ status: 'accepted' \| 'queued' \| 'rejected', provider_ref?, reason? }` (idempotent on `fulfilment_request_id`) |
 | `cancel_order` | write | `{ fulfilment_request_id, provider_ref, reason }` | `{ status: 'accepted' \| 'queued' \| 'rejected', reason? }` (outcome as `provider.order.cancelled` or `provider.order.cancel_refused`) |
+| `update_ship_to` | write | `{ fulfilment_request_id, provider_ref?, ship_to: address, reason? }` | `{ status: 'accepted' \| 'queued' \| 'rejected', reason? }` (1.4.0, optional; FULL new address; outcome as `provider.order.address_updated` or `provider.order.address_update_refused`) |
 | `get_order_status` | read | `{ fulfilment_request_id, provider_ref }` | `{ status, provider_status_raw?, tracking?: { carrier, tracking_number, tracking_url } }` |
 | `get_stock` | read | `{ warehouse_key?, skus?: string[] }` | `{ levels: stock_level[] }` |
 | `health` | read | `{}` | `{ ok, credentials_ok, last_callback_at?, breaker_open, detail? }` |
+
+**1.4.0 adds `update_ship_to`.** A ship-to that changes after the order reached the warehouse (the customer edits it at the selling system, or an operator corrects it in the hub) has to reach the label. The op carries the FULL new address, because a warehouse replaces the label address whole. It is optional (`optionalSince: '1.4.0'`): a provider that cannot do it omits `supports_address_update` and the hub keeps refusing such a change once the order is with the warehouse. A provider whose partner API has no address change may still implement it by asking a person (the Sinotrans adapter emails the warehouse and answers `queued`), as long as the outcome arrives as one of the two events.
 
 Events:
 
@@ -206,6 +209,8 @@ Events:
 | `provider.order.error` | `{ adapter_slug, fulfilment_request_id, reason, retryable: boolean }` |
 | `provider.order.cancelled` | `{ adapter_slug, fulfilment_request_id, provider_ref }` |
 | `provider.order.cancel_refused` | `{ adapter_slug, fulfilment_request_id, provider_ref, reason }` |
+| `provider.order.address_updated` | `{ adapter_slug, fulfilment_request_id, provider_ref, ship_to?, reason? }` (1.4.0) |
+| `provider.order.address_update_refused` | `{ adapter_slug, fulfilment_request_id, provider_ref, reason }` (1.4.0; the parcel ships to the old address) |
 | `provider.shipment.created` | `{ adapter_slug, fulfilment_request_id, provider_ref, shipment: { provider_shipment_ref, carrier, tracking_number, tracking_url?, lines, weight_grams?, dimensions?, shipped_at } }` |
 | `provider.shipment.event` | `{ adapter_slug, provider_shipment_ref, tracking_number, stage, occurred_at, location?, provider_event_ref, detail? }` |
 | `provider.stock.snapshot` | `{ adapter_slug, warehouse_key, snapshot_at, full: boolean, levels: [{ sku, on_hand, reserved }] }` |

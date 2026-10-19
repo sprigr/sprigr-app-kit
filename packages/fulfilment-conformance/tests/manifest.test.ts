@@ -34,6 +34,45 @@ describe('checkAdapterManifest', () => {
     expect(failed(checkAdapterManifest(m, 'fulfilment_provider'))).toEqual(['provides.describe.version']);
   });
 
+  // An op added after 1.0.0 cannot honestly be pinned 1.0.0, so it may carry
+  // the version that introduced it (or a later 1.x). Never an earlier one,
+  // and the 1.0.0 ops keep their exact pin (the test above).
+  function withUpdateShipTo(version: string): Record<string, unknown> {
+    const m = providerManifest();
+    (m.tools as Record<string, unknown>[]).push({
+      name: 'tiny_wh_update_ship_to',
+      handler: 'src/handlers/provider.ts',
+      effects: 'write',
+    });
+    (m.cross_tenant_tools as Record<string, unknown>[]).push({
+      tool_name: 'tiny_wh_update_ship_to',
+      resource_type: 'fulfilment',
+      action: 'write',
+      description: 'op update_ship_to',
+      input_schema: { type: 'object', properties: {} },
+      provides: { interface: 'fulfilment-hub/fulfilment_provider', op: 'update_ship_to', version },
+    });
+    (m.events as { emits: Record<string, unknown>[] }).emits.push(
+      { name: 'provider.order.address_updated', scope: 'per_install' },
+      { name: 'provider.order.address_update_refused', scope: 'per_install' },
+    );
+    return m;
+  }
+
+  it('accepts update_ship_to pinned at 1.4.0 (when it was added), a later 1.x, or 1.0.0', () => {
+    for (const v of ['1.4.0', '1.5.2', '1.0.0']) {
+      expect(failed(checkAdapterManifest(withUpdateShipTo(v), 'fulfilment_provider')), v).toEqual([]);
+    }
+  });
+
+  it('fails update_ship_to pinned before it existed, or outside 1.x', () => {
+    for (const v of ['1.3.0', '2.0.0', '1.4', 'latest']) {
+      expect(failed(checkAdapterManifest(withUpdateShipTo(v), 'fulfilment_provider')), v).toEqual([
+        'provides.update_ship_to.version',
+      ]);
+    }
+  });
+
   it('fails a write op with no effects: write', () => {
     const m = providerManifest();
     delete (m.tools as Record<string, unknown>[])[2]!.effects;

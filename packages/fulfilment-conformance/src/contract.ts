@@ -225,6 +225,15 @@ export const FULFILMENT_PROVIDER_CAPABILITIES_SPEC: ObjectSpec = {
     stock_mode: { enum: ['snapshot', 'delta', 'none'] },
     countries: 'string_array',
   },
+  optional: {
+    /**
+     * 1.4.0. The provider accepts `update_ship_to`, so a ship-to that changes
+     * after the order reached the warehouse can be put on the label. Optional
+     * and absent-reads-as-false for the same reason as the order source's
+     * flag: every provider written against 1.3.0 predates the op.
+     */
+    supports_address_update: 'boolean',
+  },
 };
 
 export const ORDER_SOURCE_OPS: readonly OpSpec[] = [
@@ -421,6 +430,26 @@ export const FULFILMENT_PROVIDER_OPS: readonly OpSpec[] = [
     output: { required: PROVIDER_ACK, optional: { reason: 'string' } },
   },
   {
+    /**
+     * 1.4.0. Change the delivery address of an order the provider already
+     * holds. `ship_to` is the FULL new address, not a patch: a warehouse
+     * replaces the label address whole. The answer arrives as
+     * `provider.order.address_updated` or `provider.order.address_update_refused`.
+     *
+     * A provider that cannot do this at all reports
+     * `supports_address_update: false` (or omits it) and, if it has a handler,
+     * answers `{ status: 'rejected', reason: 'unsupported' }`. One that can,
+     * but not for this order any more (already labelled or shipped), answers
+     * `rejected` with its own reason.
+     */
+    name: 'update_ship_to',
+    optionalSince: '1.4.0',
+    effects: 'write',
+    ack: true,
+    ackStatuses: FULFILMENT_PROVIDER_ACK_STATUSES,
+    output: { required: PROVIDER_ACK, optional: { reason: 'string' } },
+  },
+  {
     name: 'get_order_status',
     effects: 'read',
     ack: false,
@@ -495,6 +524,9 @@ export const FULFILMENT_PROVIDER_EVENTS = [
   'provider.order.error',
   'provider.order.cancelled',
   'provider.order.cancel_refused',
+  // 1.4.0: the answer to update_ship_to.
+  'provider.order.address_updated',
+  'provider.order.address_update_refused',
   'provider.shipment.created',
   'provider.shipment.event',
   'provider.stock.snapshot',
@@ -529,6 +561,7 @@ export const REQUIRED_EMITS_BY_OP: Record<AdapterRole, Record<string, readonly s
   fulfilment_provider: {
     push_order: ['provider.order.accepted', 'provider.order.rejected', 'provider.order.error'],
     cancel_order: ['provider.order.cancelled', 'provider.order.cancel_refused'],
+    update_ship_to: ['provider.order.address_updated', 'provider.order.address_update_refused'],
   },
 };
 
