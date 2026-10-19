@@ -489,6 +489,40 @@ export interface SprigrDataApi {
 }
 
 /**
+ * The result of {@link SprigrAssertionsApi.mint}: an audience-bound `saa5`
+ * actor assertion the platform minted PER CALL from this install's token
+ * (decision 0188). Send `assertion` as the named `header` on the request to
+ * the audience service; `expires_at` is epoch seconds (the token lives ~120s).
+ */
+export interface SprigrAssertionMintResult {
+  /** The signed `saa5` token. */
+  assertion: string;
+  /** The header name to send it under, e.g. `X-Sprigr-Actor-Assertion`. */
+  header: string;
+  /** Epoch seconds at which the assertion expires. */
+  expires_at: number;
+}
+
+/**
+ * `env.SPRIGR.assertions`: mint audience-bound actor assertions for a service
+ * OUTSIDE the platform's own bridges (decision 0188). The platform signs it
+ * from this install's token, naming only this install and company; every
+ * verifier that does not name its own audience refuses it. Call it per
+ * request, not once per tool call, because the token lives ~120s.
+ *
+ * Audiences are a closed set on the platform (e.g. `'gpu-broker'` for the GPU
+ * broker, sprigr-team#9433); an unknown audience is refused.
+ */
+export interface SprigrAssertionsApi {
+  /**
+   * Mint an assertion bound to `audience`. Resolves to the token, the header
+   * to send it under, and its expiry. Rejects if the audience is unknown or
+   * the install's marketplace bindings are not configured.
+   */
+  mint(audience: string): Promise<SprigrAssertionMintResult>;
+}
+
+/**
  * Durable app file storage exposed on `env.SPRIGR.files` by the platform
  * wrapper (the platform build-runner). Persists bytes into the install's
  * contained R2 namespace (every key is confined server-side to
