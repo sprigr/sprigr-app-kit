@@ -233,6 +233,12 @@ export const FULFILMENT_PROVIDER_CAPABILITIES_SPEC: ObjectSpec = {
      * flag: every provider written against 1.3.0 predates the op.
      */
     supports_address_update: 'boolean',
+    /**
+     * 1.5.0. The provider accepts `create_inbound`, so a brand can send it a
+     * purchase order to receive. Optional and absent-reads-as-false: every
+     * provider written against 1.4.0 predates the op.
+     */
+    supports_inbound: 'boolean',
   },
 };
 
@@ -450,6 +456,27 @@ export const FULFILMENT_PROVIDER_OPS: readonly OpSpec[] = [
     output: { required: PROVIDER_ACK, optional: { reason: 'string' } },
   },
   {
+    /**
+     * 1.5.0. Send the provider an inbound purchase order: stock the brand
+     * expects to arrive at `warehouse_key`. `inbound_id` is hub-minted and is
+     * the idempotency key (the same id again is the same PO, never a second
+     * one). The warehouse's answer arrives as `provider.inbound.accepted` or
+     * `provider.inbound.refused`; the count of what arrived comes later as
+     * `provider.inbound.received`, by which time the provider has already
+     * added the received quantities to its stock.
+     *
+     * A provider with no inbound support reports `supports_inbound: false`
+     * (or omits it) and, if it has a handler, answers
+     * `{ status: 'rejected', reason: 'unsupported' }`.
+     */
+    name: 'create_inbound',
+    optionalSince: '1.5.0',
+    effects: 'write',
+    ack: true,
+    ackStatuses: FULFILMENT_PROVIDER_ACK_STATUSES,
+    output: { required: PROVIDER_ACK, optional: { provider_ref: 'nonempty_string', reason: 'string' } },
+  },
+  {
     name: 'get_order_status',
     effects: 'read',
     ack: false,
@@ -527,6 +554,10 @@ export const FULFILMENT_PROVIDER_EVENTS = [
   // 1.4.0: the answer to update_ship_to.
   'provider.order.address_updated',
   'provider.order.address_update_refused',
+  // 1.5.0: the answer to create_inbound, then the warehouse's count.
+  'provider.inbound.accepted',
+  'provider.inbound.refused',
+  'provider.inbound.received',
   'provider.shipment.created',
   'provider.shipment.event',
   'provider.stock.snapshot',
@@ -562,6 +593,8 @@ export const REQUIRED_EMITS_BY_OP: Record<AdapterRole, Record<string, readonly s
     push_order: ['provider.order.accepted', 'provider.order.rejected', 'provider.order.error'],
     cancel_order: ['provider.order.cancelled', 'provider.order.cancel_refused'],
     update_ship_to: ['provider.order.address_updated', 'provider.order.address_update_refused'],
+    // `received` comes later and is not an answer to the op, so not required.
+    create_inbound: ['provider.inbound.accepted', 'provider.inbound.refused'],
   },
 };
 
