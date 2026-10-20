@@ -152,6 +152,6 @@ describe('idempotentToolResult', () => {
     expect(idempotentToolResult({ status: 'ran', result: { a: 1 } })).toEqual({ a: 1 });
     expect(idempotentToolResult({ status: 'replayed', result: { a: 1 } })).toEqual({ a: 1 });
     expect(idempotentToolResult({ status: 'in_progress' })).toMatchObject({ ok: false, error: expect.stringMatching(/^write_in_progress:/), hint: expect.stringMatching(/Do not resend/) });
-    expect(idempotentToolResult({ status: 'outcome_unknown' })).toMatchObject({ ok: false, error: expect.stringMatching(/^write_outcome_unknown:/), hint: expect.stringMatching(/Check upstream/) });
+    expect(idempotentToolResult({ status: 'outcome_unknown' })).toMatchObject({ ok: false, error: expect.stringMatching(/^write_outcome_unknown:/), hint: expect.stringMatching(/Read back first.*an identical retry will run the write again/) });
   });
 });

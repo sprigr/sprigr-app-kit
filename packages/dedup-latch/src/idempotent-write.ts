@@ -238,8 +238,8 @@ export function idempotentToolResult<R>(outcome: IdempotentWriteOutcome<R>): R |
     case 'outcome_unknown':
       return {
         ok: false,
-        error: 'write_outcome_unknown: an earlier attempt of this same write stopped before reporting whether it landed',
-        hint: 'Check upstream whether it took effect. Resend it only if it did not; the next identical attempt will run.',
+        error: 'write_outcome_unknown: this write may already have happened; an earlier attempt stopped before reporting whether it landed',
+        hint: 'Read back first (for example list or get the record it creates or changes) and resend only if it is not there. This is your one chance to check: an identical retry will run the write again.',
       };
   }
 }
