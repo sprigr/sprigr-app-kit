@@ -76,6 +76,18 @@ describe('makeIdempotentWrite', () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
+  it('a throw that may have landed (releaseOnError false) answers outcome_unknown, then the next attempt runs', async () => {
+    const { db } = sqliteD1();
+    class MayHaveLanded extends Error {}
+    const w = makeIdempotentWrite({ db, table: 'app_write_keys', releaseOnError: (err) => !(err instanceof MayHaveLanded) });
+    await expect(w.run('w1:k', async () => { throw new MayHaveLanded('timeout after send'); })).rejects.toThrow('timeout after send');
+    const fn = vi.fn(async () => 'retried');
+    expect(await w.run('w1:k', fn)).toEqual({ status: 'outcome_unknown' });
+    expect(fn).not.toHaveBeenCalled();
+    expect(await w.run('w1:k', fn)).toEqual({ status: 'ran', result: 'retried' });
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
   it('a claim left running past staleRunningSec answers outcome_unknown ONCE, then the next attempt runs', async () => {
     const { db, raw } = sqliteD1();
     // The first invocation died mid-write: a running claim, 10 minutes old.

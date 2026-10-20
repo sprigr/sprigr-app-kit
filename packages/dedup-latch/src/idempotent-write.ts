@@ -19,12 +19,15 @@
  *     `outcome_unknown`, telling the agent to check upstream; the next
  *     identical attempt runs;
  *   - the write throws: the claim is released, so a real retry can run.
+ *     When the error means the write MAY have landed (a timeout after the
+ *     request went out), `releaseOnError` returns false and the claim turns
+ *     `interrupted` instead, so the next repeat is told to check upstream.
  *
  * Schema this expects (apps own the migration; the table name is the app's):
  *
  *   CREATE TABLE <app>_write_keys (
  *     id          TEXT PRIMARY KEY,
- *     state       TEXT NOT NULL,   -- running | done | unknown
+ *     state       TEXT NOT NULL,   -- running | done | interrupted | unknown
  *     result      TEXT,            -- JSON of the result once done
  *     claimed_at  TEXT NOT NULL,   -- ISO 8601, set at claim
  *     expires_at  TEXT NOT NULL    -- ISO 8601
@@ -89,6 +92,14 @@ export interface MakeIdempotentWriteOpts {
   staleRunningSec?: number;
   /** Largest result kept for replay, serialized. Default 64 KiB. */
   maxResultBytes?: number;
+  /**
+   * Decides what a throw from the write means. `true` (the default for every
+   * error): nothing landed, release the claim so a real retry runs. `false`:
+   * the write may have landed (for example a timeout after the request was
+   * sent), so the claim turns `interrupted` and the next repeat answers
+   * `outcome_unknown` instead of writing again.
+   */
+  releaseOnError?: (err: unknown) => boolean;
 }
 
 interface ClaimRow {
@@ -104,6 +115,7 @@ export function makeIdempotentWrite(opts: MakeIdempotentWriteOpts): IdempotentWr
   const ttlSec = opts.ttlSec ?? 24 * 3600;
   const staleRunningSec = opts.staleRunningSec ?? 120;
   const maxResultBytes = opts.maxResultBytes ?? 64 * 1024;
+  const releaseOnError = opts.releaseOnError ?? (() => true);
   if (!Number.isFinite(ttlSec) || ttlSec <= 0) throw new Error(`idempotent-write: ttlSec must be a positive number, got ${ttlSec}`);
   if (!Number.isFinite(staleRunningSec) || staleRunningSec <= 0) throw new Error(`idempotent-write: staleRunningSec must be a positive number, got ${staleRunningSec}`);
 
@@ -123,9 +135,14 @@ export function makeIdempotentWrite(opts: MakeIdempotentWriteOpts): IdempotentWr
     try {
       result = await fn();
     } catch (err) {
-      // Nothing to replay: release the claim so a real retry can run. Only a
-      // claim still `running` is removed, never another call's finished one.
-      await db.prepare(`DELETE FROM ${table} WHERE id = ? AND state = 'running'`).bind(key).run();
+      // Only a claim still `running` is touched, never another call's finished one.
+      if (releaseOnError(err)) {
+        // Nothing landed: release the claim so a real retry can run.
+        await db.prepare(`DELETE FROM ${table} WHERE id = ? AND state = 'running'`).bind(key).run();
+      } else {
+        // It may have landed: the next repeat must check upstream, not write blind.
+        await db.prepare(`UPDATE ${table} SET state = 'interrupted' WHERE id = ? AND state = 'running'`).bind(key).run();
+      }
       throw err;
     }
     const serialized = JSON.stringify(result ?? null);
@@ -166,6 +183,12 @@ export function makeIdempotentWrite(opts: MakeIdempotentWriteOpts): IdempotentWr
             .bind(nowIso, key)
             .run();
           return changes(took) === 1 ? execute(key, fn) : { status: 'in_progress' };
+        }
+        if (row.state === 'interrupted') {
+          // The write threw in a way that may have landed. Tell this repeat
+          // once; the attempt after it is the agent's informed retry.
+          await db.prepare(`UPDATE ${table} SET state = 'unknown' WHERE id = ? AND state = 'interrupted'`).bind(key).run();
+          return { status: 'outcome_unknown' };
         }
         // running
         const ageMs = Date.parse(nowIso) - Date.parse(row.claimed_at);

@@ -287,7 +287,7 @@ return idempotentToolResult(outcome);
 - First call: claims the key, runs the write, stores the result. A repeat after it finished gets the stored result (`replayed`) and the write does not run again.
 - A repeat while the first is still running is refused with `write_in_progress`, never run.
 - A claim left `running` past `staleRunningSec` (default 120 s) means the first invocation died mid-write: the repeat is refused once with `write_outcome_unknown` and told to check upstream; the next identical attempt runs.
-- The write throws: the claim is released, so a real retry runs.
+- The write throws: the claim is released, so a real retry runs. When the error means the write may have landed (a timeout after the request went out), pass `releaseOnError: (err) => !(err instanceof MyTimeoutAfterSend)`: the claim turns `interrupted` and the repeat is told to check upstream.
 - No key (an older platform, a tool that did not opt in): the write runs directly.
 
 The table is the app's own migration, with no secondary index:
