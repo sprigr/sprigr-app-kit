@@ -91,9 +91,9 @@ describe('reportToPlatform', () => {
     const res = await reportToPlatform(bridgeEnv(), { ...input, severity: 'critical', ttlSeconds: 7200 });
     expect(res).toEqual({ ok: true, status: 'filed' });
     expect(calls).toHaveLength(1);
-    expect(calls[0].url).toBe(`${BASE}/internal/wfp/report`);
-    expect(calls[0].headers.authorization).toBe(`Bearer ${TOKEN}`);
-    expect(calls[0].body).toEqual({ ...input, severity: 'critical', ttlSeconds: 7200 });
+    expect(calls[0]!.url).toBe(`${BASE}/internal/wfp/report`);
+    expect(calls[0]!.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    expect(calls[0]!.body).toEqual({ ...input, severity: 'critical', ttlSeconds: 7200 });
   });
 
   it.each(['deduped', 'rate_limited'] as const)('passes the platform %s outcome through', async (status) => {
