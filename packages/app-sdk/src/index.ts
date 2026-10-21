@@ -85,6 +85,20 @@ export type {
   LogToPlatformOptions,
 } from './platform-log';
 export {
+  reportToPlatform,
+  canReport,
+  SPRIGR_REPORT_SEVERITIES,
+  SPRIGR_REPORT_LIMITS,
+  DEFAULT_REPORT_TIMEOUT_MS,
+} from './platform-report';
+export type {
+  SprigrReportSeverity,
+  SprigrReportInput,
+  SprigrReportResult,
+  SprigrReportFn,
+  ReportToPlatformOptions,
+} from './platform-report';
+export {
   partialUpdateData,
   canPartialUpdate,
   buildPartialUpdateBody,
