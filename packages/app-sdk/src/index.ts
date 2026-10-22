@@ -879,3 +879,7 @@ export { emailBodyHtml, hasHtmlMarkup } from './email-body';
 
 // sprigr-team decision 0255: the sender's Inbox signature on app-sent mail.
 export { withSenderSignature } from './sender-signature';
+
+// sprigr-app-kit#170: a dispatcher tool's manifest `dispatch` block from the action registry.
+export { ACTION_DESCRIPTION_MAX_CHARS, buildDispatchManifest, buildParamsDescription, oneLineDescription } from './dispatch-manifest';
+export type { DispatchActionSpec } from './dispatch-manifest';
