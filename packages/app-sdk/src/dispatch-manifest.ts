@@ -17,6 +17,8 @@
  * the policies that are not about the catalogue (confirmation, idempotency).
  */
 
+import type { ManifestDispatchBlock } from './write-protection/manifest';
+
 /** What a builder needs from one action definition. */
 export interface DispatchActionSpec {
   /** The canonical name. An alias entry points at the same spec under another key. */
@@ -33,13 +35,6 @@ export interface DispatchActionSpec {
   required?: readonly string[];
 }
 
-/** The generated block, mirroring `AppToolDeclaration['dispatch']`. */
-export interface DispatchManifest {
-  actionField: string;
-  actions: string[];
-  actionInputs?: Record<string, { accepts: string[]; required?: string[] }>;
-  actionDescriptions?: Record<string, string>;
-}
 
 /**
  * Longest line emitted into `actionDescriptions`. A `tools.describe` page holds
@@ -84,7 +79,8 @@ export function oneLineDescription(
 }
 
 /**
- * The `dispatch` block for a registry keyed by CALLABLE name.
+ * The `dispatch` block for a registry keyed by CALLABLE name, the
+ * `ManifestDispatchBlock` that `applyConfirmationPolicies` writes onto the tool.
  *
  *   - `actions`: every key, sorted. Aliases are real dispatchable names, so a
  *     workflow referencing one must not be flagged as unknown.
@@ -98,7 +94,7 @@ export function oneLineDescription(
 export function buildDispatchManifest(
   registry: ReadonlyMap<string, DispatchActionSpec>,
   opts: { actionField?: string; descriptions?: boolean } = {},
-): DispatchManifest {
+): ManifestDispatchBlock {
   const actions = Array.from(registry.keys()).sort((a, b) => a.localeCompare(b));
 
   const actionInputs: Record<string, { accepts: string[]; required?: string[] }> = {};
@@ -111,7 +107,7 @@ export function buildDispatchManifest(
     actionInputs[def.name] = entry;
   }
 
-  const dispatch: DispatchManifest = { actionField: opts.actionField ?? 'action', actions };
+  const dispatch: ManifestDispatchBlock = { actionField: opts.actionField ?? 'action', actions };
   if (Object.keys(actionInputs).length > 0) dispatch.actionInputs = actionInputs;
   if (opts.descriptions !== false) {
     const actionDescriptions: Record<string, string> = {};
@@ -137,7 +133,7 @@ const DEFAULT_PARAMS_INTRO =
  * app where most actions validate their own input.
  */
 export function buildParamsDescription(
-  actionInputs: DispatchManifest['actionInputs'],
+  actionInputs: ManifestDispatchBlock['actionInputs'],
   intro: string = DEFAULT_PARAMS_INTRO,
 ): string {
   const inputs = actionInputs ?? {};
