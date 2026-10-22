@@ -85,6 +85,28 @@ export default {
 
 Full platform semantics: [`docs/platform-reference.md`](../../docs/platform-reference.md).
 
+## Dispatch manifest: `buildDispatchManifest`
+
+For an app whose dispatcher tool routes many actions through one `action` field, generate the tool's manifest `dispatch` block from the action registry instead of hand-keeping it:
+
+```ts
+import { buildDispatchManifest, buildParamsDescription } from '@sprigr/apps-app-sdk';
+
+// Keyed by CALLABLE name, aliases included; map your own ActionDef fields.
+const registry = new Map([...ACTIONS].map(([key, def]) => [key, {
+  name: def.name, description: def.description, summary: def.summary,
+  accepts: def.accepts, required: def.requiredInput,
+}]));
+tool.dispatch = buildDispatchManifest(registry);
+tool.input_schema.properties.input.description = buildParamsDescription(tool.dispatch.actionInputs);
+```
+
+- `actions`: every callable name, sorted.
+- `actionInputs`: only actions that declare `accepts`, keyed by canonical name. Declare `accepts` only when it is complete, because the platform refuses any other key before dispatch.
+- `actionDescriptions`: one line per action (its `summary`, else the first sentence of `description`, capped at 160 chars with a visible `...`). A code_mode agent sees it under the action in `tools.describe('<app>', { match })`.
+
+Keep the generator's manifest I/O and any confirmation or idempotency policy in the app.
+
 ## Write protection
 
 Three platform tiers, and they are not substitutes for each other. Full guide: [`docs/write-protection.md`](../../docs/write-protection.md).
