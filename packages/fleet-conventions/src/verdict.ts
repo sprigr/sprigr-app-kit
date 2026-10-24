@@ -216,6 +216,77 @@ export function isMalformedVerdictPost(body: string): boolean {
   return !TECH_LEAD_VERDICT_FORM_RE.test(body);
 }
 
+/** Markdown code (fenced blocks, then inline spans of any backtick run, e.g.
+ *  ``x``) removed, so only text GitHub renders as prose is left. A
+ *  `<!-- verdict sha=... -->` inside code is shown to the reader as a
+ *  quotation; one outside code is hidden, i.e. a real machine marker. An
+ *  inline span never crosses a blank line, as in CommonMark. */
+function withoutMarkdownCode(body: string): string {
+  return body
+    .replace(/^[ \t]*(```|~~~)[\s\S]*?(?:^[ \t]*\1|(?![\s\S]))/gm, '')
+    .replace(/(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?[^`]\1(?!`)/g, '');
+}
+
+/** The body states a ruling of its own: a line that opens with `VERDICT:`
+ *  (after whitespace, a heading or emphasis), or `VERDICT:` directly followed
+ *  by a ruling word anywhere. Mid-sentence prose such as "a correction to my
+ *  verdict: I said ..." or "Not a verdict: the APPROVE stands" is neither
+ *  (both are real reviewer consult notes, comments 6116272155 and 6105728441,
+ *  which a bare `/VERDICT:/i` would refuse). */
+const VERDICT_STATEMENT_RE = /^[ \t]*(?:#{1,6}[ \t]*)?[*_]*VERDICT:|VERDICT:[\s*_]*(?:APPROVE|REQUEST[_ ]CHANGES|ESCALATE)/im;
+
+/**
+ * POST-TIME ONLY, add_pull_request_comment: posting this body would put a
+ * verdict on the PR that no reader sees (sprigr-team#12926).
+ *
+ * Exactly the complement of the anchored reader (`parseAnchoredVerdictRuling`
+ * / `TECH_LEAD_VERDICT_FORM_RE`, which the formal-review gate, the SHA dedupe,
+ * the merge gates and the event router all use). True when the body does NOT
+ * match that form AND either
+ *   - it carries the machine marker outside markdown code (leading, mid-body,
+ *     or after the `[tech-lead-reviewer]` tag), or
+ *   - it opens with the reviewer's own prefix and states a ruling
+ *     (`VERDICT_STATEMENT_RE`) anywhere outside markdown code. No window: the
+ *     old 800/80-char windows are what let the long-form verdicts through.
+ *
+ * Why not `isMalformedVerdictPost`: its 800-char `VERDICT_STATEMENT_WINDOW`
+ * let the reviewer's long-form verdicts through, with the tag, then the whole
+ * write-up, then `VERDICT:` at offset 2467 (sprigr-platform comment
+ * 6358629806) or 3271 with the tag above the marker (6334650810). The reader
+ * parsed no ruling from either, so the PR "had no verdict", the SHA dedupe
+ * could not match it, and the reviewer posted a second, canonical copy on the
+ * same head. Same for the in-tree `isUnparsedVerdictShaped` guard and its
+ * 80-char window.
+ *
+ * What still passes, so consults keep working (#6367, #6484, #7653): any body
+ * that parses (APPROVE, REQUEST_CHANGES, ESCALATE); a reviewer note with no
+ * marker and no `VERDICT:`; a note that is not the reviewer speaking (no
+ * marker), whatever it quotes; and a reviewer note that only quotes a marker
+ * or a verdict line inside backticks (comment 5429229662 on #6344 quotes
+ * `` `<!-- verdict sha=37bd972 -->` `` mid-body and must post).
+ */
+export function wouldPostInvisibleVerdict(body: string): boolean {
+  if (TECH_LEAD_VERDICT_FORM_RE.test(body)) return false;
+  const prose = withoutMarkdownCode(body);
+  if (VERDICT_MARKER_RE.test(prose)) return true;
+  return REVIEWER_ANCHOR_RE.test(body) && VERDICT_STATEMENT_RE.test(prose);
+}
+
+/** The refusal for `wouldPostInvisibleVerdict`, shared so both write paths
+ *  tell the reviewer the same, exact fix. */
+export const INVISIBLE_VERDICT_ERROR =
+  'Refused to post: nothing was posted. This comment would be a verdict that nothing can read. It carries the ' +
+  '`<!-- verdict sha=... -->` marker, or opens with [tech-lead-reviewer] and states VERDICT:, but it does not ' +
+  'open in the one form the merge gate, the event router, the formal-review gate and the duplicate check parse, ' +
+  'so the PR would still "have no verdict" and a second copy would follow.\n\n' +
+  'Put the verdict line IMMEDIATELY after the marker, as the first thing in the body, and the write-up below it:\n' +
+  '  <!-- verdict sha=<head sha> -->\n' +
+  '  [tech-lead-reviewer] VERDICT: APPROVE | <one-line reason>\n' +
+  '  (or VERDICT: REQUEST_CHANGES | ..., or VERDICT: ESCALATE TO A HUMAN | ...)\n\n' +
+  'What breaks it: the [tech-lead-reviewer] tag placed BEFORE the marker, and any heading or review prose ' +
+  'between [tech-lead-reviewer] and VERDICT: (a "Reviewed PR #N" paragraph with the VERDICT line at the end). ' +
+  'If this is a consult note and not a verdict, leave out the marker and do not write VERDICT: outside backticks.';
+
 /**
  * The tech-lead-reviewer persona names the head it reviewed in every verdict
  * ("First verdict on head `<sha>`" / "Round N of 2 on head `<sha>`"). When

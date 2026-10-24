@@ -62,7 +62,9 @@ The tech-lead-reviewer posts one machine-readable verdict per review round:
 | `normalizeVerdictRuling(raw)` | Folds a captured ruling to canonical spelling (`REQUEST CHANGES` becomes `REQUEST_CHANGES`). |
 | `isUnparsedVerdictShaped(body)` | COUNT-ONLY: looks like a verdict but did not parse. Never gate on it. |
 | `isUnactionableRuling(body)` | Machine-form ruling the merge gate cannot act on (ESCALATE). The only shape a gate may fail closed on. |
-| `isMalformedVerdictPost(body)` | POST-TIME ONLY: opens as a reviewer comment, states `VERDICT:` near the top, and fails the form pattern. Refuse the post so the author finds out now. |
+| `isMalformedVerdictPost(body)` | POST-TIME ONLY: opens as a reviewer comment, states `VERDICT:` near the top, and fails the form pattern. Superseded on add_pull_request_comment by `wouldPostInvisibleVerdict`: its 800-char window let long-form verdicts through (sprigr-team#12926). |
+| `wouldPostInvisibleVerdict(body)` | POST-TIME ONLY, add_pull_request_comment: the write-side complement of `parseAnchoredVerdictRuling`. True when the body does not parse AND carries the marker outside markdown code, or opens as a reviewer comment and states a ruling anywhere (no window). Refuse with `INVISIBLE_VERDICT_ERROR`. |
+| `INVISIBLE_VERDICT_ERROR` | The refusal text for it: tells the reviewer to put `[tech-lead-reviewer] VERDICT: <ruling> \| ...` immediately after the marker. |
 | `verdictNamedSha(body)` | The head SHA a verdict names (marker first, then the `on head \`<sha>\`` prose form), lowercased, or `undefined`. |
 | `TechLeadVerdict`, `TechLeadRuling` | The ruling union types. |
 
@@ -91,7 +93,7 @@ within their shard.
 import {
   parseAnchoredVerdictRuling,
   verdictNamedSha,
-  isMalformedVerdictPost,
+  wouldPostInvisibleVerdict,
   shardParityForAgentSlug,
   isInShard,
 } from '@sprigr/apps-fleet-conventions';
