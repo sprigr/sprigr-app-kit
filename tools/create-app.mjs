@@ -374,17 +374,17 @@ const wranglerJsonc = `{
 }
 `;
 
-const vitestConfigTs = `/**
- * Vitest config for the ${SLUG} marketplace app.
- *
- * Test files live under \`__tests__/\` (mirroring the source tree).
- * Coverage is opt-in via \`pnpm test -- --coverage\`; vendored packages
- * are excluded because they're tested upstream in \`packages/\`.
- */
-import { defineConfig } from 'vitest/config';
+// sprigr-apps#3821: a repo whose apps sit at <repo>/apps/<slug> next to a
+// shared vitest base (sprigr-apps' vitest.shared.ts: the repo-wide timeouts,
+// enforced there by tools/check-vitest-shared.mjs) gets the merge form; a
+// bare defineConfig there runs on vitest's 5 s default. Anywhere else (a
+// standalone scaffold, this repo's own --out-dir tests) stays bare, so the
+// config never imports a file that is not there.
+const SHARED_VITEST = ["vitest.shared.ts", "vitest.shared.mts", "vitest.shared.js"].some((f) =>
+  existsSync(join(APP_DIR, "..", "..", f)),
+);
 
-export default defineConfig({
-  // tsconfig sets \`jsx: "preserve"\` for Next's compiler, which would leave
+const vitestTestBlock = `  // tsconfig sets \`jsx: "preserve"\` for Next's compiler, which would leave
   // JSX untransformed here. A test that imports src/app/page.tsx (the
   // scaffolded connection-admin test does) needs the automatic runtime.
   esbuild: { jsx: 'automatic' },
@@ -398,7 +398,33 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       exclude: ['src/**/vendor/**'],
     },
-  },
+  },`;
+
+const vitestHeader = `/**
+ * Vitest config for the ${SLUG} marketplace app.
+ *
+ * Test files live under \`__tests__/\` (mirroring the source tree).
+ * Coverage is opt-in via \`pnpm test -- --coverage\`; vendored packages
+ * are excluded because they're tested upstream in \`packages/\`.
+ */`;
+
+const vitestConfigTs = SHARED_VITEST
+  ? `${vitestHeader}
+import { defineConfig, mergeConfig } from 'vitest/config';
+import { baseConfig } from '../../vitest.shared';
+
+export default mergeConfig(
+  baseConfig,
+  defineConfig({
+${vitestTestBlock}
+  }),
+);
+`
+  : `${vitestHeader}
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+${vitestTestBlock}
 });
 `;
 
