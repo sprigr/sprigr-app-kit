@@ -567,6 +567,52 @@ export interface SprigrMeApi {
   signature(input: { channel: string }): Promise<SprigrMeSignatureResult>;
 }
 
+/** The `error` values {@link SprigrTeamsApi} methods can resolve with. */
+export type SprigrTeamsError =
+  | 'scope_not_granted'
+  | 'person_mismatch'
+  | 'install_not_found_or_inactive'
+  | 'invalid'
+  | 'unavailable';
+
+/** One of the install company's teams. Store `id`: a slug can be renamed. */
+export interface SprigrTeam {
+  id: string;
+  slug: string;
+  name: string;
+  /** People in the team; agents are not counted. */
+  memberCount: number;
+}
+
+/** Result of {@link SprigrTeamsApi.list}. Never rejects. */
+export type SprigrTeamsListResult =
+  | { ok: true; teams: SprigrTeam[] }
+  | { ok: false; error: SprigrTeamsError; message: string };
+
+/** Result of {@link SprigrTeamsApi.mine}. Never rejects. */
+export type SprigrTeamsMineResult =
+  | { ok: true; teamIds: string[] }
+  | { ok: false; error: SprigrTeamsError; message: string };
+
+/**
+ * `env.SPRIGR.teams` (sprigr-team#13028): the install company's teams and the
+ * teams of the person asking. Needs the `teams:read` manifest scope. Treat
+ * every refusal as "not a member".
+ */
+export interface SprigrTeamsApi {
+  /** The company's teams, by name. */
+  list(): Promise<SprigrTeamsListResult>;
+  /**
+   * The team ids of `platformUserId`, which must be the person this call is
+   * signed for: the dispatch's actor (`args.actor.personId`, else the bound
+   * `platformUserId`, forwarded for you), or the viewer whose raw
+   * `X-Sprigr-Viewer` page token you pass as `viewerToken`. Anyone else is
+   * `person_mismatch`, and so is a Home dispatch, which carries no signed
+   * person. A membership change can take up to 60 seconds to show.
+   */
+  mine(platformUserId: string, opts?: { viewerToken?: string }): Promise<SprigrTeamsMineResult>;
+}
+
 /**
  * Durable app file storage exposed on `env.SPRIGR.files` by the platform
  * wrapper (the platform build-runner). Persists bytes into the install's
