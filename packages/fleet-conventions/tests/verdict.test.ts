@@ -12,6 +12,7 @@ import {
   isUnparsedVerdictShaped,
   wouldPostInvisibleVerdict,
 } from '../src/index';
+import { readFileSync } from 'node:fs';
 
 // #6334: comment 5423054045 — a genuine APPROVE both consumers went blind to.
 // Structure verbatim from the live comment body.
@@ -345,5 +346,15 @@ describe('#12926 — wouldPostInvisibleVerdict', () => {
     // No marker, VERDICT within the window under the reviewer anchor: both agree.
     expect(isMalformedVerdictPost(HEADERED_VERDICT)).toBe(true);
     expect(wouldPostInvisibleVerdict(HEADERED_VERDICT)).toBe(true);
+  });
+
+  it('does NOT refuse a reviewer consult whose only marker is quoted in an inline code span (#13017, comment 5429229662)', () => {
+    // Real body: [tech-lead-reviewer]-anchored "Consult answer, NOT a new
+    // verdict", and the one <!-- verdict sha=37bd972 --> is inside an inline
+    // code span, i.e. a quotation. It must post. Before the code-span strip
+    // the marker matched the raw body and this returned true.
+    const body = readFileSync(new URL('./fixtures/comment-5429229662.md', import.meta.url), 'utf8');
+    expect(body).toContain('`<!-- verdict sha=37bd972 -->`');
+    expect(wouldPostInvisibleVerdict(body)).toBe(false);
   });
 });
