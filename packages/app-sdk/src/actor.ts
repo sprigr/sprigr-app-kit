@@ -9,10 +9,10 @@
  *                                       bound to (absent for unbound agents)
  *   x-sprigr-actor-role               — bound user's display role at the
  *                                       company; informational only
- *   x-sprigr-actor-surface            — where the turn came from (portal,
+ *   x-sprigr-actor-surface            : where the turn came from (portal,
  *                                       website, external_channel, ...)
- *   x-sprigr-actor-person-id          — the person the call is made for
- *   x-sprigr-actor-person-source      — live | schedule_creator | workflow_saver
+ *   x-sprigr-actor-person-id          : the person the call is made for
+ *   x-sprigr-actor-person-source      : live | schedule_creator | workflow_saver
  *
  * The sprigr-wrapper parses these and surfaces an `Actor` via `args.actor`
  * to handler code. Apps that need per-user scoping (per-actor OAuth tokens,
