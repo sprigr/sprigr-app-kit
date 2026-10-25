@@ -1,7 +1,7 @@
 /**
  * Caller identity stamped by the platform on agent-initiated WFP dispatches.
  *
- * Three platform-controlled headers carry the actor on every dispatch:
+ * Platform-controlled headers carry the actor on every dispatch:
  *
  *   x-sprigr-actor-agent-id           — calling agent's id (always present
  *                                       when an agent is the caller)
@@ -9,6 +9,10 @@
  *                                       bound to (absent for unbound agents)
  *   x-sprigr-actor-role               — bound user's display role at the
  *                                       company; informational only
+ *   x-sprigr-actor-surface            : where the turn came from (portal,
+ *                                       website, external_channel, ...)
+ *   x-sprigr-actor-person-id          : the person the call is made for
+ *   x-sprigr-actor-person-source      : live | schedule_creator | workflow_saver
  *
  * The sprigr-wrapper parses these and surfaces an `Actor` via `args.actor`
  * to handler code. Apps that need per-user scoping (per-actor OAuth tokens,
@@ -26,7 +30,40 @@ export interface Actor {
   /** Bound user's display role at the company. Display + audit only — apps
    *  must not gate authorisation on this without server-side verification. */
   role?: string;
+  /** Where the turn came from (sprigr-team decision 0305). `portal` is staff;
+   *  `website` and `external_channel` are the public. Treat a missing value as
+   *  public: an older platform, an app built before this field, or a dispatch
+   *  with no actor sends none. */
+  surface?: CallerSurface;
+  /** Platform user id of the person the call is made for. Absent for a
+   *  website visitor, a phone number, or a run with no person. Gate a
+   *  person's own records on this, never on `platformUserId`, which is the
+   *  agent's bound user on every turn, including a visitor's. */
+  personId?: string;
+  /** How `personId` is the person: `live` (chatting now), `schedule_creator`
+   *  (created the schedule that fired), `workflow_saver` (last saved the
+   *  workflow). Present only with `personId`. */
+  personSource?: PersonSource;
 }
+
+/**
+ * The caller surfaces the platform stamps (sprigr-team decision 0305).
+ *
+ * TRUST LEVEL of `surface`, `personId` and `personSource`: transport-trusted,
+ * the same as `platformUserId`. The platform sets them on the dispatch, strips
+ * any copy from caller input (request headers and the body's `actor`), and the
+ * wrapper rebuilds `args.actor` from its own headers on every call. Only the
+ * platform can reach an install's script, which is what makes that enough to
+ * decide what a handler returns. They are NOT signed for the app: an app
+ * cannot verify them, and must not forward them as proof to anything else.
+ */
+export const CALLER_SURFACES = [
+  'portal', 'website', 'external_channel', 'mcp', 'schedule', 'workflow', 'delegated', 'webhook', 'system',
+] as const;
+export type CallerSurface = (typeof CALLER_SURFACES)[number];
+
+export const PERSON_SOURCES = ['live', 'schedule_creator', 'workflow_saver'] as const;
+export type PersonSource = (typeof PERSON_SOURCES)[number];
 
 /**
  * Parse the platform-stamped actor headers off an incoming request. Returns
@@ -58,6 +95,15 @@ export function parseActor(args: unknown): Actor | undefined {
     out.platformUserId = obj.platformUserId;
   }
   if (typeof obj.role === 'string' && obj.role.length > 0) out.role = obj.role;
+  if (typeof obj.surface === 'string' && (CALLER_SURFACES as readonly string[]).includes(obj.surface)) {
+    out.surface = obj.surface as CallerSurface;
+  }
+  if (typeof obj.personId === 'string' && obj.personId.length > 0) {
+    out.personId = obj.personId;
+    if (typeof obj.personSource === 'string' && (PERSON_SOURCES as readonly string[]).includes(obj.personSource)) {
+      out.personSource = obj.personSource as PersonSource;
+    }
+  }
   return Object.keys(out).length > 0 ? out : undefined;
 }
 

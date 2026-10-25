@@ -1,5 +1,34 @@
 import { describe, expect, it } from 'vitest';
-import { actorKey, ownerFromActorKey, parseActor } from '../src/actor';
+import { actorKey, ownerFromActorKey, parseActor, CALLER_SURFACES } from '../src/actor';
+
+describe('parseActor: caller surface and person (sprigr-team decision 0305)', () => {
+  it('carries surface, personId and personSource beside the bound user', () => {
+    const actor = parseActor({
+      actor: { agentId: 'agt_1', platformUserId: 'usr_bound', surface: 'portal', personId: 'usr_chatting', personSource: 'live' },
+    });
+    expect(actor).toEqual({ agentId: 'agt_1', platformUserId: 'usr_bound', surface: 'portal', personId: 'usr_chatting', personSource: 'live' });
+  });
+
+  it('a website visitor: public surface, no person, bound user kept for credentials', () => {
+    const actor = parseActor({ actor: { agentId: 'agt_1', platformUserId: 'usr_bound', surface: 'website' } });
+    expect(actor).toEqual({ agentId: 'agt_1', platformUserId: 'usr_bound', surface: 'website' });
+    expect(actor!.personId).toBeUndefined();
+  });
+
+  it('drops a surface outside the platform list instead of passing it on', () => {
+    const actor = parseActor({ actor: { agentId: 'agt_1', surface: 'staff' } });
+    expect(actor).toEqual({ agentId: 'agt_1' });
+  });
+
+  it('drops a personSource that has no personId, and an unknown personSource', () => {
+    expect(parseActor({ actor: { agentId: 'agt_1', personSource: 'live' } })).toEqual({ agentId: 'agt_1' });
+    expect(parseActor({ actor: { agentId: 'agt_1', personId: 'usr_x', personSource: 'impersonated' } })).toEqual({ agentId: 'agt_1', personId: 'usr_x' });
+  });
+
+  it('every listed surface parses', () => {
+    for (const s of CALLER_SURFACES) expect(parseActor({ actor: { surface: s } })).toEqual({ surface: s });
+  });
+});
 
 describe('parseActor', () => {
   it('returns undefined when args lacks an actor (webhook / schedule path)', () => {

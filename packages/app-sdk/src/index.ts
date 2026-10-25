@@ -111,8 +111,8 @@ export type {
   SprigrDataPartialUpdateBody,
   PartialUpdateDataOptions,
 } from './platform-data';
-export { parseActor, actorKey, ownerFromActorKey } from './actor';
-export type { Actor, InboxOwner } from './actor';
+export { parseActor, actorKey, ownerFromActorKey, CALLER_SURFACES, PERSON_SOURCES } from './actor';
+export type { Actor, InboxOwner, CallerSurface, PersonSource } from './actor';
 export {
   resolveViewerContext,
   resolveViewerUserId,
