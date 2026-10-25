@@ -216,6 +216,18 @@ export function isMalformedVerdictPost(body: string): boolean {
   return !TECH_LEAD_VERDICT_FORM_RE.test(body);
 }
 
+/** Markdown code (fenced blocks, then inline spans of any backtick run)
+ *  removed, so only prose GitHub renders is left. A `<!-- verdict sha=... -->`
+ *  inside code is shown to the reader as a quotation; one outside code is
+ *  hidden, i.e. a real machine marker (#13017, comment 5429229662 quotes one
+ *  mid-body and must post). An inline span never crosses a blank line, as in
+ *  CommonMark. */
+function withoutMarkdownCode(body: string): string {
+  return body
+    .replace(/^[ \t]*(```|~~~)[\s\S]*?(?:^[ \t]*\1|(?![\s\S]))/gm, '')
+    .replace(/(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?[^`]\1(?!`)/g, '');
+}
+
 /**
  * POST-TIME ONLY: this body would post but be INVISIBLE to the reader.
  *
@@ -233,11 +245,13 @@ export function isMalformedVerdictPost(body: string): boolean {
  * This predicate is the reader's complement with NO window, for the one shape
  * the window cannot safely cover: a body that opens as the reviewer's OWN
  * comment (`REVIEWER_ANCHOR_RE`, which a `[dev-fixer]` note quoting a verdict
- * does not match) and carries the machine marker. The marker is the safe
- * signal — by contract only a real verdict carries it, and prose that merely
- * QUOTES a verdict never does — so a marker-carrying reviewer body the reader
- * cannot parse is an invisible verdict wherever its ruling sits, and
- * tag-before-marker is caught the same way (the marker is still present).
+ * does not match) and carries the machine marker OUTSIDE markdown code. The
+ * marker is the safe signal: by contract only a real verdict carries it, and a
+ * body that merely QUOTES one keeps it inside backticks, which
+ * `withoutMarkdownCode` strips before the check (#13017, comment 5429229662).
+ * So a reviewer body that carries the marker in prose and the reader cannot
+ * parse is an invisible verdict wherever its ruling sits, and tag-before-marker
+ * is caught the same way (the marker is still present).
  *
  * For a MARKER-LESS reviewer body it defers to `isMalformedVerdictPost`'s
  * 800-char window unchanged: that window exists so a long reviewer consult
@@ -253,7 +267,7 @@ export function isMalformedVerdictPost(body: string): boolean {
 export function wouldPostInvisibleVerdict(body: string): boolean {
   if (TECH_LEAD_VERDICT_FORM_RE.test(body)) return false;
   if (!REVIEWER_ANCHOR_RE.test(body)) return false;
-  if (VERDICT_MARKER_RE.test(body)) return true;
+  if (VERDICT_MARKER_RE.test(withoutMarkdownCode(body))) return true;
   return isMalformedVerdictPost(body);
 }
 
