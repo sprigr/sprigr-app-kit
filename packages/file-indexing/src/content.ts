@@ -166,10 +166,47 @@ export interface BinaryExtractResult {
 }
 
 /**
+ * A staging put failure that is a transient R2 fault: a 503, or an internal
+ * error carrying R2 code 10001 or 10043. The same signature the bridge's own
+ * put-stream retry matches (sprigr-team#12697), read from the message too
+ * because the wrapper's error need not carry a status.
+ */
+function isTransientStagingPutError(err: unknown): boolean {
+  if ((err as { status?: unknown } | null)?.status === 503) return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('(10001)') || msg.includes('(10043)') || msg.includes('(503)');
+}
+
+/** Where one extraction got to, for its logs: the step it was on, how the
+ *  bytes were staged (streamed or buffered), which put attempt, and how the
+ *  stream re-download retry went (sprigr-team#13096). */
+interface ExtractTrace {
+  stage: 'download' | 'put' | 'extract';
+  branch?: 'stream' | 'buffered';
+  attempt: number;
+  redownload: 'not-run' | 'skipped-deadline' | 'download-failed' | 'put-failed' | 'ok';
+  redownloadStatus?: number;
+}
+
+function describeTrace(t: ExtractTrace): string {
+  return (
+    `stage=${t.stage}` +
+    (t.attempt > 0 ? ` branch=${t.branch} attempt=${t.attempt}` : '') +
+    ` redownload=${t.redownload}` +
+    (t.redownloadStatus !== undefined ? ` redownload_status=${t.redownloadStatus}` : '')
+  );
+}
+
+/**
  * Extract text from ONE binary file through the platform bridge: download the
  * bytes (adapter.downloadBinary), stage them under a random key, extract,
  * delete the staged copy whatever happened. A needs_job answer returns the
  * job token so the caller can record a pending row for the drain.
+ *
+ * A streamed staging put is spent by its first attempt, so the bridge cannot
+ * retry it (sprigr-team#12697). On a transient R2 fault (10001, 10043, 503)
+ * the file is downloaded ONCE more and the put retried with the fresh body;
+ * a buffered put is left to the bridge's own retry (sprigr-team#13096).
  */
 export async function extractBinaryFileContent<TEntry>(
   adapter: FileSourceAdapter<TEntry>,
@@ -188,20 +225,56 @@ export async function extractBinaryFileContent<TEntry>(
   }
   const tempKey = `${EXTRACT_STAGING_PREFIX}${randomHex(16)}.${format}`;
   let staged = false;
+  const trace: ExtractTrace = { stage: 'download', attempt: 0, redownload: 'not-run' };
+  const stage = async (resp: Response): Promise<number> => {
+    // Stream straight into storage when the length is declared, so a large
+    // binary never buffers whole in the isolate; buffer only without one.
+    const declaredLen = Number(resp.headers.get('content-length') || '') || 0;
+    const body = resp.body && declaredLen > 0 ? resp.body : new Uint8Array(await resp.arrayBuffer());
+    const length = body instanceof Uint8Array ? body.byteLength : declaredLen;
+    trace.stage = 'put';
+    trace.branch = body instanceof Uint8Array ? 'buffered' : 'stream';
+    trace.attempt++;
+    // Marked BEFORE the put, so a put that throws after writing is still cleaned up.
+    staged = true;
+    // Checked above; a closure does not keep the property narrowing.
+    await files.putStream!(tempKey, body, { length });
+    return length;
+  };
   try {
     const resp = await adapter.downloadBinary(object, ctx);
     if (!resp.ok) {
       console.warn(`${label} binary download failed (${resp.status}) for ${object.objectID}; leaving content empty`);
       return { text: '' };
     }
-    // Stream straight into storage when the length is declared, so a large
-    // binary never buffers whole in the isolate; buffer only without one.
-    const declaredLen = Number(resp.headers.get('content-length') || '') || 0;
-    const body = resp.body && declaredLen > 0 ? resp.body : new Uint8Array(await resp.arrayBuffer());
-    const length = body instanceof Uint8Array ? body.byteLength : declaredLen;
-    // Marked BEFORE the put, so a put that throws after writing is still cleaned up.
-    staged = true;
-    await files.putStream(tempKey, body, { length });
+    let length: number;
+    try {
+      length = await stage(resp);
+    } catch (err) {
+      if (trace.branch !== 'stream' || !isTransientStagingPutError(err)) throw err;
+      if (deadlinePassed(ctx.deadline, ctx.now)) {
+        trace.redownload = 'skipped-deadline';
+        throw err;
+      }
+      console.warn(
+        `${label} staging put failed for ${object.objectID} (${format}) [${describeTrace(trace)}]; the stream is spent, re-downloading once to retry:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      trace.redownload = 'download-failed';
+      trace.stage = 'download';
+      const again = await adapter.downloadBinary(object, ctx);
+      if (!again.ok) {
+        trace.redownloadStatus = again.status;
+        throw err;
+      }
+      trace.redownload = 'put-failed';
+      length = await stage(again);
+      trace.redownload = 'ok';
+      console.warn(
+        `${label} staging put for ${object.objectID} (${format}) succeeded after re-download [${describeTrace(trace)}]`,
+      );
+    }
+    trace.stage = 'extract';
     const jobToken =
       (DURABLE_EXTRACT_FORMATS.has(format) || length >= MAX_EXTRACT_INLINE_BYTES) && adapter.extractJobToken
         ? await adapter.extractJobToken(object, format, opts.version, ctx).catch((err: unknown) => {
@@ -238,7 +311,7 @@ export async function extractBinaryFileContent<TEntry>(
     };
   } catch (err) {
     console.warn(
-      `${label} extract failed for ${object.objectID} (${format}); leaving content empty:`,
+      `${label} extract failed for ${object.objectID} (${format}) [${describeTrace(trace)}]; leaving content empty:`,
       err instanceof Error ? err.message : String(err),
     );
     return { text: '' };
