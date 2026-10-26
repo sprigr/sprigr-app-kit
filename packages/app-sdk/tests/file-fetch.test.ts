@@ -76,6 +76,7 @@ describe("'any' refuses every parser-normalised spelling of a private host (#189
     ['hex IPv4', 'http://0x7f000001/x'],
     ['short IPv4', 'http://127.1/x'],
     ['zero host', 'http://0/x'],
+    ['0.0.0.0/8, non-zero', 'http://0.1.2.3/x'],
     ['trailing-dot IPv4', 'http://127.0.0.1./x'],
     // IPv4 embedded in IPv6, rewritten to hex.
     ['IPv4-mapped loopback', 'http://[::ffff:127.0.0.1]/x'],

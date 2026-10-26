@@ -78,34 +78,65 @@ export class FileUrlRefusedError extends Error {
   }
 }
 
-/** True for localhost, *.local, and private / loopback / link-local / reserved IP literals. */
+/** True for a private / loopback / link-local / CGNAT / reserved IPv4 address. */
+function isPrivateV4(o: number[]): boolean {
+  if (o.length !== 4 || o.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return true;
+  const [a = 0, b = 0] = o;
+  return (
+    a === 0 || a === 127 || a === 10 ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 169 && b === 254) || // link-local, incl. the 169.254.169.254 metadata address
+    (a === 100 && b >= 64 && b <= 127) || // CGNAT
+    a >= 224 // multicast and reserved
+  );
+}
+
+/** Expand a URL-normalised IPv6 literal (no brackets) to 8 groups, or null. */
+function ipv6Groups(v6: string): number[] | null {
+  const halves = v6.split('::');
+  if (halves.length > 2) return null;
+  const parse = (part: string) => (part === '' ? [] : part.split(':').map((g) => (/^[0-9a-f]{1,4}$/.test(g) ? parseInt(g, 16) : NaN)));
+  const head = parse(halves[0] ?? '');
+  const tail = halves.length === 2 ? parse(halves[1] ?? '') : [];
+  const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+  const groups = [...head, ...new Array(Math.max(fill, 0)).fill(0), ...tail];
+  return groups.length === 8 && groups.every((g) => Number.isInteger(g)) ? groups : null;
+}
+
+const v4From = (hi: number, lo: number) => [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff];
+
+/**
+ * True for localhost, *.local, and private / loopback / link-local / reserved
+ * IP literals. `hostname` is what `new URL()` produced, so it is already
+ * normalised (sprigr/sprigr-app-kit#189): IPv4 in decimal, octal, hex or
+ * short form arrives dotted, and an IPv4 address embedded in IPv6 arrives as
+ * hex groups, so the embedded address is decoded and checked as IPv4.
+ * A DNS name is not resolved here (see AllowedFileHosts).
+ */
 function isPrivateHost(hostname: string): boolean {
-  const h = hostname.toLowerCase();
+  const h = hostname.toLowerCase().replace(/\.$/, '');
   if (h === 'localhost' || h.endsWith('.localhost') || h === 'local' || h.endsWith('.local')) return true;
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (v4) {
-    const o = v4.slice(1).map(Number);
-    if (o.some((n) => n > 255)) return true;
-    const a = o[0] ?? 0;
-    const b = o[1] ?? 0;
-    return (
-      a === 0 || a === 127 || a === 10 ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 169 && b === 254) || // link-local, incl. the 169.254.169.254 metadata address
-      (a === 100 && b >= 64 && b <= 127) || // CGNAT
-      a >= 224 // multicast and reserved
-    );
-  }
-  if (h.includes(':')) {
-    const v6 = h.replace(/^\[/, '').replace(/\]$/, '').replace(/%.*$/, '');
-    return (
-      v6 === '::1' || v6 === '::' ||
-      /^fe[89ab]/.test(v6) || // link-local fe80::/10
-      /^f[cd]/.test(v6) || // unique-local fc00::/7
-      /^::ffff:(?:0*:)?(?:127|10|0)\./.test(v6) // IPv4-mapped loopback / private
-    );
-  }
+  if (v4) return isPrivateV4(v4.slice(1).map(Number));
+  if (!h.includes(':')) return false;
+  const g = ipv6Groups(h.replace(/^\[/, '').replace(/\]$/, '').replace(/%.*$/, ''));
+  if (!g) return true; // an IPv6 literal we cannot read is refused, not fetched
+  const zeros = (from: number, to: number) => g.slice(from, to).every((x) => x === 0);
+  const [g0 = 0, g1 = 0, g2 = 0, , , g5 = 0, g6 = 0, g7 = 0] = g;
+  if (zeros(0, 8)) return true; // :: unspecified
+  if (zeros(0, 7) && g7 === 1) return true; // ::1 loopback
+  if ((g0 & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+  if ((g0 & 0xffc0) === 0xfec0) return true; // deprecated site-local fec0::/10
+  if ((g0 & 0xfe00) === 0xfc00) return true; // unique-local fc00::/7
+  if ((g0 & 0xff00) === 0xff00) return true; // multicast ff00::/8
+  // IPv4 embedded in IPv6: check the IPv4 address it carries.
+  if (zeros(0, 5) && g5 === 0xffff) return isPrivateV4(v4From(g6, g7)); // ::ffff:a.b.c.d mapped
+  if (zeros(0, 6)) return isPrivateV4(v4From(g6, g7)); // ::a.b.c.d compatible
+  if (zeros(0, 4) && g[4] === 0xffff && g5 === 0) return isPrivateV4(v4From(g6, g7)); // ::ffff:0:a.b.c.d SIIT
+  if (g0 === 0x64 && g1 === 0xff9b && zeros(2, 6)) return isPrivateV4(v4From(g6, g7)); // NAT64 64:ff9b::/96
+  if (g0 === 0x64 && g1 === 0xff9b && g2 === 1) return true; // NAT64 local-use 64:ff9b:1::/48
+  if (g0 === 0x2002) return isPrivateV4(v4From(g1, g2)); // 6to4 2002:a.b.c.d::/48
   return false;
 }
 
