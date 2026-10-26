@@ -14,9 +14,11 @@ export {
   base64ToBytes,
   fetchFileBytes,
   fetchFileAsBase64,
+  assertFetchableFileUrl,
+  FileUrlRefusedError,
   DEFAULT_MAX_FILE_BYTES,
 } from './file';
-export type { FetchFileResult } from './file';
+export type { FetchFileResult, FetchFileOptions, AllowedFileHosts, FileUrlRefusal } from './file';
 export {
   resolveFileRef,
   readFileRef,

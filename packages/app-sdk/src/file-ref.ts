@@ -30,12 +30,11 @@
  *     host, and every host it can reach is the platform's own.
  */
 
-import { base64ToBytes } from './file';
+import { base64ToBytes, SPRIGR_FILE_HOSTS } from './file';
 import { getAppFile, type AppFilesEnv } from './app-files';
 import { APP_FILES_ROOT, appKeyFromCallerKey, callerKeyRefusal } from './stored-file-keys';
 
-/** Hosts the platform serves signed file links from (the file proxy, prod and staging). */
-export const SPRIGR_FILE_HOSTS: ReadonlySet<string> = new Set(['files.sprigr.com', 'staging-files.sprigr.com']);
+export { SPRIGR_FILE_HOSTS };
 
 /** Default time to read one file before giving up. */
 export const DEFAULT_FILE_READ_TIMEOUT_MS = 20_000;
