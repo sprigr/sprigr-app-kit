@@ -59,7 +59,10 @@ export const SPRIGR_FILE_HOSTS: ReadonlySet<string> = new Set(['files.sprigr.com
  * over https: the URL usually comes from the model, and any other host is a
  * call it chose (sprigr/sprigr-app-kit#185). A list is the only hosts, over
  * https. `'any'` is for an app whose tool takes a public URL by design: http
- * or https to any host except a private, loopback or link-local address.
+ * or https to any host except a private, loopback or link-local IP literal,
+ * `localhost` or `*.local`. It checks the URL as written: a hostname is not
+ * resolved and a redirect is still followed, so it is defence in depth over
+ * the Workers runtime, which cannot reach private networks anyway.
  */
 export type AllowedFileHosts = Iterable<string> | 'any';
 
