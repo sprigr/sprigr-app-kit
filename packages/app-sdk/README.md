@@ -72,7 +72,7 @@ export default {
 
 ## Misc
 
-- `fetchWithRetry` — rate-limit-header-aware, jittered retry
+- `fetchWithRetry`: rate-limit-header-aware, jittered retry. A 429 is retried for every method. A 5xx or a thrown network error is retried only for an idempotent request: GET, HEAD, OPTIONS, a non-empty `Idempotency-Key` or `Idempotency-Token` header, or `idempotent: true` (`idempotent: false` keeps any request to one attempt). The caller's abort or timeout ends the call with no further attempt, including during a backoff, and a response dropped for a retry has its body cancelled. **Behaviour change in 0.37.0 (sprigr-app-kit#83):** a POST, PATCH, PUT or DELETE answered 5xx is returned, not sent again. On bumping: atlassian, klaviyo, procore and simpro send PUT and bodyless DELETE through it as idempotent and should pass their own idempotency decision as `idempotent`; a read sent as POST (realestate's realty GraphQL search, atlassian's Jira approximate-count) needs `idempotent: true` to keep its 5xx retry.
 - `constantTimeEqual(a, b)` — bearer-secret verification
 - `encodeState` / `decodeState` — OAuth state base64url
 - `encodeStateWithinEnvelope(state, { installId, appSlug, optional? })` — `encodeState` that leaves room for the platform's signed envelope (500 chars, decision 0190). An optional field (default `returnTo`) that does not fit is left out whole, never shortened, with a `console.warn` naming the lengths; without `returnTo` the bouncer lands the user on the install's dashboard. Use it for any state that carries a caller-supplied value. `oauthStateEnvelopeOverhead` and `OAUTH_STATE_ENVELOPE_MAX_CHARS` expose the arithmetic.
