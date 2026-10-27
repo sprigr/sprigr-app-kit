@@ -27,11 +27,13 @@ export interface FetchWithRetryOptions {
   maxTotalWaitMs?: number;
   /**
    * Whether the request is safe to send again after a 5xx or a thrown
-   * network error. Default: true for GET, HEAD and OPTIONS, and for any
-   * request carrying a non-empty `Idempotency-Key` or `Idempotency-Token`
-   * header; false otherwise. Pass true for a read sent as POST (GraphQL,
-   * search) or a PUT/DELETE the provider treats as idempotent; pass false
-   * to keep a GET to one attempt. A 429 is retried either way.
+   * network error. Default: true for GET, HEAD, OPTIONS, PUT and DELETE
+   * (idempotent by RFC 9110), and for any request carrying a non-empty
+   * `Idempotency-Key` or `Idempotency-Token` header; false for POST and
+   * PATCH otherwise. Pass true for a read sent as POST (GraphQL, search);
+   * pass false for a PUT or DELETE the provider does not treat as
+   * idempotent, or to keep any request to one attempt. A 429 is retried
+   * either way.
    */
   idempotent?: boolean;
   /** Called with each attempt's failure metadata; useful for logging. */
@@ -86,7 +88,7 @@ export async function fetchWithRetry(
   throw lastError ?? new Error('fetchWithRetry exhausted');
 }
 
-const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
 const IDEMPOTENCY_HEADERS = ['idempotency-key', 'idempotency-token'];
 
 function isIdempotentRequest(init: RequestInit | undefined, request: Request | null): boolean {

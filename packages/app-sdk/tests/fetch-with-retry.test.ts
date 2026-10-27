@@ -3,8 +3,9 @@
  *
  * A 5xx or a thrown network error can follow a write the provider already
  * committed, so only an idempotent request is sent again after one: GET,
- * HEAD, OPTIONS, a request carrying an Idempotency-Key or Idempotency-Token
- * header, or a caller that says `idempotent: true`. A 429 means nothing was
+ * HEAD, OPTIONS, PUT and DELETE (RFC 9110), a POST or PATCH carrying an
+ * Idempotency-Key or Idempotency-Token header, or a caller that says
+ * `idempotent: true`. A 429 means nothing was
  * processed and is retried for every method. The caller's own abort or
  * timeout ends the call at once, and a response dropped for a retry has its
  * body cancelled.
@@ -46,7 +47,7 @@ describe('fetchWithRetry: 5xx and network errors are retried only for idempotent
     expect(await res.text()).toBe('body 502');
   });
 
-  it.each(['PATCH', 'PUT', 'DELETE', 'post'])('a %s answered 503 is sent once', async (method) => {
+  it.each(['PATCH', 'patch', 'post'])('a %s answered 503 is sent once', async (method) => {
     const { fn } = scripted(503, 200);
     const res = await fetchWithRetry('https://api.example.test/things/1', { method }, FAST);
     expect(fn).toHaveBeenCalledTimes(1);
@@ -73,6 +74,9 @@ describe('fetchWithRetry: 5xx and network errors are retried only for idempotent
     ['GET', { method: 'GET' }],
     ['HEAD', { method: 'HEAD' }],
     ['OPTIONS', { method: 'OPTIONS' }],
+    ['PUT', { method: 'PUT', body: '{}' }],
+    ['DELETE', { method: 'DELETE' }],
+    ['delete (lower case)', { method: 'delete' }],
     ['no init (GET by default)', undefined],
   ] as const)('a %s answered 502 is retried', async (_label, init) => {
     const { fn } = scripted(502, 200);
@@ -121,11 +125,24 @@ describe('fetchWithRetry: 5xx and network errors are retried only for idempotent
     expect(res.status).toBe(200);
   });
 
-  it('idempotent: false keeps even a GET to one attempt on a 5xx', async () => {
+  it.each(['GET', 'PUT', 'DELETE'])('idempotent: false keeps a %s to one attempt on a 5xx and on a dropped connection', async (method) => {
     const { fn } = scripted(502, 200);
-    const res = await fetchWithRetry('https://api.example.test/things', { method: 'GET' }, { ...FAST, idempotent: false });
+    const res = await fetchWithRetry('https://api.example.test/things', { method }, { ...FAST, idempotent: false });
     expect(fn).toHaveBeenCalledTimes(1);
     expect(res.status).toBe(502);
+
+    const dropped = scripted(new TypeError('fetch failed'), 200);
+    await expect(
+      fetchWithRetry('https://api.example.test/things', { method }, { ...FAST, idempotent: false }),
+    ).rejects.toThrow('fetch failed');
+    expect(dropped.fn).toHaveBeenCalledTimes(1);
+  });
+
+  it('a PUT whose connection drops is retried', async () => {
+    const { fn } = scripted(new TypeError('fetch failed'), 200);
+    const res = await fetchWithRetry('https://api.example.test/things/1', { method: 'PUT', body: '{}' }, FAST);
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(res.status).toBe(200);
   });
 });
 
