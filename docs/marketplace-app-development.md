@@ -697,10 +697,88 @@ What happens server-side:
 - The build-runner container picks up the job, runs `npm install` + the framework build (e.g. `opennext build` for Next.js), then uploads the bundle to WFP.
 - The build-runner allocates the per-install D1 + KV if missing, then attaches all the bindings above.
 - After upload, the platform runs the manifest's `migrations[]` against the per-install D1.
+- The success callback then fires the app's `on_install` hook, if it declares one (see [Lifecycle hooks](#lifecycle-hooks-on_install-on_upgrade-on_uninstall)).
 
 ### Upgrade
 - After publishing a new version, upgrade existing installs via the portal "Upgrade" banner or `sprigr app upgrade <slug>`.
 - The install is re-pinned to the latest approved version and the build is re-enqueued with the same website id. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
+- Once `on_install` has succeeded, every successful build fires the app's `on_upgrade` hook, if it declares one (see below).
+
+### Lifecycle hooks: `on_install`, `on_upgrade`, `on_uninstall`
+
+The platform calls three optional hooks around an install. Each one is an ordinary `tools[]` entry, dispatched as `POST /__sprigr/tool/<name>` through the same wrapper route an agent's tool call takes. File and line references in this section are to sprigr-team `main` at f7013d2ac. Most are in `workers/provisioning/src/lifecycle-dispatch.ts`, abbreviated `lifecycle-dispatch.ts`.
+
+**The name must be exactly `on_install`, `on_upgrade` or `on_uninstall`.** The platform finds a hook by comparing names exactly, `t.name === 'on_install'` (`lifecycle-dispatch.ts:270`, `:453`, `:606`). The `<slug>_<op>` prefix the rest of your tools carry does not apply here: a tool named `my_crm_on_install` is never called. The install is stamped `skipped:no_handler`, and nothing else tells you. The fulfilment-hub app shipped to staging this way, with `fh_on_install` and no collections defined (sprigr-app-kit#65).
+
+Declare each hook `"internal": true`. The platform keeps these names off the agent tool list either way (`PLATFORM_LIFECYCLE_HOOK_TOOLS` in `packages/shared/src/utils/marketplace-platform-only-tools.ts:46`). Publish logs a warning when the flag is missing (`:221`), so the flag makes the manifest say what it means.
+
+```jsonc
+{
+  "name": "on_install",                   // exactly this: a prefixed name is never called
+  "handler": "src/handlers/on-install.ts",
+  "internal": true,                       // platform-only: keep it off the agent tool list
+  "input_schema": { "type": "object" }
+}
+```
+
+```ts
+// src/handlers/on-install.ts
+export default async function onInstall(args, env) {
+  // args: { install_id, company_id, integrations: [{ integration_type, integration_id }] }
+  const { collection } = await env.SPRIGR.collections.define({ /* see "Collections" in platform-reference.md */ });
+  await env.DB.prepare(
+    'INSERT INTO my_crm_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  ).bind('orders_collection', collection).run();
+  // To have a failure retried on the next build, THROW. A returned
+  // { ok: false } is recorded as success, and the hook never runs again.
+  return { collection };
+}
+```
+
+Your migrations have already run when a hook fires. The build-runner applies `migrations[]` before it posts the success callback that fires the hooks, and a failed migration fails the build, so no hook runs (`workers/build-runner/src/publish-result.ts:593-620`).
+
+#### `on_install`: once, after the first successful build
+
+- **When it fires.** It fires on the callback of every successful build while the install's `on_install_dispatched_at` is NULL or `skipped:<reason>` (`workers/provisioning/src/build-routes.ts:789-816`, `lifecycle-dispatch.ts:247-264`). Normally that means the first build of a new install. If you add `on_install` in a later version, it runs on each existing install's build of that version, because those installs were stamped `skipped:no_handler`.
+- **What it receives.** It receives `{ install_id, company_id, integrations: [{ integration_type, integration_id }] }` as `args`, not an empty object. A deprecated `shopify_integration_id` is added when the install has exactly one Shopify binding (`lifecycle-dispatch.ts:145-157`, `:286-298`).
+- **Time limit.** 60 s, cold start included (`:319`). Defining a collection that is new to the company walks the full provisioning path. Re-declaring an unchanged one is a fast no-op (sprigr-team#8235).
+- **What gets recorded.** The platform stamps `on_install_dispatched_at` on the install. Only a timestamp is final. Every `skipped:*` value is retried on the next successful build (`:247-258`). Nothing re-fires the hook between builds.
+
+| `on_install_dispatched_at` | Meaning | Next successful build |
+|---|---|---|
+| ISO timestamp | The handler returned, whatever it returned (`:359-360`) | Does not fire it (`:258`) |
+| `skipped:no_handler` | No tool named exactly `on_install` (`:270-273`) | Fires it if the manifest now declares one |
+| `skipped:unsupported_kind` | The install has no per-install worker (`:278-280`) | Checks the install again |
+| `skipped:no_ssr` | No deployment to dispatch to yet (`:322-330`) | Retries |
+| `skipped:timeout` | Over the 60 s limit | Retries |
+| `skipped:dispatch_error` | The platform could not reach the worker | Retries |
+| `skipped:handler_failed` | The handler threw, which the wrapper answers with 500, or the bundle has no handler under that name, answered with 404 (`:336-356`) | Retries |
+
+- **Return or throw.** The wrapper answers 200 `{ ok: true, result }` for any value your handler returns, including `{ ok: false, error }` (`containers/build-runner/entrypoint/adapters/sprigr-wrapper.ts:3063-3066`), and the platform records that as a success. To have a failure retried, throw. A retry runs the handler from the top, so make it idempotent: upsert settings rows, and re-declare collections instead of assuming the first attempt got nowhere.
+
+#### `on_upgrade`: every later build
+
+- **When it fires.** It fires on every successful build of the install once `on_install_dispatched_at` holds a real timestamp, whether the build upgrades to a new version or rebuilds the current one. There is no latch and no version check (`lifecycle-dispatch.ts:383-394`, `:466-478`; `build-routes.ts:818-835`).
+- **It needs a successful `on_install`.** An app that declares `on_upgrade` without `on_install` has its installs stamped `skipped:no_handler`, so its `on_upgrade` never fires. If you only need `on_upgrade`, also declare an `on_install`, even one that just returns `{}`. Likewise, while `on_install` keeps failing, `on_upgrade` stays silent.
+- **What it receives.** `{ trigger: 'upgrade', build_id, version_id }` (`:427-431`). Read everything else from your own per-install state.
+- **Time limit.** 60 s (`:501`).
+- **What gets recorded.** Nothing is stamped on the install. A failure is logged and the deployment stands (`:405-407`). The next build fires the hook again anyway.
+- **Make it idempotent.** The hook re-runs on every build, so a handler that is not idempotent applies its effect again each time. The platform calls this "a hard contract, not a nicety" (`:394-399`). Shopify's `register_webhooks` is the model: create what is missing, skip what exists, prune what is stale.
+- **It may also fire on the first build.** Going by the code, a bootstrap build where `on_install` succeeds goes on to fire `on_upgrade` too, though the platform's own comments say a bootstrap build never fires both hooks (sprigr-team#13177; found by reading the code, not reproduced). An idempotent handler is safe either way. Do not read `on_upgrade` as "this is not the first build".
+
+#### `on_uninstall`: before teardown
+
+- **When it fires.** It fires when the install is uninstalled, before the platform tears anything down. At that point the worker, its D1 (with your provider tokens) and its secrets still exist (`lifecycle-dispatch.ts:555-572`). Use it to release what the platform cannot see. The case that motivated it is Xero's app-wide cap on connections (sprigr-apps#1001).
+- **What it receives.** `{ trigger: 'uninstall', install_id, company_id }` (`:585-589`).
+- **Time limit.** 15 s, not 60 (`:633`).
+- **What gets recorded.** Nothing. It is best effort and at most once: a failed or slow handler is logged, and the uninstall goes ahead (`:564-567`).
+
+#### Checking whether a hook ran
+
+- **`on_install`.** `GET /api/data/apps/<slug>` returns `app.installation.on_install_dispatched_at` for your company's install. `handleAppDetail` in `workers/provisioning/src/marketplace-listing-routes.ts` passes the install row through. A timestamp means the handler returned. `skipped:no_handler` on an app that declares the hook almost always means the tool name is wrong.
+- **Platform logs.** Every hook logs to the platform's system log under `marketplace.lifecycle.on_install`, `marketplace.lifecycle.on_upgrade` and `marketplace.lifecycle.on_uninstall`, at `info` on success and `warn` on failure (`lifecycle-dispatch.ts:1092-1222`). Only operators can read these today: the install's Recent issues feed does not show them (sprigr-team#13177).
+- **`on_upgrade` and `on_uninstall`.** The platform records nothing an author can read for these two. If you need to know, have the handler record it: one upserted settings row such as `last_upgrade_build_id`, not a new row per run.
+- **Locally.** `sprigr dev` runs a hook like any other tool: `curl -X POST localhost:8666/__sprigr/tool/on_install -d '{"install_id":"inst_dev","company_id":"comp_dev","integrations":[]}'` (see the [build-guide](build-guide.md)).
 
 ### Retire (per-actor apps): `on_actor_retired`
 - A per-actor app (`auth.model: per_actor`) should declare an `internal: true` tool named `on_actor_retired` and wrap its handler with `actorRetiredHook` from `@sprigr/apps-app-sdk` (0.16.0+). The platform calls it when the identity behind one of your actor keys is gone: a member removed, an agent deleted, a companion's bound user id corrected (the OLD key), or an operator retiring an orphan. Revoke the person's grant at the provider and purge what you keep for that key, exactly as your disconnect tool does.
