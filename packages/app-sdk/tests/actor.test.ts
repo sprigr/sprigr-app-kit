@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { actorKey, ownerFromActorKey, parseActor, CALLER_SURFACES } from '../src/actor';
+import { actorKey, ownerFromActorKey, parseActor, CALLER_SURFACES, PERSON_SOURCES } from '../src/actor';
 
 describe('parseActor: caller surface and person (sprigr-team decision 0305)', () => {
   it('carries surface, personId and personSource beside the bound user', () => {
@@ -27,6 +27,25 @@ describe('parseActor: caller surface and person (sprigr-team decision 0305)', ()
 
   it('every listed surface parses', () => {
     for (const s of CALLER_SURFACES) expect(parseActor({ actor: { surface: s } })).toEqual({ surface: s });
+  });
+
+  // The platform stamps five person sources: `live`, and the four signed
+  // driver sources of sprigr-team actor-assertion.ts. A source missing from
+  // PERSON_SOURCES is dropped, so the app sees a personId with no source.
+  it('lists every person source the platform stamps', () => {
+    expect([...PERSON_SOURCES]).toEqual(['live', 'schedule_creator', 'workflow_saver', 'workflow_starter', 'delegation_originator']);
+  });
+
+  it('a delegated turn: the person who asked, with delegation_originator (sprigr-team#13005)', () => {
+    const actor = parseActor({
+      actor: { agentId: 'agt_specialist', platformUserId: 'usr_bound', surface: 'delegated', personId: 'usr_asker', personSource: 'delegation_originator' },
+    });
+    expect(actor).toEqual({ agentId: 'agt_specialist', platformUserId: 'usr_bound', surface: 'delegated', personId: 'usr_asker', personSource: 'delegation_originator' });
+  });
+
+  it('a manually started workflow run: the person who started it, with workflow_starter (sprigr-team#13083)', () => {
+    const actor = parseActor({ actor: { surface: 'workflow', personId: 'usr_starter', personSource: 'workflow_starter' } });
+    expect(actor).toEqual({ surface: 'workflow', personId: 'usr_starter', personSource: 'workflow_starter' });
   });
 });
 
