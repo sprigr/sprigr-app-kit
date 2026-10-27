@@ -931,3 +931,7 @@ export { withSenderSignature } from './sender-signature';
 // sprigr-app-kit#170: a dispatcher tool's manifest `dispatch` block from the action registry.
 export { ACTION_DESCRIPTION_MAX_CHARS, buildDispatchManifest, buildParamsDescription, oneLineDescription } from './dispatch-manifest';
 export type { DispatchActionSpec } from './dispatch-manifest';
+
+// sprigr-apps#4001: a bounded age sweep for an app's D1 audit table.
+export { pruneAuditTable } from './audit-retention';
+export type { PruneAuditTableOpts, PruneAuditTableResult } from './audit-retention';
