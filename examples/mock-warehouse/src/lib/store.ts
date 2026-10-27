@@ -9,7 +9,7 @@
 
 import type { D1Like } from '@sprigr/apps-app-sdk';
 
-export type RequestStage = 'queued' | 'accepted' | 'shipped' | 'delivered' | 'cancelled';
+export type RequestStage = 'pushing' | 'queued' | 'accepted' | 'shipped' | 'delivered' | 'cancelled';
 
 export interface RequestRecord {
   fulfilment_request_id: string;
@@ -39,8 +39,14 @@ export type RequestPatch = Pick<RequestRecord, 'stage' | 'carrier' | 'tracking_n
 
 export interface WarehouseStore {
   get(fulfilmentRequestId: string): Promise<RequestRecord | null>;
-  /** Insert only. The caller reads first, so this never fires on a repeat push. */
-  insert(record: RequestRecord): Promise<void>;
+  /**
+   * The push_order latch. Writes the record BEFORE the vendor call (stage
+   * 'pushing', no provider_ref yet) and answers whether THIS call wrote it,
+   * so of two deliveries of one request only one reaches the vendor.
+   */
+  claim(record: RequestRecord): Promise<boolean>;
+  /** The winner's vendor call returned: record its ref and move the row to 'queued'. */
+  setPushed(fulfilmentRequestId: string, providerRef: string, updatedAt: string): Promise<void>;
   update(fulfilmentRequestId: string, patch: RequestPatch): Promise<void>;
 }
 
@@ -56,8 +62,8 @@ export function d1Store(db: D1Like): WarehouseStore {
         .bind(id)
         .first<RequestRecord>();
     },
-    async insert(record) {
-      await db
+    async claim(record) {
+      const result = await db
         .prepare(
           `INSERT INTO mock_warehouse_requests
              (fulfilment_request_id, provider_ref, order_id, warehouse_key, lines_json,
@@ -79,6 +85,22 @@ export function d1Store(db: D1Like): WarehouseStore {
           record.created_at,
           record.updated_at,
         )
+        .run();
+      const changes = (result as { meta?: { changes?: unknown } } | null)?.meta?.changes;
+      // Refuse to guess: false would leave every order unpushed, true would
+      // let a repeat through to the vendor.
+      if (typeof changes !== 'number') {
+        throw new Error('D1 run() reported no meta.changes, so the push_order claim cannot tell whether it won');
+      }
+      return changes === 1;
+    },
+    async setPushed(id, providerRef, updatedAt) {
+      await db
+        .prepare(
+          `UPDATE mock_warehouse_requests SET provider_ref = ?, stage = 'queued', updated_at = ?
+            WHERE fulfilment_request_id = ? AND stage = 'pushing'`,
+        )
+        .bind(providerRef, updatedAt, id)
         .run();
     },
     async update(id, patch) {
@@ -113,8 +135,14 @@ export function memoryStore(): WarehouseStore {
     async get(id) {
       return rows.get(id) ?? null;
     },
-    async insert(record) {
-      if (!rows.has(record.fulfilment_request_id)) rows.set(record.fulfilment_request_id, { ...record });
+    async claim(record) {
+      if (rows.has(record.fulfilment_request_id)) return false;
+      rows.set(record.fulfilment_request_id, { ...record });
+      return true;
+    },
+    async setPushed(id, providerRef, updatedAt) {
+      const row = rows.get(id);
+      if (row?.stage === 'pushing') rows.set(id, { ...row, provider_ref: providerRef, stage: 'queued', updated_at: updatedAt });
     },
     async update(id, patch) {
       const row = rows.get(id);

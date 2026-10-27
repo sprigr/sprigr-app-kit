@@ -5,7 +5,7 @@
   "metadata": {
     "name": "Mock Warehouse",
     "slug": "mock-warehouse",
-    "version": "0.0.3",
+    "version": "0.0.4",
     "description": "Deterministic fulfilment-hub/fulfilment_provider implementer. Accepts every push, holds it until mock_warehouse_advance fires provider.order.accepted then provider.shipment.created, drives the carrier scans and the delivery through provider.shipment.event, and answers get_stock from a fixed fixture. The shakedown fixture for the hub, and the worked reference for a real warehouse adapter.",
     "author": {
       "name": "Sprigr Company",
