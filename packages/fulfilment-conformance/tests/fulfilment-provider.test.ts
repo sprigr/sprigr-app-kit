@@ -17,8 +17,10 @@ describe('runFulfilmentProviderConformance', () => {
     });
     expect(failed(report), formatReport(report)).toEqual([]);
     expect(report.ok).toBe(true);
-    // Two distinct requests, one repeat that must not reach the vendor.
-    expect(vendor.calls).toBe(2);
+    // Three distinct requests, one of them pushed by two deliveries at once,
+    // and one repeat: neither the repeat nor the second simultaneous delivery
+    // may reach the vendor.
+    expect(vendor.calls).toBe(3);
   });
 
   // update_ship_to is `optionalSince: '1.4.0'`: a provider written against
@@ -161,6 +163,56 @@ describe('runFulfilmentProviderConformance', () => {
     expect(failed(report)).toContain('push_order.repeat_does_not_reach_vendor');
     expect(failed(report)).toContain('push_order.idempotent_provider_ref');
     expect(report.ok).toBe(false);
+  });
+
+  it('fails an adapter that reads before it pushes when two deliveries of one request arrive at once (#78)', async () => {
+    // Passes the sequential repeat: the second push finds the first's record.
+    // Two at once both read "not pushed" before either writes, and both reach
+    // the vendor.
+    const vendor = { calls: 0 };
+    const pushed = new Map<string, string>();
+    const { handlers } = makeProviderAdapter({
+      tiny_wh_push_order: async (args: never) => {
+        const id = (args as unknown as { fulfilment_request_id: string }).fulfilment_request_id;
+        const existing = await Promise.resolve(pushed.get(id));
+        if (existing) return { status: 'accepted', provider_ref: existing };
+        vendor.calls += 1;
+        const ref = await Promise.resolve(`pr_${id}`);
+        pushed.set(id, ref);
+        return { status: 'accepted', provider_ref: ref };
+      },
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual(['push_order.concurrent_repeat_reaches_vendor_once']);
+  });
+
+  it('passes a claim-first adapter whose losing delivery answers queued with no provider_ref yet', async () => {
+    const vendor = { calls: 0 };
+    const claims = new Map<string, string>();
+    const { handlers } = makeProviderAdapter({
+      tiny_wh_push_order: async (args: never) => {
+        const id = (args as unknown as { fulfilment_request_id: string }).fulfilment_request_id;
+        if (claims.has(id)) {
+          const ref = await Promise.resolve(claims.get(id));
+          return ref ? { status: 'queued', provider_ref: ref } : { status: 'queued' };
+        }
+        claims.set(id, '');
+        vendor.calls += 1;
+        const ref = await Promise.resolve(`pr_${id}`);
+        claims.set(id, ref);
+        return { status: 'queued', provider_ref: ref };
+      },
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report), formatReport(report)).toEqual([]);
   });
 
   it('fails an adapter that never calls its vendor, rather than crediting it with idempotency', async () => {
