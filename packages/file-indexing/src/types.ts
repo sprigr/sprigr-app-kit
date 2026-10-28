@@ -380,7 +380,7 @@ export interface FileSourceAdapter<TEntry = unknown, TEnv extends FileIndexingEn
   /** Prefixes a disconnect purges. Default `[objectIdPrefix(ctx)]`. */
   purgePrefixes?(ctx: FileIndexingContext<TEnv>): Promise<string[]>;
 
-  /** 0.1.4 (sprigr-apps#2690): an INDEPENDENT check, made at reconcile time,
+  /** 0.2.1 (sprigr-apps#2690): an INDEPENDENT check, made at reconcile time,
    *  that the account really holds nothing, asked only after a completed full
    *  walk saw zero entries while the index still holds rows under the prefix.
    *  Resolve true only on positive proof (dropbox: a fresh non-recursive

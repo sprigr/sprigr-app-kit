@@ -115,7 +115,7 @@ export interface FileIndexingOutcome {
   extraScopesDeferred?: number;
   /** Stale rows removed by a completed full walk's reconcile. */
   reconciled?: number;
-  /** 0.1.4 (sprigr-apps#2690): this walk saw zero entries, the adapter
+  /** 0.2.1 (sprigr-apps#2690): this walk saw zero entries, the adapter
    *  confirmed the account empty, and another full walk was requested for the
    *  next pass: to make the second confirmation before rows go, or to finish
    *  a purge the deadline or a truncated listing cut short. */
