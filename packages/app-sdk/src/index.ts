@@ -704,6 +704,19 @@ export interface SprigrFilesApi {
    * Optional: see `put`.
    */
   delete?(key: string, opts?: { owner_ref?: string; ownerless?: boolean }): Promise<{ ok: boolean; key: string }>;
+  /**
+   * Delete the CALLING user's per-user files on this install: their copy of
+   * every `actor_scoped_storage_prefixes` key, uploaded before this call. Use
+   * it when a user disconnects. The platform resolves the user from the
+   * dispatch's signed actor; the app never names one, and the answer never
+   * reveals the owner. Queued, not inline: the files go within minutes, and
+   * anything the user writes after the call (a reconnect) is kept. A call with
+   * no actor (schedule, webhook, event) throws `err.code === 'actor_required'`
+   * (403); for a retired user, sweep with the `storageOwnerRef` that
+   * `on_actor_retired` passes instead. Optional: absent on wrapper builds
+   * before sprigr-team#13242, so feature-detect.
+   */
+  purgeOwner?(): Promise<{ ok: boolean; purge_id: string }>;
 }
 
 /** One entry of `env.SPRIGR.files.list`. `owner_ref` / `ownerless` appear only

@@ -65,6 +65,7 @@ export default {
 - Return `{ done: true }` when finished or durably queued by the app; `{ done: false, remaining }` to be called again (1 min up to 12 h, 8 deliveries). Be idempotent.
 - `successorKey` is audit only: never move the grant or the data to it. Delete only what existed by `requestedAt`.
 - `storageOwnerRef` is the `owner_ref` a no-actor maintenance `env.SPRIGR.files.list` reports for this person's per-user stored files; pass it to a no-actor `files.delete(key, { owner_ref })`.
+- For a user who disconnects while still a member, call `env.SPRIGR.files.purgeOwner()` on their own dispatch instead: it deletes their per-user files uploaded before the call and keeps anything written after (typed on `SprigrFilesApi` from 0.40.0, sprigr-team#13242).
 
 ## Webhook callback URLs
 
