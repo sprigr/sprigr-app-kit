@@ -137,7 +137,21 @@ describe('makeIdempotentWrite', () => {
     raw.prepare(`INSERT INTO app_write_keys VALUES ('live', 'done', '1', ?, ?)`).run(past, soon);
     raw.prepare(`INSERT INTO app_write_keys VALUES ('dead', 'done', '1', ?, ?)`).run(past, past);
     const w = makeIdempotentWrite({ db, table: 'app_write_keys' });
-    expect(await w.sweep()).toEqual({ deleted: 1 });
+    expect(await w.sweep()).toEqual({ deleted: 1, more: false });
+    expect(raw.prepare(`SELECT id FROM app_write_keys`).all().map((r) => (r as { id: string }).id)).toEqual(['live']);
+  });
+
+  it('sweep drains an expired backlog in bounded batches over several calls (#193)', async () => {
+    const { db, raw } = sqliteD1();
+    const past = new Date(Date.now() - 60_000).toISOString();
+    const soon = new Date(Date.now() + 60_000).toISOString();
+    const ins = raw.prepare(`INSERT INTO app_write_keys VALUES (?, 'done', '1', ?, ?)`);
+    for (let i = 0; i < 250; i++) ins.run(`old-${i}`, past, past);
+    ins.run('live', past, soon);
+    const w = makeIdempotentWrite({ db, table: 'app_write_keys' });
+    expect(await w.sweep({ batch: 40, max: 100 })).toEqual({ deleted: 100, more: true });
+    expect(await w.sweep({ batch: 40, max: 100 })).toEqual({ deleted: 100, more: true });
+    expect(await w.sweep({ batch: 40, max: 100 })).toEqual({ deleted: 50, more: false });
     expect(raw.prepare(`SELECT id FROM app_write_keys`).all().map((r) => (r as { id: string }).id)).toEqual(['live']);
   });
 
