@@ -100,6 +100,8 @@ export class FetchBudgetTimeoutError extends Error {
     public readonly phase: FetchBudgetPhase,
   ) {
     super(`fetch_budget_timeout: ${phase} cap of ${timeoutMs}ms elapsed for ${withoutQuery(url)}`);
+    // A query string can carry a token; the field is what callers log.
+    this.url = withoutQuery(url);
     this.name = 'FetchBudgetTimeoutError';
   }
 }
@@ -203,6 +205,11 @@ export interface FetchWithBudgetOptions {
  * as well as aborting the request. A `fetch` that honours the signal is
  * cancelled properly; one that ignores it still cannot outlive the
  * budget.
+ *
+ * The cap covers the body too: when a response has a body, the timer stays
+ * armed after the headers arrive and aborts the request when it fires, so a
+ * body that stalls rejects its read with the `FetchBudgetTimeoutError`
+ * instead of hanging. A bodiless response clears the timer at once.
  */
 export async function fetchWithBudget(
   input: RequestInfo | URL,
@@ -230,24 +237,28 @@ export async function fetchWithBudget(
   const signal = callerSignal ? anySignal(callerSignal, controller.signal) : controller.signal;
 
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let headersIn = false;
   const budgetCut = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       const err = new FetchBudgetTimeoutError(url, timeoutMs, phase);
+      // After the headers, aborting is what errors a stalled body read.
       controller.abort(err);
-      reject(err);
+      if (!headersIn) reject(err);
     }, timeoutMs);
   });
 
   try {
-    return await Promise.race([doFetch(input, { ...init, signal }), budgetCut]);
+    const response = await Promise.race([doFetch(input, { ...init, signal }), budgetCut]);
+    headersIn = true;
+    if (response.body === null && timer !== undefined) clearTimeout(timer);
+    return response;
   } catch (err) {
+    if (timer !== undefined) clearTimeout(timer);
     if (isFetchBudgetTimeout(err)) throw err;
     // The caller's own cancellation is theirs to interpret.
     if (callerSignal?.aborted) throw err;
     if (isAbortLike(err)) throw new FetchBudgetTimeoutError(url, timeoutMs, phase);
     throw err;
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
   }
 }
 

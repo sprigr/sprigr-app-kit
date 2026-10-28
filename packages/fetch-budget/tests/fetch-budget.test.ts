@@ -193,8 +193,8 @@ describe('fetchWithBudget', () => {
     vi.useRealTimers();
   });
 
-  it('returns the response and leaves no timer behind on success', async () => {
-    const response = okResponse();
+  it('returns the response and leaves no timer behind for a bodiless response', async () => {
+    const response = new Response(null, { status: 204 });
     const fetchImpl = vi.fn(respondWith(response));
     await expect(
       fetchWithBudget('https://api.example.com/x', undefined, createDeadline(30_000), {
@@ -330,6 +330,29 @@ describe('fetchWithBudget', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('bounds a body that stalls after the headers (sprigr-app-kit#87)', async () => {
+    // A body that never sends a byte and, like a real fetch, errors when the signal aborts.
+    const fetchImpl: FetchImpl = async (_input, init) =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true });
+          },
+        }),
+      );
+    const response = await fetchWithBudget('https://api.example.com/slow?token=s3cret', undefined, undefined, {
+      attemptCapMs: 1_000,
+      fetchImpl,
+    });
+    const read = expect(response.text()).rejects.toMatchObject({
+      name: 'FetchBudgetTimeoutError',
+      phase: 'attempt',
+      url: 'https://api.example.com/slow',
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await read;
+  });
+
   it('accepts a URL object and a Request as input', async () => {
     const fetchImpl = vi.fn(neverSettles);
     const promise = fetchWithBudget(new URL('https://api.example.com/u?x=1'), undefined, undefined, {
@@ -337,7 +360,7 @@ describe('fetchWithBudget', () => {
       fetchImpl,
     });
     const assertion = expect(promise).rejects.toMatchObject({
-      url: 'https://api.example.com/u?x=1',
+      url: 'https://api.example.com/u',
       message: expect.stringContaining('https://api.example.com/u'),
     });
     await vi.advanceTimersByTimeAsync(1_000);
