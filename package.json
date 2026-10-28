@@ -15,7 +15,7 @@
     "sync:vendor:check": "node tools/sync-vendor.mjs --check",
     "create:app": "node tools/create-app.mjs",
     "bump": "node tools/bump-version.mjs",
-    "verify:local": "pnpm sync:vendor:check && node tools/check-migrations-immutable.mjs && node tools/check-capability-coverage.mjs"
+    "verify:local": "pnpm sync:vendor:check && node tools/check-migrations-immutable.mjs && node tools/check-capability-coverage.mjs && node --test tools/check-version-order.test.mjs"
   },
   "devDependencies": {
     "tsup": "^8.5.1",
