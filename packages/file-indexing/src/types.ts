@@ -462,9 +462,10 @@ export interface FileIndexingStore {
   clearWalkSeen(walkKey: string): Promise<void>;
 
   upsertPendingExtraction(row: { objectId: string; jobToken: string; recordJson: string; format: string }): Promise<void>;
-  /** Oldest first. Content-fill rows (`CONTENT_FILL_TOKEN_PREFIX`) are not
-   *  extraction jobs: createD1FileIndexingStore leaves them out, and
-   *  drainPendingExtractions skips any a custom store returns. */
+  /** Oldest first. Content-fill rows (`CONTENT_FILL_TOKEN_PREFIX`) and pending
+   *  purges (`PURGE_PENDING_TOKEN`) are not extraction jobs:
+   *  createD1FileIndexingStore leaves them out, and drainPendingExtractions
+   *  skips any a custom store returns. */
   listPendingExtractions(limit: number): Promise<PendingExtractionRow[]>;
   /** `job_token` is returned by createD1FileIndexingStore since 0.1.2; a store
    *  that leaves it out still works (an unknown token is treated as a job,

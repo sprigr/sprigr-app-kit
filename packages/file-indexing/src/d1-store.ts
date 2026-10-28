@@ -33,6 +33,7 @@
 
 import { actorKey, type D1Like } from '@sprigr/apps-app-sdk';
 import { CONTENT_FILL_TOKEN_PREFIX, contentFillToken } from './content-fill';
+import { PURGE_PENDING_TOKEN } from './purge-pending';
 import { actorOfFileRow } from './indexer';
 import type { FileIndexingRow, FileIndexingScope, FileIndexingStore, PendingExtractionRow } from './types';
 
@@ -374,8 +375,8 @@ export function createD1FileIndexingStore(
       // Content fills are not extraction jobs (sprigr-apps#2702): left out so
       // a fill backlog can never starve the job polls.
       const res = await db
-        .prepare(`SELECT * FROM ${PENDING} WHERE substr(job_token, 1, ?) != ? ORDER BY created_at ASC LIMIT ?`)
-        .bind(CONTENT_FILL_TOKEN_PREFIX.length, CONTENT_FILL_TOKEN_PREFIX, limit)
+        .prepare(`SELECT * FROM ${PENDING} WHERE substr(job_token, 1, ?) != ? AND job_token != ? ORDER BY created_at ASC LIMIT ?`)
+        .bind(CONTENT_FILL_TOKEN_PREFIX.length, CONTENT_FILL_TOKEN_PREFIX, PURGE_PENDING_TOKEN, limit)
         .all<PendingExtractionRow>();
       return res.results;
     },
