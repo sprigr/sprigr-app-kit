@@ -73,7 +73,7 @@ export default {
 
 ## Misc
 
-- `fetchWithRetry` — rate-limit-header-aware, jittered retry
+- `fetchWithRetry` — rate-limit-header-aware, jittered retry. Retries 429 for any method, but 5xx and network errors only for GET, HEAD, OPTIONS, PUT, an `Idempotency-Key`/`Idempotency-Token` header, or `retryNonIdempotent: true`; never retries an abort or timeout.
 - `constantTimeEqual(a, b)` — bearer-secret verification
 - `encodeState` / `decodeState` — OAuth state base64url
 - `encodeStateWithinEnvelope(state, { installId, appSlug, optional? })` — `encodeState` that leaves room for the platform's signed envelope (500 chars, decision 0190). An optional field (default `returnTo`) that does not fit is left out whole, never shortened, with a `console.warn` naming the lengths; without `returnTo` the bouncer lands the user on the install's dashboard. Use it for any state that carries a caller-supplied value. `oauthStateEnvelopeOverhead` and `OAUTH_STATE_ENVELOPE_MAX_CHARS` expose the arithmetic.

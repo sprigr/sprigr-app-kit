@@ -2,14 +2,18 @@
  * fetchWithRetry — rate-limit-header-aware retry wrapper around fetch.
  *
  * Retries on:
- *   - 429 Too Many Requests — honors `Retry-After` (seconds) and
+ *   - 429 Too Many Requests, any method: honors `Retry-After` (seconds) and
  *     `X-RateLimit-Reset` (epoch seconds) when present, else
  *     exponential-backoff with jitter.
- *   - 5xx — exponential backoff.
- *   - Network errors (TypeError thrown by fetch) — exponential backoff.
+ *   - 5xx and thrown network errors, idempotent requests only: GET, HEAD,
+ *     OPTIONS, PUT, a request carrying an `Idempotency-Key` or
+ *     `Idempotency-Token` header, or `retryNonIdempotent: true` (which is
+ *     also how a DELETE opts in). A POST or PATCH that got a 5xx may already
+ *     have been applied upstream, so it is returned, not resent.
  *
  * Does NOT retry: 4xx other than 429 (caller's bug), redirects, 401
- * (auth — caller decides whether to refresh + retry).
+ * (auth: caller decides whether to refresh + retry), or an abort or timeout
+ * from the caller's own signal.
  */
 
 export interface FetchWithRetryOptions {
@@ -20,6 +24,28 @@ export interface FetchWithRetryOptions {
   maxTotalWaitMs?: number;
   /** Called with each attempt's failure metadata; useful for logging. */
   onRetry?: (info: { attempt: number; status: number | null; waitMs: number; reason: string }) => void;
+  /**
+   * Resend after a 5xx or a network error even though the method is not
+   * idempotent (the provider dedupes it some other way).
+   */
+  retryNonIdempotent?: boolean;
+}
+
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT']);
+
+function isIdempotentRequest(input: RequestInfo | URL, init: RequestInit | undefined, explicit: boolean): boolean {
+  if (explicit) return true;
+  const req = input instanceof Request ? input : null;
+  const method = (init?.method ?? req?.method ?? 'GET').toUpperCase();
+  const headers = new Headers(init?.headers ?? req?.headers);
+  if (headers.has('idempotency-key') || headers.has('idempotency-token')) return true;
+  return IDEMPOTENT_METHODS.has(method);
+}
+
+function isAbort(err: unknown, init: RequestInit | undefined): boolean {
+  if (init?.signal?.aborted) return true;
+  const name = (err as { name?: unknown } | null)?.name;
+  return name === 'AbortError' || name === 'TimeoutError';
 }
 
 const DEFAULT_OPTS: Required<Pick<FetchWithRetryOptions, 'maxAttempts' | 'baseBackoffMs' | 'maxTotalWaitMs'>> = {
@@ -34,17 +60,19 @@ export async function fetchWithRetry(
   opts: FetchWithRetryOptions = {},
 ): Promise<Response> {
   const cfg = { ...DEFAULT_OPTS, ...opts };
+  const idempotent = isIdempotentRequest(input, init, opts.retryNonIdempotent === true);
   let totalWait = 0;
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= cfg.maxAttempts; attempt++) {
     try {
       const resp = await fetch(input, init);
-      if (resp.status === 429 || resp.status >= 500) {
+      if (resp.status === 429 || (resp.status >= 500 && idempotent)) {
         if (attempt === cfg.maxAttempts) return resp;
         const wait = waitForResponse(resp, attempt, cfg);
         if (totalWait + wait > cfg.maxTotalWaitMs) return resp;
         opts.onRetry?.({ attempt, status: resp.status, waitMs: wait, reason: resp.status === 429 ? 'rate_limited' : 'server_error' });
+        await resp.body?.cancel().catch(() => undefined);
         await sleep(wait);
         totalWait += wait;
         continue;
@@ -52,7 +80,7 @@ export async function fetchWithRetry(
       return resp;
     } catch (err) {
       lastError = err;
-      if (attempt === cfg.maxAttempts) throw err;
+      if (!idempotent || isAbort(err, init) || attempt === cfg.maxAttempts) throw err;
       const wait = expBackoff(attempt, cfg.baseBackoffMs);
       if (totalWait + wait > cfg.maxTotalWaitMs) throw err;
       opts.onRetry?.({ attempt, status: null, waitMs: wait, reason: 'network_error' });
