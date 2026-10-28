@@ -9,6 +9,8 @@ export { encodeState, decodeState, encodeStateWithinEnvelope, oauthStateEnvelope
 export type { OAuthState, EncodeStateWithinEnvelopeOptions, EncodedStateWithinEnvelope } from './state';
 export { fetchWithRetry } from './fetch';
 export type { FetchWithRetryOptions } from './fetch';
+export { jobIsLive, LIVE_JOB_STATUSES } from './jobs';
+export type { JobDirective, JobStepArgs, SprigrJobsApi, SprigrJobRecord, SprigrJobStatus } from './jobs';
 export {
   bytesToBase64,
   base64ToBytes,

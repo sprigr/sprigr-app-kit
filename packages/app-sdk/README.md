@@ -74,6 +74,7 @@ export default {
 ## Misc
 
 - `fetchWithRetry` — rate-limit-header-aware, jittered retry
+- `jobIsLive(env.SPRIGR.jobs, jobId)` and the `env.SPRIGR.jobs` types (`JobDirective`, `JobStepArgs`, `SprigrJobsApi`, `SprigrJobRecord`), from 0.41.0. Import these instead of copying them. `jobs.get` resolves to the bare record; `jobIsLive` also accepts the `{ job }` envelope and treats a failed lookup as live.
 - `constantTimeEqual(a, b)` — bearer-secret verification
 - `encodeState` / `decodeState` — OAuth state base64url
 - `encodeStateWithinEnvelope(state, { installId, appSlug, optional? })` — `encodeState` that leaves room for the platform's signed envelope (500 chars, decision 0190). An optional field (default `returnTo`) that does not fit is left out whole, never shortened, with a `console.warn` naming the lengths; without `returnTo` the bouncer lands the user on the install's dashboard. Use it for any state that carries a caller-supplied value. `oauthStateEnvelopeOverhead` and `OAUTH_STATE_ENVELOPE_MAX_CHARS` expose the arithmetic.
