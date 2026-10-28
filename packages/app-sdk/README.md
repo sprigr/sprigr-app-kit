@@ -74,7 +74,7 @@ export default {
 ## Misc
 
 - `fetchWithRetry` — rate-limit-header-aware, jittered retry
-- `invokeWithBusyRetry(env, toolName, args, { maxAttempts, deadlineAt })` (0.41.0): retries `env.SPRIGR.invoke` only on the platform's 503 `platform_d1_export_busy`, which is sent before anything is dispatched, waiting 30 s between attempts and never past `deadlineAt`. Every other failure is rethrown, since it may follow a real dispatch. Use it in a job loop, not to stretch a single call.
+- `invokeWithBusyRetry(env, toolName, args, { maxAttempts, deadlineAt })` (0.44.0): retries `env.SPRIGR.invoke` only on the platform's 503 `platform_d1_export_busy`, which is sent before anything is dispatched, waiting 30 s between attempts and never past `deadlineAt`. Every other failure is rethrown, since it may follow a real dispatch. Use it in a job loop, not to stretch a single call.
 - `constantTimeEqual(a, b)` — bearer-secret verification
 - `encodeState` / `decodeState` — OAuth state base64url
 - `encodeStateWithinEnvelope(state, { installId, appSlug, optional? })` — `encodeState` that leaves room for the platform's signed envelope (500 chars, decision 0190). An optional field (default `returnTo`) that does not fit is left out whole, never shortened, with a `console.warn` naming the lengths; without `returnTo` the bouncer lands the user on the install's dashboard. Use it for any state that carries a caller-supplied value. `oauthStateEnvelopeOverhead` and `OAUTH_STATE_ENVELOPE_MAX_CHARS` expose the arithmetic.
