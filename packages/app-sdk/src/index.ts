@@ -495,13 +495,51 @@ export interface SprigrDataApi {
   /**
    * List the objectIDs that start with `prefix` (non-empty, so a listing is
    * always scoped). Returns at most 50000 with `truncated: true` past that.
+   * `truncated: false` is not proof of a complete listing: an index still
+   * settling a recent write can omit it, so never delete on one listing alone.
+   * Send `after` (`''` starts at the beginning) to page in objectID order;
+   * `next_after` is then the next call's `after`, null on the last page.
    * `?`-optional for older wrapper builds; `makeDataClient` and
    * `purgeIndexByPrefix` fall back to the install-token route.
    */
   listIds?(
     prefix: string,
+    opts?: SprigrDataIndexOpts & { withAcl?: boolean; after?: string },
+  ): Promise<SprigrDataListIdsResult>;
+  /**
+   * Which of up to 100 `objectIDs` the index holds, in request order, so a
+   * mirroring app can tell a new item from a changed one without listing the
+   * index. IDs only, so it works on the ACL index; single indexes only.
+   * `?`-optional: feature-detect, since older wrapper builds lack it.
+   */
+  exists?(
+    objectIDs: string[],
     opts?: SprigrDataIndexOpts & { withAcl?: boolean },
-  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean }>;
+  ): Promise<{ ok: boolean; existing: string[]; index: string }>;
+}
+
+/** The raw answer of {@link SprigrDataApi.listIds}; `makeDataClient` normalises it to `DataListIdsResult`. */
+export interface SprigrDataListIdsResult {
+  ok?: boolean;
+  objectIDs: string[];
+  total?: number;
+  truncated: boolean;
+  index?: string;
+  /** Present only when the call sent `after`: the next page's `after`, or null when done. */
+  next_after?: string | null;
+}
+
+/**
+ * `env.SPRIGR.registerWebhookTenant(tenantId, { path? })`: for an app whose
+ * manifest declares a `shared` webhook (one delivery URL fanned out per
+ * tenant). Call it at connect, and idempotently on token refresh, once the
+ * provider tenant id is known, so the shared receiver routes that tenant's
+ * events to this install. `path` picks the shared webhook when the manifest
+ * declares more than one. Throws when the manifest declares no matching
+ * shared webhook. `?`-optional: feature-detect.
+ */
+export interface SprigrWebhookTenantApi {
+  registerWebhookTenant?(tenantId: string, opts?: { path?: string }): Promise<{ ok: boolean }>;
 }
 
 /**
