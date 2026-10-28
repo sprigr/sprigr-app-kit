@@ -100,8 +100,17 @@ export interface WfpEmitReply {
   eventId?: string;
   /** False when the platform accepted the call but the enqueue itself failed. */
   queued?: boolean;
+  /** Set on a queued answer that delivered nothing new. */
+  settled?: EmitSettled;
   error?: string;
 }
+
+/**
+ * Why a queued emit delivered nothing new: `no_recipients` when no workflow or
+ * app subscribes to it, `deduped` when an emit with the same `dedupId` was
+ * already queued in the last 48 h (eventId is then the first emit's id).
+ */
+export type EmitSettled = 'no_recipients' | 'deduped';
 
 /** How the emit reached the platform. `none` means it never left. */
 export type EmitTransport = 'binding' | 'http' | 'none';
@@ -112,6 +121,8 @@ export interface EmitResult {
   /** Which transport carried it. Worth recording in an audit row: it makes the
    *  binding silently disappearing again visible without a redeploy. */
   via: EmitTransport;
+  /** Passed through from the platform's answer; see `EmitSettled`. */
+  settled?: EmitSettled;
   error?: string;
 }
 
@@ -246,7 +257,7 @@ export async function emitMarketplaceEvent(
       if (r && r.queued === false) {
         return { emitted: false, via: 'binding', eventId: r.eventId, error: r.error ?? 'not_queued' };
       }
-      return { emitted: r?.ok !== false, via: 'binding', eventId: r?.eventId };
+      return { emitted: r?.ok !== false, via: 'binding', eventId: r?.eventId, ...(r?.settled ? { settled: r.settled } : {}) };
     } catch (err) {
       return { emitted: false, via: 'binding', error: err instanceof Error ? err.message : String(err) };
     }
@@ -265,7 +276,7 @@ export async function emitMarketplaceEvent(
     if (reply.ok === false || reply.queued === false) {
       return { emitted: false, via: 'http', eventId: reply.eventId, error: reply.error ?? 'not_queued' };
     }
-    return { emitted: true, via: 'http', eventId: reply.eventId };
+    return { emitted: true, via: 'http', eventId: reply.eventId, ...(reply.settled ? { settled: reply.settled } : {}) };
   } catch (err) {
     return { emitted: false, via: 'http', error: err instanceof Error ? err.message : String(err) };
   }
