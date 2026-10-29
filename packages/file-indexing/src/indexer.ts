@@ -1302,3 +1302,9 @@ export async function fileActorStillConnected<TEntry, TEnv extends FileIndexingE
 ): Promise<boolean> {
   return adapter.isConnected ? adapter.isConnected(scope, env) : true;
 }
+
+// RED-FIRST SHIM (sprigr-app-kit#219, not for merge): the key-name helper the
+// new tests import, with none of #219's behaviour behind it.
+export function emptyWalkMarkerKey(walkKey: string): string {
+  return `${walkKey}#empty-walk`;
+}
