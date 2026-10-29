@@ -50,7 +50,8 @@ import type {
 export const MAX_WALK_PAGES = 8;
 
 /** Back-off before re-asking the platform to link an owner identity after a
- *  durable owner_not_found refusal (sprigr-team#9075). */
+ *  durable owner_not_found refusal (sprigr-team#9075), and how long a recorded
+ *  success skips the link call (sprigr-app-kit#227). */
 export const IDENTITY_LINK_BACKOFF_MS = 24 * 60 * 60 * 1000;
 
 /** How long a cursor may be held for files whose permissions could not be
@@ -115,7 +116,7 @@ export interface FileIndexingOutcome {
   extraScopesDeferred?: number;
   /** Stale rows removed by a completed full walk's reconcile. */
   reconciled?: number;
-  /** 0.2.1 (sprigr-apps#2690): this walk saw zero entries, the adapter
+  /** 0.2.5 (sprigr-apps#2690): this walk saw zero entries, the adapter
    *  confirmed the account empty, and another full walk was requested for the
    *  next pass: to make the second confirmation before rows go, or to finish
    *  a purge the deadline or a truncated listing cut short. */
@@ -165,6 +166,7 @@ function blankRow(): FileIndexingRow {
     walk_list_token: null,
     walk_start_token: null,
     identity_link_refused_at: null,
+    identity_linked_at: null,
     unresolved_held_since: null,
     acl_refresh_link: null,
     acl_refresh_completed_at: null,
@@ -265,16 +267,27 @@ async function indexScope<TEntry, TEnv extends FileIndexingEnv>(
       await store.setConnectedEmail(scope, email);
       // Restart the walk so every row already indexed is re-stamped with the owner.
       await store.resetCursor(scope);
-      row = { ...row, connected_email: email, cursor: null, walk_list_token: null, walk_start_token: null };
+      row = { ...row, connected_email: email, cursor: null, walk_list_token: null, walk_start_token: null, identity_linked_at: null };
       ctx.row = row;
       ctx.ownerEmail = email;
     }
   }
 
   // ── owner identity link (decision 0118), with the owner_not_found back-off ──
+  // The package's per-isolate memo does not outlive an isolate, and scheduled
+  // ticks usually land on a fresh one, so a store with the link marker skips
+  // the platform call for a day after a success (sprigr-app-kit#227).
   const refusedAt = row.identity_link_refused_at ?? null;
-  if (!refusedAt || now() - refusedAt >= IDENTITY_LINK_BACKOFF_MS) {
+  const linkedAt = row.identity_linked_at ?? null;
+  const linkAge = linkedAt === null ? null : now() - linkedAt;
+  const linkFresh = linkAge !== null && linkAge >= 0 && linkAge < IDENTITY_LINK_BACKOFF_MS;
+  if (!linkFresh && (!refusedAt || now() - refusedAt >= IDENTITY_LINK_BACKOFF_MS)) {
     const link = await recordAclIdentityLink(env, scope.actor, ctx.ownerEmail);
+    if (link.ok) {
+      await store.setIdentityLinked?.(scope, now());
+    } else if (linkedAt !== null) {
+      await store.setIdentityLinked?.(scope, null);
+    }
     if (!link.ok && link.reason === 'owner_not_found') {
       await store.setIdentityLinkRefused(scope, now());
     } else if (refusedAt) {

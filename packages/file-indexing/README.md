@@ -241,6 +241,7 @@ const msStore = createD1FileIndexingStore(env.DB, {
 | `walkResumeColumns` | a full walk keeps its listing continuation and pre-walk baseline in their own columns (google-workspace 0012). Without them, the walk's continuation is the cursor itself (microsoft-365, dropbox) |
 | `heldSinceColumn` | an INTEGER column that bounds the #2419 cursor hold. Neither app has it yet: add `ALTER TABLE <t> ADD COLUMN unresolved_held_since INTEGER` |
 | `aclRefreshColumns` | where `refreshAclPrincipals` keeps its continuation and last completion |
+| `identityLinkedColumn` | an INTEGER column recording the last accepted owner identity link (sprigr-app-kit#227). With it a pass skips `acl.linkIdentity` for `IDENTITY_LINK_BACKOFF_MS` (24 h) after a success; without it every pass on a fresh isolate pays the call. No app has it by default: add `ALTER TABLE <t> ADD COLUMN identity_linked_at INTEGER` in the app's own migration, then pass the name. Changing `connected_email`, disabling, or a failed or refused link clears it |
 
 ## Disconnect purge: you provide the queue
 
@@ -276,7 +277,7 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 1. **`purgeIndexPrefix` returns failures instead of throwing.** A drain that recorded a failure in its `catch` now gets `{ complete: false, error }` back and its `catch` never runs. Read `pass.error` where the `catch` used to set the row's last error or count a failure. Without that change the row still stays queued and is retried, but the failure is no longer recorded. `truncated` and `cut` now say why a pass was not complete.
 2. **`@sprigr/apps-app-sdk` is a peer dependency** (`>=0.14.0 <1`). Nothing to change if the app already depends on the SDK; its bundle drops the second copy.
 3. **`runExclusive` gets a fourth argument**, `{ env, deadline, now, purpose }`. Optional to use.
-4. **A completed full walk of an empty source now reconciles** (sprigr-apps#2690). 0.1.0 skipped the reconcile whenever the walk saw zero entries, so an emptied drive kept every row, full text searchable. Now every row under the prefix goes, but only when the walk reached its final page with no error, cut or hold and established a cursor. A truncated listing deletes the listed subset, and the next completed walk deletes more. An adapter with `reconcilePrefixes` is called with an empty seen list and decides which prefixes that covers (microsoft-365's returns none, so its SharePoint rows stay out of it). A direct `reconcileWalk` call must pass `{ completedWalk: true }` to get this. 0.2.1 tightened this rule; see "Upgrading to 0.2.1".
+4. **A completed full walk of an empty source now reconciles** (sprigr-apps#2690). 0.1.0 skipped the reconcile whenever the walk saw zero entries, so an emptied drive kept every row, full text searchable. Now every row under the prefix goes, but only when the walk reached its final page with no error, cut or hold and established a cursor. A truncated listing deletes the listed subset, and the next completed walk deletes more. An adapter with `reconcilePrefixes` is called with an empty seen list and decides which prefixes that covers (microsoft-365's returns none, so its SharePoint rows stay out of it). A direct `reconcileWalk` call must pass `{ completedWalk: true }` to get this. 0.2.5 tightened this rule; see "Upgrading to 0.2.5".
 5. **`drainPendingExtractions` never starts a row with 0 ms or less left.** `minItemMs: 0` used to start one at exactly the deadline; it now behaves like `minItemMs: 1`, so an app that passed `1` to get that behaviour can keep it or drop it.
 
 ## Upgrading from 0.1.1
@@ -300,11 +301,11 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 4. **`MAX_CONTENT_FILLS_PER_PASS` is 200** (was 100), and the drain imports in calls of up to 100 rows.
 5. **New:** `ContentFillOutcome.peakInFlight`, `EnrichSummary.attempted`, the `deadline` option of `enrichObjectsWithContent`, the optional `adapter.isThrottleError`, and the optional `env.SPRIGR.log` member (`FileIndexingLogEntry`). An app whose env already declares the app-sdk's `SprigrLogFn` fits it.
 
-## Upgrading to 0.2.1
+## Upgrading to 0.2.5
 
-0.2.1 (sprigr-apps#2690) needs no migration and no code change. It tightens the empty-walk rule 0.1.1 introduced, which deleted every row under the prefix on the FIRST completed walk that saw nothing. No consumer loses the empty-walk purge; every consumer gains the two-walk rule; adapters may add `confirmEmpty` for an independent check.
+0.2.5 (sprigr-apps#2690) needs no migration and no code change. It tightens the empty-walk rule 0.1.1 introduced, which deleted every row under the prefix on the FIRST completed walk that saw nothing. No consumer loses the empty-walk purge; every consumer gains the two-walk rule; adapters may add `confirmEmpty` for an independent check.
 
-1. **Rows go on the second consecutive completed empty walk, never the first.** The first records a marker and asks for another full walk on the next pass by setting the cursor to NULL, so an emptied account heals one walk later than before 0.2.1. See "Empty walks" above.
+1. **Rows go on the second consecutive completed empty walk, never the first.** The first records a marker and asks for another full walk on the next pass by setting the cursor to NULL, so an emptied account heals one walk later than before 0.2.5. See "Empty walks" above.
 2. **Optional: implement `confirmEmpty`.** Each of the two walks must then also be confirmed by it; `false` or a throw deletes nothing.
 3. **The empty-walk purge is bounded by the pass deadline** and resumes on the next full walk. The non-empty diff is unchanged.
 4. **New:** `adapter.confirmEmpty`, `outcome.emptyWalkFollowUp`, `EMPTY_WALKS_BEFORE_PURGE`, `emptyWalkMarkerKey`. A direct `reconcileWalk(..., { completedWalk: true })` call follows the same rule and keeps returning the number of rows removed.

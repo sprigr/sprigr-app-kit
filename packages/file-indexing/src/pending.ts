@@ -147,6 +147,12 @@ export async function drainPendingExtractions(
           await store.deletePendingExtraction(row.object_id);
           continue;
         }
+        // A slow poll can end past the deadline: leave the row queued rather
+        // than start an index write the dispatch may cut.
+        if (remainingBudgetMs(deadline, now) < 0) {
+          deferred = pending.length - i;
+          break;
+        }
         record.content = capText(text, { label, what: row.object_id, alreadyTruncated: result?.truncated === true });
         await importFileObjects(env, [record], { label });
         await store.deletePendingExtraction(row.object_id);
