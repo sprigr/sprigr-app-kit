@@ -34,7 +34,7 @@ export function emailAudience(input: EmailAudienceInput): AppApprovalAudience | 
       const trimmed = raw.trim();
       if (!trimmed) continue;
       const angled = trimmed.match(/<([^<>]+)>\s*$/);
-      const addr = (angled ? angled[1] : trimmed).trim().toLowerCase();
+      const addr = (angled?.[1] ?? trimmed).trim().toLowerCase();
       if (!BARE_ADDRESS.test(addr)) return undefined;
       if (!out.includes(addr)) out.push(addr);
     }
