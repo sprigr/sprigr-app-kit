@@ -17,7 +17,7 @@ export { UNIT_SEP, approvalHash, set, seq } from './approval-hash';
 export { APPROVAL_PREVIEW_MAX, approvalPreview, approvalRecipients } from './approval-card';
 export { emailPreview, fieldsPreview, smsPreview } from './approval-preview';
 export type { EmailPreviewInput, SmsPreviewInput } from './approval-preview';
-export { emailAudience } from './approval-audience';
+export { MAX_AUDIENCE_NAME_CHARS, emailAudience } from './approval-audience';
 export type { EmailAudienceInput, RecipientInput } from './approval-audience';
 export { InvalidUndoEnvelopeError, fullWarning, recreatedWarning, undoEnvelope } from './undo-envelope';
 export { archiveOfferRefusal, refuseWithoutForce } from './refuse-without-force';
