@@ -3,7 +3,7 @@
  * not finish in one call.
  *
  * purgeActor deletes an actor's rows under a deadline and a capped listing,
- * so a large index can leave rows behind. Before 0.2.0 only an app with its
+ * so a large index can leave rows behind. Before 0.2.4 only an app with its
  * own queue (microsoft-365's migration 0023) finished them; elsewhere the
  * rows stayed searchable under the person's principals until they ran the
  * disconnect again. Now each unfinished prefix is recorded in the app's

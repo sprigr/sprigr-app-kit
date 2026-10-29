@@ -59,6 +59,11 @@ export interface D1FileIndexingStoreConfig {
   aclRefreshColumns?: { link: string; completedAt: string };
   /** Column holding the identity-link refusal time (default identity_link_refused_at). */
   identityLinkRefusedColumn?: string;
+  /** Optional INTEGER column holding when the platform last accepted the owner
+   *  identity link for the row's connected_email (sprigr-app-kit#227). With it
+   *  a pass skips the link call for IDENTITY_LINK_BACKOFF_MS after a success.
+   *  No app has it by default: add it in the app's own migration, then pass it. */
+  identityLinkedColumn?: string;
   /** google-workspace writes the agent id on user rows; microsoft-365 writes NULL
    *  there. Only affects `enable`. Default true. */
   storeAgentIdForUsers?: boolean;
@@ -114,6 +119,7 @@ export function createD1FileIndexingStore(
     ? ident(config.aclRefreshColumns.completedAt, 'aclRefreshColumns.completedAt')
     : null;
   const REFUSED = ident(config.identityLinkRefusedColumn ?? 'identity_link_refused_at', 'identityLinkRefusedColumn');
+  const LINKED = config.identityLinkedColumn ? ident(config.identityLinkedColumn, 'identityLinkedColumn') : null;
   const redact = config.redact ?? defaultRedact;
   const clock = config.now ?? Date.now;
   const storeAgentIdForUsers = config.storeAgentIdForUsers !== false;
@@ -148,6 +154,7 @@ export function createD1FileIndexingStore(
       walk_list_token: LIST ? str(raw[LIST]) : null,
       walk_start_token: START ? str(raw[START]) : null,
       identity_link_refused_at: num(raw[REFUSED]),
+      identity_linked_at: LINKED ? num(raw[LINKED]) : null,
       unresolved_held_since: HELD ? num(raw[HELD]) : null,
       acl_refresh_link: REFRESH_LINK ? str(raw[REFRESH_LINK]) : null,
       acl_refresh_completed_at: REFRESH_DONE ? num(raw[REFRESH_DONE]) : null,
@@ -170,6 +177,8 @@ export function createD1FileIndexingStore(
   }
 
   const walkReset = LIST && START ? `, ${LIST} = NULL, ${START} = NULL` : '';
+  // The link marker vouches for one address on an enabled row only.
+  const linkedReset = LINKED ? `, ${LINKED} = NULL` : '';
 
   const store: FileIndexingStore = {
     hasWalkResumeColumns: !!(LIST && START),
@@ -250,7 +259,7 @@ export function createD1FileIndexingStore(
     async disable(scope) {
       const row = await store.load(scope);
       if (!row) return false;
-      await update(scope, 'enabled = 0', []);
+      await update(scope, `enabled = 0${linkedReset}`, []);
       return true;
     },
 
@@ -308,8 +317,13 @@ export function createD1FileIndexingStore(
       await update(scope, `${REFUSED} = ?`, [refusedAt]);
     },
 
+    async setIdentityLinked(scope, linkedAt) {
+      if (!LINKED) return;
+      await update(scope, `${LINKED} = ?`, [linkedAt]);
+    },
+
     async setConnectedEmail(scope, email) {
-      await update(scope, 'connected_email = ?', [email]);
+      await update(scope, `connected_email = ?${linkedReset}`, [email]);
     },
 
     async setFullWalkActive(scope, active) {
