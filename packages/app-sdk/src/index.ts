@@ -162,6 +162,7 @@ export {
 } from './app-files';
 export type {
   AppFilesEnv,
+  AppFilesCallOptions,
   PutAppFileArgs,
   PutAppFileResult,
   PutAppFileStreamArgs,
@@ -848,9 +849,27 @@ export interface WebhookArgs {
   headers?: Record<string, string>;
 }
 
+/**
+ * The args a manifest schedule's handler receives: the dispatcher's POST
+ * body, passed through by the wrapper. `deadline_at` / `dispatch_timeout_ms`
+ * say when the dispatcher stops waiting; read them instead of hard-coding it.
+ */
 export interface ScheduleArgs {
-  name: string;
+  /** The manifest schedule's name. */
+  schedule: string;
+  cron?: string;
+  timezone?: string;
+  /** The slot this fire is for (ISO). */
   scheduled_at?: string;
+  /** When the dispatcher fired it (ISO). */
+  fired_at?: string;
+  /** The platform's id for this fire; echo it in env.SPRIGR.log() to join the fire rows. */
+  fire_id?: string;
+  /** When the dispatcher stops waiting for this handler (ISO). */
+  deadline_at?: string;
+  dispatch_timeout_ms?: number;
+  /** @deprecated Never sent by the dispatcher; use `schedule`. */
+  name?: string;
 }
 
 export interface EventArgs {

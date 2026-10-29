@@ -16,9 +16,17 @@
  * and physically cannot escape its namespace.
  */
 
+import { describeMissingBridge, installTokenPost, resolveInstallBridge, type InstallBridge, type WfpBridgeEnv } from './wfp-bridge';
+
 export interface AppFilesEnv {
   SPRIGR_INSTALL_TOKEN?: string;
   SPRIGR_PLATFORM_BASE?: string;
+}
+
+/** Per-call transport options. */
+export interface AppFilesCallOptions {
+  /** Abort the platform request after this many ms. No timeout when omitted. */
+  timeoutMs?: number;
 }
 
 export interface PutAppFileArgs {
@@ -92,12 +100,6 @@ export interface AppFileListItem {
   contentType?: string;
 }
 
-const DEFAULT_PLATFORM_BASE = 'https://webhooks.sprigr.com';
-
-function platformBase(env: AppFilesEnv): string {
-  return (env.SPRIGR_PLATFORM_BASE ?? DEFAULT_PLATFORM_BASE).trim().replace(/\/+$/, '');
-}
-
 class AppFilesError extends Error {
   status: number;
   constructor(message: string, status: number) {
@@ -107,12 +109,13 @@ class AppFilesError extends Error {
   }
 }
 
-function requireToken(env: AppFilesEnv): string {
-  const token = env.SPRIGR_INSTALL_TOKEN;
-  if (!token) {
-    throw new AppFilesError('app file storage unavailable: SPRIGR_INSTALL_TOKEN unset', 500);
+/** The install bridge, failing closed: no production default for the base. */
+function requireBridge(env: AppFilesEnv): InstallBridge {
+  const bridge = resolveInstallBridge(env as WfpBridgeEnv);
+  if (!bridge) {
+    throw new AppFilesError(`app file storage unavailable: ${describeMissingBridge(env as WfpBridgeEnv)}`, 500);
   }
-  return token;
+  return bridge;
 }
 
 async function parseResult<T>(res: Response, op: string): Promise<T> {
@@ -135,27 +138,28 @@ async function parseResult<T>(res: Response, op: string): Promise<T> {
   return parsed as T;
 }
 
-async function call<T>(env: AppFilesEnv, op: string, body: unknown): Promise<T> {
-  const token = requireToken(env);
-  const res = await fetch(`${platformBase(env)}/internal/wfp/file/${op}`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${token}`,
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body ?? {}),
-  });
-  return parseResult<T>(res, op);
+async function call<T>(env: AppFilesEnv, op: string, body: unknown, opts?: AppFilesCallOptions): Promise<T> {
+  const bridge = requireBridge(env);
+  try {
+    return (await installTokenPost(bridge, `/internal/wfp/file/${op}`, body ?? {}, {
+      label: `app file ${op}`,
+      timeoutMs: opts?.timeoutMs,
+    })) as T;
+  } catch (err) {
+    const e = err as Error & { status?: number; error?: string; detail?: string };
+    if (typeof e.status !== 'number') throw err;
+    throw new AppFilesError(`app file ${op} failed (${e.status}): ${e.detail ?? e.error}`, e.status);
+  }
 }
 
 /** Store bytes in the app's contained R2 namespace (base64 JSON). */
-export function putAppFile(env: AppFilesEnv, args: PutAppFileArgs): Promise<PutAppFileResult> {
+export function putAppFile(env: AppFilesEnv, args: PutAppFileArgs, opts?: AppFilesCallOptions): Promise<PutAppFileResult> {
   return call<PutAppFileResult>(env, 'put', {
     key: args.key,
     base64: args.base64,
     contentType: args.contentType,
     filename: args.filename,
-  });
+  }, opts);
 }
 
 const STREAM_PUT_MAX_ATTEMPTS = 3;
@@ -195,9 +199,9 @@ export async function putAppFileStream(
   env: AppFilesEnv,
   args: PutAppFileStreamArgs,
 ): Promise<PutAppFileResult> {
-  const token = requireToken(env);
+  const bridge = requireBridge(env);
   const headers: Record<string, string> = {
-    authorization: `Bearer ${token}`,
+    authorization: `Bearer ${bridge.token}`,
     'content-type': args.contentType || 'application/octet-stream',
     'x-app-file-key': args.key,
     'x-app-file-content-type': args.contentType || 'application/octet-stream',
@@ -212,7 +216,7 @@ export async function putAppFileStream(
 
   let lastErr: unknown;
   for (let attempt = 1; attempt <= attempts; attempt++) {
-    const res = await fetch(`${platformBase(env)}/internal/wfp/file/put-stream`, {
+    const res = await fetch(`${bridge.base}/internal/wfp/file/put-stream`, {
       method: 'POST',
       headers,
       body: args.body,
@@ -238,24 +242,25 @@ export async function putAppFileStream(
 }
 
 /** Mint a signed, time-limited download URL for an app file. */
-export function appFileUrl(env: AppFilesEnv, args: AppFileUrlArgs): Promise<AppFileUrlResult> {
-  return call<AppFileUrlResult>(env, 'url', { key: args.key, expiresIn: args.expiresIn });
+export function appFileUrl(env: AppFilesEnv, args: AppFileUrlArgs, opts?: AppFilesCallOptions): Promise<AppFileUrlResult> {
+  return call<AppFileUrlResult>(env, 'url', { key: args.key, expiresIn: args.expiresIn }, opts);
 }
 
 /** Read an app file back as base64. */
-export function getAppFile(env: AppFilesEnv, key: string): Promise<GetAppFileResult> {
-  return call<GetAppFileResult>(env, 'get', { key });
+export function getAppFile(env: AppFilesEnv, key: string, opts?: AppFilesCallOptions): Promise<GetAppFileResult> {
+  return call<GetAppFileResult>(env, 'get', { key }, opts);
 }
 
 /** List app files under an optional app-relative prefix. */
 export function listAppFiles(
   env: AppFilesEnv,
   prefix?: string,
+  opts?: AppFilesCallOptions,
 ): Promise<{ ok: true; files: AppFileListItem[]; truncated: boolean }> {
-  return call(env, 'list', { prefix });
+  return call(env, 'list', { prefix }, opts);
 }
 
 /** Delete an app file. */
-export function deleteAppFile(env: AppFilesEnv, key: string): Promise<{ ok: true; key: string }> {
-  return call(env, 'delete', { key });
+export function deleteAppFile(env: AppFilesEnv, key: string, opts?: AppFilesCallOptions): Promise<{ ok: true; key: string }> {
+  return call(env, 'delete', { key }, opts);
 }
