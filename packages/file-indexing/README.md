@@ -221,6 +221,7 @@ const msStore = createD1FileIndexingStore(env.DB, {
 | `walkResumeColumns` | a full walk keeps its listing continuation and pre-walk baseline in their own columns (google-workspace 0012). Without them, the walk's continuation is the cursor itself (microsoft-365, dropbox) |
 | `heldSinceColumn` | an INTEGER column that bounds the #2419 cursor hold. Neither app has it yet: add `ALTER TABLE <t> ADD COLUMN unresolved_held_since INTEGER` |
 | `aclRefreshColumns` | where `refreshAclPrincipals` keeps its continuation and last completion |
+| `identityLinkedColumn` | an INTEGER column recording the last accepted owner identity link (sprigr-app-kit#227). With it a pass skips `acl.linkIdentity` for `IDENTITY_LINK_BACKOFF_MS` (24 h) after a success; without it every pass on a fresh isolate pays the call. No app has it by default: add `ALTER TABLE <t> ADD COLUMN identity_linked_at INTEGER` in the app's own migration, then pass the name. Changing `connected_email`, disabling, or a failed or refused link clears it |
 
 ## Disconnect purge: you provide the queue
 

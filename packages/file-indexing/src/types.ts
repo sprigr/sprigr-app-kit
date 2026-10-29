@@ -405,6 +405,9 @@ export interface FileIndexingRow {
   /** Baseline captured when the full walk began (stores with resume columns). */
   walk_start_token: string | null;
   identity_link_refused_at: number | null;
+  /** When the platform last accepted the owner identity link for
+   *  connected_email. Null without the store's identityLinkedColumn. */
+  identity_linked_at?: number | null;
   unresolved_held_since: number | null;
   acl_refresh_link: string | null;
   acl_refresh_completed_at: number | null;
@@ -452,6 +455,9 @@ export interface FileIndexingStore {
   recordError(scope: FileIndexingScope, error: string): Promise<void>;
   resetCursor(scope: FileIndexingScope): Promise<void>;
   setIdentityLinkRefused(scope: FileIndexingScope, refusedAt: number | null): Promise<void>;
+  /** Record (or clear, with null) a successful owner identity link. Optional:
+   *  a store without it links on every pass, as before 0.2.3. */
+  setIdentityLinked?(scope: FileIndexingScope, linkedAt: number | null): Promise<void>;
   setConnectedEmail(scope: FileIndexingScope, email: string): Promise<void>;
   setFullWalkActive(scope: FileIndexingScope, active: boolean): Promise<void>;
   setUnresolvedHeldSince(scope: FileIndexingScope, since: number | null): Promise<void>;
