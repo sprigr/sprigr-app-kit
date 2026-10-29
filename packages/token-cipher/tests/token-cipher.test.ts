@@ -18,8 +18,9 @@ const REFRESH: Field = 'gws_actor_tokens.refresh_token';
 const ACCESS: Field = 'gws_actor_tokens.access_token';
 
 const base = { binding: 'GOOGLE_WORKSPACE_TOKEN_KEK', provider: 'Google' } as const;
-const encrypting = (kek: string | undefined = KEK) => tokenCipher<Field>({ ...base, kek, mode: 'encrypt' });
-const decryptOnly = (kek: string | undefined = KEK) => tokenCipher<Field>({ ...base, kek, mode: 'decrypt-only' });
+// `null` is "no key bound": a default parameter would turn undefined back into KEK.
+const encrypting = (kek: string | null = KEK) => tokenCipher<Field>({ ...base, kek, mode: 'encrypt' });
+const decryptOnly = (kek: string | null = KEK) => tokenCipher<Field>({ ...base, kek, mode: 'decrypt-only' });
 
 async function errorOf(p: Promise<unknown>): Promise<TokenKeyError> {
   try {
@@ -60,7 +61,7 @@ describe('tokenCipher', () => {
 
   it('a sealed value with no KEK bound throws TokenKeyError naming the field and binding, never the value', async () => {
     const sealed = await encrypting().seal(TOKEN);
-    const err = await errorOf(encrypting(undefined).open(sealed, REFRESH));
+    const err = await errorOf(encrypting(null).open(sealed, REFRESH));
     expect(err.message).toContain(REFRESH);
     expect(err.message).toContain('GOOGLE_WORKSPACE_TOKEN_KEK');
     expect(err.message).toContain('Nothing was sent to Google; contact support.');
@@ -82,11 +83,11 @@ describe('tokenCipher', () => {
   });
 
   it('a seal with no usable KEK throws TokenKeyError in encrypt mode only', async () => {
-    const err = await errorOf(encrypting(undefined).seal(TOKEN));
+    const err = await errorOf(encrypting(null).seal(TOKEN));
     expect(err.message).toMatch(/^this install's GOOGLE_WORKSPACE_TOKEN_KEK is missing or unusable, so a Google credential was not stored \(/);
     expect(err.message).toMatch(/\. Contact support\.$/);
     expect(err.message).not.toContain(TOKEN);
-    expect(await decryptOnly(undefined).seal(TOKEN)).toBe(TOKEN);
+    expect(await decryptOnly(null).seal(TOKEN)).toBe(TOKEN);
   });
 
   it('the wording options carry the per-app differences', async () => {
