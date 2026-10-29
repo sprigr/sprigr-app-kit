@@ -201,7 +201,7 @@ const defaultManifest = {
     {
       file: "migrations/0001_init.sql",
       version: 1,
-      description: "Initial schema: settings + secrets key-value tables.",
+      description: "Initial schema: settings + secrets key-value tables, plus the idempotent-write claims table.",
     },
   ],
   tools: [
@@ -209,14 +209,24 @@ const defaultManifest = {
       name: `${SLUG_U}_tool`,
       description: `TODO: describe what the ${NAME} agent tool does. Agents pick tools by this description.`,
       handler: `src/handlers/${SLUG}-tool.ts`,
-      // Add `effects: "write"` to a tool whose action MUTATES but whose name
-      // reads like a read (`*_or_create_*`, `sync_*`, `reconcile_*`,
-      // `list_and_stage_batch`). It forces the platform's write dispatch tier:
-      // shorter budget, no blind auto-retry after a timeout, idempotency token
-      // forwarded. Omit it and the platform's name heuristic decides, which is
-      // the behaviour every app has today. See docs/marketplace-app-development.md
-      // section 2, "Declaring a tool's side effects".
-      // effects: "write",
+      // If this tool MUTATES, declare BOTH of the next two lines together, and
+      // wire the matching dedup block in src/handlers/${SLUG}-tool.ts:
+      //
+      //   effects: "write",                   // force the write dispatch tier
+      //   idempotency: { mode: "request" },   // get a content-stable write key
+      //
+      // `effects: "write"` forces the write tier (shorter budget, no blind
+      // auto-retry after a timeout) for a mutating action whose NAME reads like
+      // a read (`*_or_create_*`, `sync_*`, `reconcile_*`, `list_and_stage_batch`).
+      // `idempotency: { mode: "request" }` makes the platform forward a
+      // content-stable `args._write_key`, so the agent's verify-then-retry of a
+      // timed-out write (and, from sprigr-team decision 0294 onward, the
+      // platform's own retry) is deduped by makeIdempotentWrite against the
+      // ${SLUG_U}_write_keys table instead of writing twice. Declare them as a
+      // PAIR: a write tier with no idempotency loses the retry under 0294.
+      // Omit both and the name heuristic decides, the behaviour every app has
+      // today. See docs/marketplace-app-development.md section 2, "Declaring a
+      // tool's side effects".
       input_schema: {
         type: "object",
         properties: {
@@ -479,6 +489,21 @@ CREATE TABLE ${SLUG_U}_settings (
   key             TEXT PRIMARY KEY,
   value           TEXT NOT NULL,
   updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Idempotent-write claims for a tool that declares \`idempotency: { mode:
+-- 'request' }\` (sprigr-team decision 0260). The platform forwards a
+-- content-stable \`args._write_key\`; makeIdempotentWrite (see the write-tool
+-- block in src/handlers/${SLUG}-tool.ts) claims it here so a timed-out write's
+-- retry replays the first outcome instead of writing twice. Harmless if no
+-- tool is a write yet: it just stays empty. Rows are swept, not indexed (D1
+-- rows are a bill).
+CREATE TABLE ${SLUG_U}_write_keys (
+  id              TEXT PRIMARY KEY,
+  state           TEXT NOT NULL,   -- running | done | interrupted | unknown
+  result          TEXT,            -- JSON of the result once done
+  claimed_at      TEXT NOT NULL,   -- ISO 8601
+  expires_at      TEXT NOT NULL    -- ISO 8601
 );
 `;
 
@@ -1005,11 +1030,32 @@ import type { ${PASCAL}Env } from '../lib/env';
 
 interface ToolArgs {
   action: string;
+  // Set by the platform ONLY when this tool declares
+  // \`idempotency: { mode: 'request' }\` in sprigr-app.json: a content-stable key
+  // (turn + step + tool + input, no per-call id) that dedups a write across the
+  // agent's, and from sprigr-team decision 0294 the platform's, retry.
+  _write_key?: string;
 }
 
 type ToolResult = { ok: true; result: unknown } | { ok: false; reason: string };
 
 export async function runTool(env: ${PASCAL}Env, args: ToolArgs): Promise<ToolResult> {
+  // ── Is this a WRITE tool? Dedup the mutation so a retried timeout cannot
+  // write twice. Declare \`effects: "write"\` + \`idempotency: { mode: "request" }\`
+  // in sprigr-app.json (as a pair), add the dep (\`pnpm add
+  // @sprigr/apps-dedup-latch@0.2.0\`), then uncomment this block. The
+  // ${SLUG_U}_write_keys table is already created by migrations/0001_init.sql.
+  //
+  //   import { makeIdempotentWrite, idempotentToolResult } from '@sprigr/apps-dedup-latch';
+  //
+  //   const writes = makeIdempotentWrite({ db: env.DB, table: '${SLUG_U}_write_keys' });
+  //   const outcome = await writes.run(args._write_key, async () => {
+  //     // The real mutation. Its return value is stored and replayed verbatim
+  //     // on a deduped retry, so a timed-out write never runs twice.
+  //     return await doTheWrite(env, args);
+  //   });
+  //   return idempotentToolResult(outcome) as ToolResult;
+
   // TODO: implement the real tool. env.DB is the per-install D1.
   return { ok: false, reason: \`not implemented (action=\${args.action})\` };
 }
