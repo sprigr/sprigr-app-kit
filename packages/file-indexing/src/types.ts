@@ -456,7 +456,7 @@ export interface FileIndexingStore {
   resetCursor(scope: FileIndexingScope): Promise<void>;
   setIdentityLinkRefused(scope: FileIndexingScope, refusedAt: number | null): Promise<void>;
   /** Record (or clear, with null) a successful owner identity link. Optional:
-   *  a store without it links on every pass, as before 0.1.5. */
+   *  a store without it links on every pass, as before 0.2.3. */
   setIdentityLinked?(scope: FileIndexingScope, linkedAt: number | null): Promise<void>;
   setConnectedEmail(scope: FileIndexingScope, email: string): Promise<void>;
   setFullWalkActive(scope: FileIndexingScope, active: boolean): Promise<void>;
