@@ -454,6 +454,15 @@ export async function drainContentFills<TEntry>(
     if (object) ready.push({ row, object });
   }
   for (let i = 0; i < ready.length; i += CONTENT_FILL_IMPORT_CHUNK) {
+    // A row in flight at the deadline finishes after it, and an index write
+    // started then can outlive the dispatch. Checked against the tick deadline,
+    // not the fill slice; unwritten rows stay queued for the next pass.
+    if (opts.deadline && remainingBudgetMs(opts.deadline, now) < 0) {
+      const rest = ready.length - i;
+      console.warn(`${label} content-fill drain: tick deadline passed before the index write; ${rest} row(s) stay queued`);
+      out.waiting += rest;
+      break;
+    }
     const chunk = ready.slice(i, i + CONTENT_FILL_IMPORT_CHUNK);
     try {
       await importFileObjects(
