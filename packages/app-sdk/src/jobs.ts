@@ -54,7 +54,21 @@ export interface SprigrJobsApi {
   get(jobId: string): Promise<SprigrJobRecord>;
   signal(jobId: string, payload?: unknown): Promise<{ ok: boolean; delivered: boolean }>;
   cancel(jobId: string): Promise<{ ok: boolean; status: string }>;
-  list(args?: { name?: string; status?: string; limit?: number }): Promise<{ ok: boolean; jobs: SprigrJobRecord[] }>;
+  /** The wrapper resolves to the bare array; read it with {@link listedJobs}, never `.jobs`. */
+  list(args?: { name?: string; status?: string; limit?: number }): Promise<SprigrJobsListResult>;
+}
+
+/** What `jobs.list` resolves to: the bare array today, or a `{ jobs }` envelope from another host. */
+export type SprigrJobsListResult = SprigrJobRecord[] | { ok?: boolean; jobs?: SprigrJobRecord[] };
+
+/**
+ * The records in a `jobs.list` answer, whichever shape it came in. Reading
+ * `.jobs` off the bare array gives undefined, which a "is a run already live?"
+ * guard reads as none and starts a duplicate.
+ */
+export function listedJobs(res: SprigrJobsListResult | null | undefined): SprigrJobRecord[] {
+  if (Array.isArray(res)) return res;
+  return Array.isArray(res?.jobs) ? res.jobs : [];
 }
 
 /** The statuses in which a job can still take another step. */
