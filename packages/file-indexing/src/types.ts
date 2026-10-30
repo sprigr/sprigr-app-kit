@@ -380,6 +380,20 @@ export interface FileSourceAdapter<TEntry = unknown, TEnv extends FileIndexingEn
   /** Prefixes a disconnect purges. Default `[objectIdPrefix(ctx)]`. */
   purgePrefixes?(ctx: FileIndexingContext<TEnv>): Promise<string[]>;
 
+  /** 0.2.5 (sprigr-apps#2690): an INDEPENDENT check, made at reconcile time,
+   *  that the account really holds nothing, asked only after a completed full
+   *  walk saw zero entries while the index still holds rows under the prefix.
+   *  Resolve true only on positive proof (dropbox: a fresh non-recursive
+   *  `files/list_folder` of the root answering `entries: []` with
+   *  `has_more: false`); resolve false when the source shows anything; throw
+   *  when the check itself failed. The deadline is on `ctx.deadline`.
+   *
+   *  Optional. Every empty walk needs two consecutive completed full walks
+   *  before rows go; with this hook each of those walks must ALSO be
+   *  confirmed, so a broken empty listing cannot wipe an account on its own
+   *  (see the README's "Empty walks"). */
+  confirmEmpty?(ctx: FileIndexingContext<TEnv>): Promise<boolean>;
+
   /** sprigr-apps#2211: an IDs-and-parents enumeration of the whole source on
    *  its OWN continuation, for the permission re-stamp pass. Opt-in: an adapter
    *  whose change feed already reports sharing changes leaves it out. */

@@ -23,7 +23,7 @@ The package owns everything that must behave the same for every provider:
 | Unreadable permissions | A transient permission failure holds the cursor at that page so the file is retried (sprigr-apps#2419), bounded by `MAX_UNRESOLVED_HOLD_MS` |
 | Content | Text-like files up to 256 KB, native exports, and PDF/OOXML through the platform extract bridge (5 per pass, staged under random single-use keys); pptx drains as a durable job. Binaries of 16 MiB or more stay metadata-only. Text is capped at 32000 chars, and a cut is logged and marked |
 | Content backlog | A file the pass could not fetch text for (the deadline passed, the 5-binary cap was spent, its drive answered 429, or the fetch threw) is queued for a content fill and filled by later passes of the same scope, 4 rows at a time (sprigr-apps#2725); `outcome.contentPending` counts what still waits (sprigr-apps#2702) |
-| Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty). A completed walk that saw NOTHING (the user emptied the drive) deletes every row under the prefix; on a truncated listing it deletes the listed subset and the next completed walk continues. An errored, cut or held walk, or one that established no cursor, deletes nothing (sprigr-apps#2690) |
+| Reconcile | A completed full walk deletes index rows the walk did not see (diff of `data.listIds`, never on uncertainty). A completed walk that saw NOTHING (the user emptied the drive) deletes rows only on the second consecutive such walk, each also confirmed by the adapter's `confirmEmpty` when it has one; see "Empty walks" below (sprigr-apps#2690). An errored, cut or held walk, or one that established no cursor, deletes nothing |
 | Events | `<prefix>.file.created/updated/deleted` on incremental passes, with no per-run cap (sprigr-apps#2521). Pages are emitted in order, but the events WITHIN a page go out with bounded concurrency (`DEFAULT_FETCH_CONCURRENCY`, 6), so their order is not guaranteed; a subscriber that cares orders by `modifiedAt` |
 | Disconnect | `purgeActor` switches indexing off, unlinks the owner identity and deletes the scope's rows (sprigr-apps#2355) |
 | Sharing-only changes | Opt-in `refreshAclPrincipals` re-stamps `acl_principals` with `data.partialUpdate({ withAcl: true })`, leaving content alone (sprigr-apps#2211) |
@@ -149,8 +149,28 @@ export const dropboxAdapter: FileSourceAdapter<Entry, DropboxEnv> = {
 
   downloadText: async (o, ctx) => (await dbxDownload(ctx, String(o.fileId))).text(),
   downloadBinary: (o, ctx) => dbxDownload(ctx, String(o.fileId)),
+
+  // Asked only after a completed full walk saw nothing while rows remain:
+  // a fresh, NON-recursive root listing, independent of the walk's cursor.
+  async confirmEmpty(ctx) {
+    const res = await dbx(ctx, 'files/list_folder', { path: '', recursive: false, limit: 1 });
+    if (!res.ok) throw new Error(`confirm_empty: list_folder ${res.status}`); // a failure is never "empty"
+    return res.entries.length === 0 && res.has_more === false;
+  },
 };
 ```
+
+## Empty walks: when an emptied account sheds its rows
+
+A completed full walk that sees zero entries would make every indexed row look stale, and that is exactly what a broken or transient empty listing looks like too. So an empty walk deletes rows only when ALL of these hold (sprigr-apps#2690):
+
+1. **The walk completed normally**: it reached its final page with no error, deadline cut or permission hold, established a cursor, and the walk state did not move under it (the same gates every reconcile has).
+2. **Two consecutive completed empty walks** (`EMPTY_WALKS_BEFORE_PURGE`). The first records a marker and sets the cursor to NULL, so the very next pass is another full walk (`outcome.emptyWalkFollowUp: true`); nobody has to toggle indexing. The second deletes. Any completed full walk that sees entries clears the marker, and so do `purgeActor` and `store.enable`.
+3. **When the adapter has `confirmEmpty`, each of those walks is also confirmed independently.** `confirmEmpty(ctx)` is asked at reconcile time and must resolve `true`. It should be a separate, cheap read that proves emptiness (dropbox: a non-recursive root `files/list_folder` answering `entries: []` and `has_more: false`). `false` deletes nothing and leaves the marker where it was. A throw deletes nothing, leaves the marker where it was, and records `reconcile_failed: ...` with the cursor kept, so the next pass walks again. Without the hook (microsoft-365 and google-workspace today) the two walks alone decide; adding one makes a broken empty listing unable to wipe an account on its own.
+
+The marker needs no migration: it is one row per counted empty walk in the walk-seen table every app already has, under `emptyWalkMarkerKey(walkKey)` (`<walkKey>#empty-walk`), a key no real walk uses, so `clearWalkSeen(walkKey)` leaves it alone. A custom store needs nothing new either.
+
+The purge lists each prefix (`reconcilePrefixes([], ctx)` when the adapter has it, else `objectIdPrefix(ctx)`; install-scoped ids with another actor indexing are still skipped), logs a `console.warn` naming the prefix and row count, then deletes `PURGE_DELETE_CHUNK` ids at a time while at least `MIN_PURGE_LEG_MS` of the pass deadline is left. A deadline cut or a truncated listing asks for another full walk, which must again be a completed empty walk (and confirmed, with the hook) before it deletes the rest. With nothing indexed under the prefixes there is nothing to protect: `confirmEmpty` is not asked and no follow-up walk runs, so a brand-new empty account costs one walk.
 
 ### Serialising passes: `runExclusive`
 
@@ -261,7 +281,7 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 1. **`purgeIndexPrefix` returns failures instead of throwing.** A drain that recorded a failure in its `catch` now gets `{ complete: false, error }` back and its `catch` never runs. Read `pass.error` where the `catch` used to set the row's last error or count a failure. Without that change the row still stays queued and is retried, but the failure is no longer recorded. `truncated` and `cut` now say why a pass was not complete.
 2. **`@sprigr/apps-app-sdk` is a peer dependency** (`>=0.14.0 <1`). Nothing to change if the app already depends on the SDK; its bundle drops the second copy.
 3. **`runExclusive` gets a fourth argument**, `{ env, deadline, now, purpose }`. Optional to use.
-4. **A completed full walk of an empty source now reconciles** (sprigr-apps#2690). 0.1.0 skipped the reconcile whenever the walk saw zero entries, so an emptied drive kept every row, full text searchable. Now every row under the prefix goes, but only when the walk reached its final page with no error, cut or hold and established a cursor. A truncated listing deletes the listed subset, and the next completed walk deletes more. An adapter with `reconcilePrefixes` is called with an empty seen list and decides which prefixes that covers (microsoft-365's returns none, so its SharePoint rows stay out of it). A direct `reconcileWalk` call must pass `{ completedWalk: true }` to get this.
+4. **A completed full walk of an empty source now reconciles** (sprigr-apps#2690). 0.1.0 skipped the reconcile whenever the walk saw zero entries, so an emptied drive kept every row, full text searchable. Now every row under the prefix goes, but only when the walk reached its final page with no error, cut or hold and established a cursor. A truncated listing deletes the listed subset, and the next completed walk deletes more. An adapter with `reconcilePrefixes` is called with an empty seen list and decides which prefixes that covers (microsoft-365's returns none, so its SharePoint rows stay out of it). A direct `reconcileWalk` call must pass `{ completedWalk: true }` to get this. 0.2.5 tightened this rule; see "Upgrading to 0.2.5".
 5. **`drainPendingExtractions` never starts a row with 0 ms or less left.** `minItemMs: 0` used to start one at exactly the deadline; it now behaves like `minItemMs: 1`, so an app that passed `1` to get that behaviour can keep it or drop it.
 
 ## Upgrading from 0.1.1
@@ -289,6 +309,15 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 
 0.2.4 (sprigr-app-kit#96) needs no migration. Add `drainPendingPurges(store, env, { deadline })` to the indexing tick, before the walk. Without that call the queue only fills: `purgeActor` records unfinished prefixes either way. An app that already queues its own purges (microsoft-365) can keep its queue; the package's rows for the same prefixes are harmless and, drained, finish the same work. `PurgeActorResult` gains `queued`.
 
+## Upgrading to 0.2.5
+
+0.2.5 (sprigr-apps#2690) needs no migration and no code change. It tightens the empty-walk rule 0.1.1 introduced, which deleted every row under the prefix on the FIRST completed walk that saw nothing. No consumer loses the empty-walk purge; every consumer gains the two-walk rule; adapters may add `confirmEmpty` for an independent check.
+
+1. **Rows go on the second consecutive completed empty walk, never the first.** The first records a marker and asks for another full walk on the next pass by setting the cursor to NULL, so an emptied account heals one walk later than before 0.2.5. See "Empty walks" above.
+2. **Optional: implement `confirmEmpty`.** Each of the two walks must then also be confirmed by it; `false` or a throw deletes nothing.
+3. **The empty-walk purge is bounded by the pass deadline** and resumes on the next full walk. The non-empty diff is unchanged.
+4. **New:** `adapter.confirmEmpty`, `outcome.emptyWalkFollowUp`, `EMPTY_WALKS_BEFORE_PURGE`, `emptyWalkMarkerKey`. A direct `reconcileWalk(..., { completedWalk: true })` call follows the same rule and keeps returning the number of rows removed.
+
 ## API
 
 Grammar: `PUBLIC_PRINCIPAL`, `ACL_PRINCIPALS_ATTR`, `userPrincipal`, `groupPrincipal`, `orgPrincipal`, `isValidPrincipal`, `normalizePrincipal`, `stampedPrincipalsValid`.
@@ -299,7 +328,7 @@ Content fills: `CONTENT_FILL_TOKEN_PREFIX`, `CONTENT_FILL_BUDGET_MS`, `IDLE_CONT
 
 Pending purges: `PURGE_PENDING_TOKEN`, `MAX_PURGES_PER_DRAIN`, `isPurgePendingToken`, `storeSupportsPurgeQueue`, `drainPendingPurges`, `DrainPendingPurgesResult`, `QueuedPurge`.
 
-Passes: `indexActorFiles`, `reconcileWalk`, `drainPendingExtractions`, `refreshPendingExtractions`, `forgetPendingExtractions`, `purgeActor`, `purgeIndexPrefix`, `drainPendingPurges`, `refreshAclPrincipals`, `aclRefreshDue`, `countIndexedItems`, `importFileObjects`, `emitFileEvents`, `actorOfFileRow`, `fileActorStillConnected`.
+Passes: `indexActorFiles`, `reconcileWalk`, `emptyWalkMarkerKey`, `EMPTY_WALKS_BEFORE_PURGE`, `drainPendingExtractions`, `refreshPendingExtractions`, `forgetPendingExtractions`, `purgeActor`, `purgeIndexPrefix`, `drainPendingPurges`, `refreshAclPrincipals`, `aclRefreshDue`, `countIndexedItems`, `importFileObjects`, `emitFileEvents`, `actorOfFileRow`, `fileActorStillConnected`.
 
 Budgets: `TickBudget`, `mapWithConcurrency`, `createDeadline`, `deadlinePassed`, `budgetBelow`, `remainingBudgetMs`, `INDEX_FILES_BUDGET_MS`, `EXTRACTION_DRAIN_BUDGET_MS`, `EMIT_BUDGET_MS`, `MIN_ITEM_BUDGET_MS`. The `Deadline` type is `@sprigr/apps-fetch-budget`'s, so one deadline bounds both the loop and each fetch.
 
