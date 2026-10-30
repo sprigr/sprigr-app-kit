@@ -19,6 +19,7 @@ export {
   assertFetchableFileUrl,
   FileUrlRefusedError,
   DEFAULT_MAX_FILE_BYTES,
+  MAX_FILE_REDIRECTS,
 } from './file';
 export type { FetchFileResult, FetchFileOptions, AllowedFileHosts, FileUrlRefusal } from './file';
 export {
