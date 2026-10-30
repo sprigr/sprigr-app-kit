@@ -295,8 +295,11 @@ const packageJson = {
     vitest: "^2.0.0",
     // The fulfilment-hub conformance harness: drives every op of the
     // interface against this app's handler map and manifest. Exact-pinned
-    // like every other kit package.
-    ...(IS_ADAPTER ? { "@sprigr/apps-fulfilment-conformance": "0.1.0" } : {}),
+    // like every other kit package. 0.5.0 is the first that drives two
+    // simultaneous push_order deliveries (sprigr-app-kit#78), the case the
+    // generated claim-first push_order exists for; on an older pin a
+    // generated adapter could drift back to read-then-push and still pass.
+    ...(IS_ADAPTER ? { "@sprigr/apps-fulfilment-conformance": "0.5.0" } : {}),
     // Declared explicitly so the marketplace build-runner's no-lockfile npm
     // install never has to auto-pick wrangler as OpenNext's peer: the
     // auto-pick is engine-filtered by the BUILDER's node version and has

@@ -67,10 +67,13 @@ export function listWarehouses() {
 }
 
 /**
- * Idempotent on `fulfilment_request_id`. Reads the record first and returns
- * the stored ref on a hit, so neither the vendor nor D1 is touched twice.
- * The hub's outbox is at-least-once; without this a redelivery ships the
- * order again.
+ * Idempotent on `fulfilment_request_id`. The hub's outbox is at-least-once,
+ * so the record is CLAIMED before the vendor call and only the delivery that
+ * wrote it calls the vendor; any other answers from the row. Reading first
+ * would let two deliveries both read "not pushed", and would re-push after a
+ * failed write that followed a successful vendor call (sprigr-app-kit#78).
+ * migrations/0001_init.sql still describes the read-first design; it is
+ * shipped, so it stays as written.
  */
 export async function pushOrder(deps: WarehouseDeps, args: PushOrderArgs): Promise<Ack> {
   if (!args?.fulfilment_request_id) {
@@ -83,22 +86,14 @@ export async function pushOrder(deps: WarehouseDeps, args: PushOrderArgs): Promi
     };
   }
 
-  const existing = await deps.store.get(args.fulfilment_request_id);
-  if (existing) return { status: 'queued', provider_ref: existing.provider_ref };
-
-  const created = await deps.vendor.createOrder({
-    fulfilment_request_id: args.fulfilment_request_id,
-    warehouse_key: args.warehouse_key,
-    line_count: args.lines?.length ?? 0,
-  });
   const now = deps.now();
-  await deps.store.insert({
+  const won = await deps.store.claim({
     fulfilment_request_id: args.fulfilment_request_id,
-    provider_ref: created.provider_ref,
+    provider_ref: '',
     order_id: args.order_id ?? '',
     warehouse_key: args.warehouse_key,
     lines_json: JSON.stringify(args.lines ?? []),
-    stage: 'queued',
+    stage: 'pushing',
     carrier: '',
     tracking_number: '',
     scans_json: '[]',
@@ -107,6 +102,23 @@ export async function pushOrder(deps: WarehouseDeps, args: PushOrderArgs): Promi
     created_at: now,
     updated_at: now,
   });
+  if (!won) {
+    // The winner is still at the vendor, or got there and could not record
+    // the ref: queued either way, and never a second vendor call.
+    const row = await deps.store.get(args.fulfilment_request_id);
+    return row && row.stage !== 'pushing' && row.provider_ref
+      ? { status: 'queued', provider_ref: row.provider_ref }
+      : { status: 'queued' };
+  }
+
+  // The mock's vendor never fails. A real adapter decides here whether a
+  // failed call may free the claim: see the fulfilment-provider scaffold.
+  const created = await deps.vendor.createOrder({
+    fulfilment_request_id: args.fulfilment_request_id,
+    warehouse_key: args.warehouse_key,
+    line_count: args.lines?.length ?? 0,
+  });
+  await deps.store.setPushed(args.fulfilment_request_id, created.provider_ref, deps.now());
   // `queued`, not `accepted`: the warehouse has not looked at it yet. The
   // hub learns it was accepted from provider.order.accepted, on advance.
   return { status: 'queued', provider_ref: created.provider_ref };
@@ -139,6 +151,10 @@ export async function cancelOrder(
   // attributes on it, so an unknown request is a bare refusal. The hub has
   // nothing open to strand - it never got an accepted push for this id.
   if (!row) return { status: 'rejected', reason: `no request ${args?.fulfilment_request_id}` };
+  // Claimed but not yet at the vendor: no provider_ref to cancel or refuse on.
+  if (row.stage === 'pushing') {
+    return { status: 'rejected', reason: `request ${row.fulfilment_request_id} is still being pushed; retry once push_order has answered` };
+  }
 
   if (row.stage === 'shipped' || row.stage === 'delivered') {
     const reason = `already ${row.stage}`;
@@ -191,6 +207,7 @@ async function emitCancelRefused(
 }
 
 const STAGE_TO_STATUS: Record<RequestStage, string> = {
+  pushing: 'pending',
   queued: 'pending',
   accepted: 'accepted',
   shipped: 'shipped',
@@ -301,6 +318,10 @@ export async function advance(
 ): Promise<AdvanceResult> {
   const row = await deps.store.get(args?.fulfilment_request_id ?? '');
   if (!row) return { ok: false, reason: `no request ${args?.fulfilment_request_id}` };
+  // Every event below carries provider_ref, which a claim still pushing lacks.
+  if (row.stage === 'pushing') {
+    return { ok: false, stage: 'pushing', reason: `request ${row.fulfilment_request_id} is still being pushed; advance it once push_order has answered` };
+  }
 
   const emitted: EmitOutcome[] = [];
   const to = args?.to;
