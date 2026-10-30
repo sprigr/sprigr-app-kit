@@ -62,6 +62,7 @@ export {
 } from './wfp-bridge';
 export type {
   EmitResult,
+  EmitSettled,
   EmitTransport,
   EmitMarketplaceEventOptions,
   InstallBridge,
@@ -216,8 +217,13 @@ export interface MarketplaceEventEmitOpts {
   /** Pin delivery to a single install in the receiving tenant.
    *  Omit for broadcast (the default). */
   targetAppInstallationId?: string;
-  /** Reserved for future at-least-once dedup. Apps can set it now;
-   *  the platform stores it but doesn't enforce dedup yet. */
+  /** Provider-stable id for this event (e.g. the webhook delivery id). The
+   *  platform drops a repeat of the same `dedupId` from the same install to the
+   *  same target within 48 h of the first queued emit, answering
+   *  `{ queued: true, settled: 'deduped', eventId: <first emit's id> }`. A failed
+   *  emit is not remembered, so retrying it is safe. A value that is not a
+   *  non-empty string of at most 512 chars is ignored. Two copies emitted within
+   *  about a second can both pass (the store is eventually consistent). */
   dedupId?: string;
 }
 
