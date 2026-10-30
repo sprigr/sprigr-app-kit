@@ -4,7 +4,7 @@ import { deleteSnapshotIds, makeDataClient, purgeIndexByPrefix, snapshotIndexIds
 const BRIDGE_ENV = { SPRIGR_PLATFORM_BASE: 'https://staging-webhooks.sprigr.com/', SPRIGR_INSTALL_TOKEN: 'inst_1.sig' };
 
 /** An in-memory index per logical name, served over the install-token routes. */
-function stubPlatform(rows: Record<string, string[]>, opts: { truncateAt?: number; failDelete?: boolean } = {}) {
+function stubPlatform(rows: Record<string, string[]>, opts: { truncateAt?: number; failDelete?: boolean; cursor?: boolean } = {}) {
   const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname;
@@ -15,6 +15,15 @@ function stubPlatform(rows: Record<string, string[]>, opts: { truncateAt?: numbe
     if (path === '/internal/wfp/data/list-ids') {
       const matched = ids.filter((id) => id.startsWith(String(body.prefix)));
       const cut = opts.truncateAt ?? Infinity;
+      // sprigr-team#11515: a platform with the cursor answers an `after` in
+      // objectID order with `next_after`; one without it ignores the field.
+      if (opts.cursor && typeof body.after === 'string') {
+        const after = body.after;
+        const past = [...new Set(matched)].sort().filter((id) => id > after);
+        const page = past.slice(0, cut);
+        const more = past.length > cut;
+        return Response.json({ ok: true, objectIDs: page, total: page.length, truncated: more, next_after: more ? page[page.length - 1] : null });
+      }
       return Response.json({ ok: true, objectIDs: matched.slice(0, cut), total: matched.length, truncated: matched.length > cut });
     }
     if (path === '/internal/wfp/data/delete') {
@@ -67,6 +76,113 @@ describe('makeDataClient', () => {
   });
 });
 
+describe('makeDataClient http import retries a transient 503 once (sprigr/sprigr-team#10234)', () => {
+  // Provisioning answers an unavailable engine (and a still-creating index)
+  // with 503 + Retry-After. The install-token fallback retried nothing, so a
+  // blip dropped the batch; it now retries once, inside the dispatch budget.
+  function sequence(answers: Array<{ status: number; retryAfter?: string; onCall?: () => void }>) {
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      const a = answers[Math.min(bodies.length - 1, answers.length - 1)];
+      a.onCall?.();
+      const headers: Record<string, string> = {};
+      if (a.retryAfter !== undefined) headers['retry-after'] = a.retryAfter;
+      return a.status === 200
+        ? Response.json({ ok: true, indexed: 1, index: 'orders' }, { headers })
+        : Response.json({ error: a.status === 503 ? 'import_unavailable' : 'import_failed', detail: 'engine said no' }, { status: a.status, headers });
+    });
+    return bodies;
+  }
+
+  it('retries a 503 once, honouring Retry-After, and returns the retry result', async () => {
+    const bodies = sequence([{ status: 503, retryAfter: '0' }, { status: 200 }]);
+    const res = await makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }], { index: 'orders' });
+    expect(res).toMatchObject({ ok: true, indexed: 1, index: 'orders' });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).toEqual(bodies[0]);
+  });
+
+  it('retries at most once, then throws the 503 with its Retry-After', async () => {
+    const bodies = sequence([{ status: 503, retryAfter: '0' }, { status: 503, retryAfter: '0' }]);
+    const err = await makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }]).catch((e: unknown) => e) as Error & { status?: number; retryAfterSeconds?: number };
+    expect(bodies).toHaveLength(2);
+    expect(err.status).toBe(503);
+    expect(err.retryAfterSeconds).toBe(0);
+    expect(err.message).toBe('data.import failed: 503 import_unavailable');
+  });
+
+  it('does not retry a final 502', async () => {
+    const bodies = sequence([{ status: 502 }, { status: 200 }]);
+    await expect(makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }])).rejects.toMatchObject({ status: 502 });
+    expect(bodies).toHaveLength(1);
+  });
+
+  // Tech Lead review of #160: every attempt gets only what is left of the
+  // caller's timeoutMs, or of a 25 s dispatch-safe total without one.
+  async function withClock(run: (setOffset: (ms: number) => void, delays: number[]) => Promise<void>) {
+    const realNow = Date.now;
+    let offset = 0;
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    const stSpy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      delays.push(ms ?? 0);
+      return realSetTimeout(fn, ms);
+    }) as typeof setTimeout);
+    try {
+      await run((ms) => { offset = ms; }, delays);
+    } finally {
+      nowSpy.mockRestore();
+      stSpy.mockRestore();
+    }
+  }
+
+  it('with timeoutMs 5000, a 503 at about 4 s is not retried, and the first attempt honours timeoutMs', async () => {
+    await withClock(async (setOffset, delays) => {
+      const bodies = sequence([{ status: 503, retryAfter: '0', onCall: () => setOffset(4000) }, { status: 200 }]);
+      await expect(makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }], { timeoutMs: 5000 })).rejects.toMatchObject({ status: 503 });
+      expect(bodies).toHaveLength(1);
+      expect(delays[0]).toBe(5000);
+    });
+  });
+
+  it('with timeoutMs 5000, the retry is bounded by what is left of it', async () => {
+    await withClock(async (setOffset, delays) => {
+      const bodies = sequence([{ status: 503, retryAfter: '0', onCall: () => setOffset(3300) }, { status: 200 }]);
+      await makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }], { timeoutMs: 5000 });
+      expect(bodies).toHaveLength(2);
+      expect(delays[0]).toBe(5000);
+      expect(delays[1]).toBeGreaterThan(1500);
+      expect(delays[1]).toBeLessThanOrEqual(1700);
+    });
+  });
+
+  it('without timeoutMs, a 503 at about 9 s leaves the retry at most the rest of a 25 s total', async () => {
+    await withClock(async (setOffset, delays) => {
+      const bodies = sequence([{ status: 503, retryAfter: '0', onCall: () => setOffset(9000) }, { status: 200 }]);
+      await makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }]);
+      expect(bodies).toHaveLength(2);
+      expect(delays[0]).toBe(20000);
+      expect(delays[1]).toBeGreaterThan(15000);
+      expect(delays[1]).toBeLessThanOrEqual(16000);
+    });
+  });
+
+  it('skips the retry when the first call already used most of the dispatch budget', async () => {
+    const realNow = Date.now;
+    let offset = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + offset);
+    try {
+      const bodies = sequence([{ status: 503, retryAfter: '0', onCall: () => { offset = 13_000; } }, { status: 200 }]);
+      await expect(makeDataClient(BRIDGE_ENV)!.import([{ objectID: 'o1' }])).rejects.toMatchObject({ status: 503 });
+      expect(bodies).toHaveLength(1);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+});
+
 describe('snapshotIndexIds + deleteSnapshotIds', () => {
   it('lists every prefix per index, then deletes exactly that snapshot in chunks', async () => {
     const rows = { cards: ['trello:card:1', 'trello:card:2', 'trello:card:3'], boards: ['trello:board:1'] };
@@ -108,6 +224,45 @@ describe('snapshotIndexIds + deleteSnapshotIds', () => {
   it('with no data path at all, reports none and does nothing', async () => {
     const res = await purgeIndexByPrefix({}, ['u:']);
     expect(res).toEqual({ deleted: 0, listed: 0, truncated: false, via: 'none' });
+  });
+});
+
+describe('paging past the 50,000-id cap (sprigr-team#11515)', () => {
+  it('follows next_after to the end on a platform with the cursor, listing every page before deleting', async () => {
+    const rows = { default: ['u:5', 'u:1', 'x:9', 'u:4', 'u:2', 'u:3'] };
+    const calls = stubPlatform(rows, { truncateAt: 2, cursor: true });
+    const res = await purgeIndexByPrefix(BRIDGE_ENV, ['u:']);
+    expect(res).toEqual({ deleted: 5, listed: 5, truncated: false, via: 'http' });
+    expect(rows.default).toEqual(['x:9']);
+    const lists = calls.filter((c) => c.path.endsWith('/list-ids')).map((c) => c.body.after);
+    expect(lists).toEqual(['', 'u:2', 'u:4']);
+    // Every page is listed before the first delete.
+    const firstDelete = calls.findIndex((c) => c.path.endsWith('/delete'));
+    expect(calls.slice(firstDelete).some((c) => c.path.endsWith('/list-ids'))).toBe(false);
+  });
+
+  it('passes after through the binding and reads next_after back', async () => {
+    const listIds = vi.fn(async (_p: string, o?: { after?: string }) =>
+      o?.after === '' ? { objectIDs: ['a:1'], truncated: true, next_after: 'a:1' } : { objectIDs: ['a:2'], truncated: false, next_after: null },
+    );
+    const snap = await snapshotIndexIds({ SPRIGR: { data: { listIds, delete: vi.fn() } } }, ['a:']);
+    expect(snap).toMatchObject({ listed: 2, truncated: false, via: 'binding' });
+    expect(listIds.mock.calls.map((c) => (c[1] as { after?: string }).after)).toEqual(['', 'a:1']);
+  });
+
+  it('stops at the page ceiling, or at a cursor that does not advance, and reports truncated', async () => {
+    let n = 0;
+    const endless = vi.fn(async () => {
+      n += 1;
+      return { objectIDs: [`e:${String(n).padStart(4, '0')}`], truncated: true, next_after: `e:${String(n).padStart(4, '0')}` };
+    });
+    const capped = await snapshotIndexIds({ SPRIGR: { data: { listIds: endless, delete: vi.fn() } } }, ['e:']);
+    expect(capped.truncated).toBe(true);
+    expect(endless.mock.calls.length).toBe(100);
+    const stuck = vi.fn(async () => ({ objectIDs: ['s:1'], truncated: true, next_after: 's:1' }));
+    const looped = await snapshotIndexIds({ SPRIGR: { data: { listIds: stuck, delete: vi.fn() } } }, ['s:']);
+    expect(looped.truncated).toBe(true);
+    expect(stuck.mock.calls.length).toBe(2);
   });
 });
 

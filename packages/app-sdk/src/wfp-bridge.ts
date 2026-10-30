@@ -195,10 +195,16 @@ export async function installTokenPost(
         status: number;
         error: string;
         detail?: string;
+        retryAfterSeconds?: number;
       };
       err.status = resp.status;
       err.error = code;
       if (obj && typeof obj.detail === 'string') err.detail = obj.detail;
+      // A retryable answer (503 + Retry-After, sprigr/sprigr-team#10234) says
+      // how long to wait; carried so a caller can honour it.
+      const retryAfter = resp.headers.get('retry-after');
+      const retryAfterSeconds = retryAfter === null ? NaN : Number(retryAfter.trim());
+      if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) err.retryAfterSeconds = retryAfterSeconds;
       throw err;
     }
     return (parsed ?? {}) as Record<string, unknown>;

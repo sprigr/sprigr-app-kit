@@ -113,6 +113,63 @@ export interface AppApprovalEnvelope {
    * wrappers.
    */
   unattended?: 'proceed';
+  /**
+   * Lay the card out as the thing being sent: an email with its header and
+   * rendered body, an SMS, a document's rows (sprigr-team decision 0216).
+   * You bind slots to YOUR TOOL'S ARGUMENT NAMES (or dotted paths such as
+   * `input.body` for a dispatcher), and the platform fills them from the
+   * exact arguments it replays on the tap, so the card cannot show one email
+   * while another is sent. Build it with `emailPreview` / `smsPreview` /
+   * `fieldsPreview`. Keep writing `question` and `summary`: a platform
+   * without decision 0216, or a preview that resolves to nothing, falls
+   * back to them.
+   */
+  preview?: ApprovalPreviewSpec;
+  /**
+   * Who this call reaches (sprigr-team decision 0312). When every recipient
+   * is the person on the turn and you send as them, the platform runs the
+   * send with no card. Set it only when you know the COMPLETE set: a reply-all
+   * that keeps the thread's cc, or a post into an existing chat, must omit it.
+   * Build it with `emailAudience`. The platform makes the decision from the
+   * person's verified address; an older platform ignores the field.
+   */
+  audience?: AppApprovalAudience;
+}
+
+/** `_approval.audience`: every address the call delivers to, and how it is sent. */
+export interface AppApprovalAudience {
+  /** Bare addresses, lowercased: to, cc, bcc and any recipient the call implies. At most 50. */
+  recipients: string[];
+  /** 'actor': through the actor's own per-actor connection. 'other': a shared, delegate or service mailbox. */
+  sender: 'actor' | 'other';
+}
+
+/** A slot bound to an argument name or dotted path, or a value you state. */
+export type ApprovalPreviewSlot = string | { value: string };
+
+/** Small facts shown as tags on the card. */
+export type ApprovalPreviewFact = 'irreversible' | 'costs_credits' | 'no_signature';
+
+/** The `_approval.preview` an app declares (sprigr-team decision 0216). */
+export interface ApprovalPreviewSpec {
+  kind: 'email' | 'sms' | 'document' | 'calendar' | 'fields';
+  from?: ApprovalPreviewSlot;
+  to?: ApprovalPreviewSlot;
+  cc?: ApprovalPreviewSlot;
+  bcc?: ApprovalPreviewSlot;
+  subject?: ApprovalPreviewSlot;
+  /** Always an argument, never a stated value: the body must be what is sent. */
+  /**
+   * `format: 'auto'` declares that the tool sends the body through
+   * `emailBodyHtml`: the card shows a body with HTML markup as HTML and plain
+   * text as text. A platform that predates 'auto' reads it as 'html'.
+   */
+  body?: { arg: string; format: 'html' | 'text' | 'auto' };
+  /** Argument holding an array of attachment names or `{ name, size }`. */
+  attachments?: string;
+  sendAt?: ApprovalPreviewSlot;
+  fields?: Array<{ label: string; from: ApprovalPreviewSlot }>;
+  facts?: ApprovalPreviewFact[];
 }
 
 /**

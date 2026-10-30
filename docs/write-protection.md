@@ -149,6 +149,26 @@ What the wrapper guarantees:
 - On the granted pass it **captures before the write, mints only after the write reported `ok`**, and never returns `_undo` when the capture or the journal failed. A failed capture does not fail the write.
 - A spec naming a tool absent from the registry **throws at build time** rather than silently ungating a rename.
 
+### Show the thing being sent: `preview`
+
+A card made only of `question` and `summary` cannot show an email properly: the summary ends up as one squashed paragraph with no layout, links or formatting. For any tool that sends something to a person (an email, an SMS, an invoice email, a calendar invite), add a `preview` to what `describe` returns:
+
+```ts
+describe: (_target, a, mailbox) => ({
+  question: `Send an email to ${String(a.to)}: "${String(a.subject)}"?`,
+  header: 'Outlook',
+  summary: approvalPreview(a.body),          // keep it: older platforms show this
+  preview: emailPreview({ from: { value: mailbox }, to: 'to', cc: 'cc', bcc: 'bcc',
+                          subject: 'subject', body: 'body', attachments: 'attachments' }),
+}),
+```
+
+Every string slot is the **name of one of your tool's arguments** (or a dotted path such as `input.body` inside a dispatcher). The platform reads the values from the exact arguments it replays on the tap, never from your preview, so the card cannot show one email while another goes out (sprigr-team decision 0216). Bind the argument you actually send. A slot that is not an argument (the sending mailbox, a recipient read from a ticket) is a stated `{ value }`, and the card marks it. The body can never be a stated value.
+
+The card shows a From/To/Cc/Subject header, the body rendered as it will look (sanitised, no scripts, no remote images, links listed in full with tracking flagged and never opened), attachments and fact tags. An `email` or `sms` preview names the approve button "Send". Builders: `emailPreview`, `smsPreview`, `fieldsPreview('document' | 'calendar' | 'fields', rows)`. A preview the platform cannot resolve falls back to `question` and `summary`.
+
+If your mail API always sends the body as HTML (Outlook's `contentType: 'HTML'`, Gmail's `text/html`), pass the body through `emailBodyHtml(body)` before sending, and declare `emailPreview({ ..., bodyFormat: 'auto' })`. An agent often writes plain text, and rendered as HTML its line breaks collapse into one line. `emailBodyHtml` returns a body that already has HTML markup unchanged and turns plain text into paragraphs and `<br>` breaks, escaped. `bodyFormat: 'auto'` tells the card to apply the same `hasHtmlMarkup` test, so a plain-text body shows as the text it will arrive as. Leave the format at 'html' if the tool does not convert, because then the lines really do collapse in the sent email.
+
 ### One connection rule per spec, not per gate
 
 `resolveConnection`, `describeTarget` and `stampConnection` on the gate are **defaults**. A spec that reaches its connection by another rule overrides them for itself:
@@ -243,6 +263,42 @@ export const acme_undo_apply = (args, env: MyEnv) =>
 The platform dispatches the reversal with **no memory of which connection the original write hit**. Per-call apps (the caller passes `store` / `organisation` on each call) must pin from the journalled row; session-stateful apps (a `select_business` action) may refuse instead by returning `null` from `pin`. Either way the connection is in the row, and in `describes`.
 
 The journal migration is a literal `.sql` file; generate the DDL once with `undoJournalSchemaSql('acme_undo_journal')` from `@sprigr/apps-undo-journal` and paste it.
+
+## Idempotent writes: answering the agent's retry
+
+A write dispatch has 25 s and the platform never retries it. When one times out, the agent is told to check whether it landed and retry only if it did not. A slow upstream often finishes after the 25 s, so a create the agent retries can land twice. Platform decision: sprigr-team 0260.
+
+Opt a tool in with `idempotency: { mode: 'request' }`; restrict a dispatcher to its non-idempotent actions with `actionField` + `actions`:
+
+```jsonc
+{ "name": "acme", "idempotency": { "mode": "request", "actionField": "action", "actions": ["create_note", "create_invoice"] } }
+```
+
+For an opted-in call the platform sends a content-stable write key (the turn, workflow step, tool and input, with no per-call id), and the wrapper hands it to the handler as `args._write_key`. A caller cannot set it: a body copy is deleted. Wrap the write with `makeIdempotentWrite` from `@sprigr/apps-dedup-latch`:
+
+```ts
+import { makeIdempotentWrite, idempotentToolResult } from '@sprigr/apps-dedup-latch';
+
+const writes = makeIdempotentWrite({ db: env.DB, table: 'acme_write_keys' });
+const outcome = await writes.run(args._write_key, () => createNote(env, args));
+return idempotentToolResult(outcome);
+```
+
+- First call: claims the key, runs the write, stores the result. A repeat after it finished gets the stored result (`replayed`) and the write does not run again.
+- A repeat while the first is still running is refused with `write_in_progress`, never run.
+- A claim left `running` past `staleRunningSec` (default 120 s) means the first invocation died mid-write: the repeat is refused once with `write_outcome_unknown` ("this write may already have happened: read back before retrying"). That refusal is the agent's one chance to check: the NEXT identical call runs the write for real.
+- The write throws: the claim is released, so a real retry runs. When the error means the write may have landed (a timeout after the request went out), pass `releaseOnError: (err) => !(err instanceof MyTimeoutAfterSend)`: the claim turns `interrupted` and the repeat is told to check upstream.
+- No key (an older platform, a tool that did not opt in): the write runs directly.
+
+The table is the app's own migration, with no secondary index:
+
+```sql
+CREATE TABLE acme_write_keys (id TEXT PRIMARY KEY, state TEXT NOT NULL, result TEXT, claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+```
+
+Each guarded write costs one insert and one update. Claims live 24 h by default (`ttlSec`); call `writes.sweep()` from a schedule. A result over `maxResultBytes` (64 KiB) is stored as a `result_not_stored` marker, so a replay says the write succeeded instead of returning a cut value.
+
+Two deliberately identical calls in the same turn and step share one key, and the second collapses into the first. Make the inputs differ (a line reference, a position) when both are wanted, or leave that action out of `actions`.
 
 ## The lint
 

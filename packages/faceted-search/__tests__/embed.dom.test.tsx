@@ -30,7 +30,7 @@ const RESPONSE = {
 };
 
 const CONFIG: FacetBrowseConfig = {
-  title: 'Boardcave',
+  title: 'Demo Surf',
   source: { kind: 'searchKey', indexName: 'idx', apiKey: 'sk_test' },
   facets: [{ attr: 'brand', label: 'Brand' }],
   card: {
@@ -91,7 +91,7 @@ describe('embed mount()', () => {
     await waitForText(host, '6ft Fish');
 
     const html = host.innerHTML;
-    expect(html).toContain('Boardcave'); // title
+    expect(html).toContain('Demo Surf'); // title
     expect(host.textContent).toContain('6ft Fish'); // result card title
     expect(host.textContent).toContain('$899'); // formatted money primary
     expect(host.textContent).toContain('In stock'); // badge

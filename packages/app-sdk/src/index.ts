@@ -14,9 +14,11 @@ export {
   base64ToBytes,
   fetchFileBytes,
   fetchFileAsBase64,
+  assertFetchableFileUrl,
+  FileUrlRefusedError,
   DEFAULT_MAX_FILE_BYTES,
 } from './file';
-export type { FetchFileResult } from './file';
+export type { FetchFileResult, FetchFileOptions, AllowedFileHosts, FileUrlRefusal } from './file';
 export {
   resolveFileRef,
   readFileRef,
@@ -44,8 +46,9 @@ export {
   isStagingHost,
   resolveOAuthBouncerBase,
   resolveOAuthBouncerCallbackUrl,
+  publicBaseUrl,
 } from './platform-host';
-export type { PlatformHostEnv, OAuthBouncerSignals } from './platform-host';
+export type { PlatformHostEnv, OAuthBouncerSignals, PublicBaseUrlEnv } from './platform-host';
 export {
   emitMarketplaceEvent,
   createMarketplaceEmitter,
@@ -84,6 +87,20 @@ export type {
   LogToPlatformOptions,
 } from './platform-log';
 export {
+  reportToPlatform,
+  canReport,
+  SPRIGR_REPORT_SEVERITIES,
+  SPRIGR_REPORT_LIMITS,
+  DEFAULT_REPORT_TIMEOUT_MS,
+} from './platform-report';
+export type {
+  SprigrReportSeverity,
+  SprigrReportInput,
+  SprigrReportResult,
+  SprigrReportFn,
+  ReportToPlatformOptions,
+} from './platform-report';
+export {
   partialUpdateData,
   canPartialUpdate,
   buildPartialUpdateBody,
@@ -96,8 +113,8 @@ export type {
   SprigrDataPartialUpdateBody,
   PartialUpdateDataOptions,
 } from './platform-data';
-export { parseActor, actorKey, ownerFromActorKey } from './actor';
-export type { Actor, InboxOwner } from './actor';
+export { parseActor, actorKey, ownerFromActorKey, CALLER_SURFACES, PERSON_SOURCES } from './actor';
+export type { Actor, InboxOwner, CallerSurface, PersonSource } from './actor';
 export {
   resolveViewerContext,
   resolveViewerUserId,
@@ -304,8 +321,25 @@ export interface SprigrDataIndexOpts {
   index?: string;
 }
 
+/**
+ * Opt-in bound for one data write (`import`, `partialUpdate`, `delete`),
+ * the same knob `data.search` takes (sprigr/sprigr-team#11950).
+ */
+export interface SprigrDataWriteTimeoutOpts {
+  /**
+   * Abort the call after this many ms and throw a named error
+   * (`data_import_timeout`, `data_partial_update_timeout`,
+   * `data_delete_timeout`) whose message names the index. Omit it and the
+   * call is unbounded as before (`import` keeps the platform's 100 s
+   * backstop). The abort is client-side only: the platform call may still
+   * complete, so retry only idempotent writes. Ignored by wrapper builds
+   * older than sprigr/sprigr-team#11950.
+   */
+  timeoutMs?: number;
+}
+
 /** Options for `env.SPRIGR.data.import`. */
-export interface SprigrDataImportOpts extends SprigrDataIndexOpts {
+export interface SprigrDataImportOpts extends SprigrDataIndexOpts, SprigrDataWriteTimeoutOpts {
   /**
    * Write to the app's reserved ACL file index
    * (`<companyId>-app-<slug>-acl-files`) instead of its data index. Every
@@ -321,7 +355,7 @@ export interface SprigrDataImportOpts extends SprigrDataIndexOpts {
 }
 
 /** Options for `env.SPRIGR.data.partialUpdate`. */
-export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts {
+export interface SprigrDataPartialUpdateOpts extends SprigrDataIndexOpts, SprigrDataWriteTimeoutOpts {
   /**
    * Create an object that does not exist yet from the patch alone. Default
    * `false`: a patch never creates half an object unless asked, and a
@@ -456,18 +490,132 @@ export interface SprigrDataApi {
    */
   delete?(
     objectIDs: string[],
-    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
+    opts?: SprigrDataIndexOpts & SprigrDataWriteTimeoutOpts & { withAcl?: boolean },
   ): Promise<{ ok: boolean; deleted: number; index: string }>;
   /**
    * List the objectIDs that start with `prefix` (non-empty, so a listing is
    * always scoped). Returns at most 50000 with `truncated: true` past that.
+   * Pass `after` ('' to start) to page in objectID order: the response then
+   * carries `next_after` for the next call, null on the last page
+   * (sprigr-team#11515; absent on a platform or wrapper build without it).
    * `?`-optional for older wrapper builds; `makeDataClient` and
    * `purgeIndexByPrefix` fall back to the install-token route.
    */
   listIds?(
     prefix: string,
-    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
-  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean }>;
+    opts?: SprigrDataIndexOpts & { withAcl?: boolean; after?: string },
+  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean; next_after?: string | null }>;
+}
+
+/**
+ * The result of {@link SprigrAssertionsApi.mint}: an audience-bound `saa5`
+ * actor assertion the platform minted PER CALL from this install's token
+ * (decision 0188). Send `assertion` as the named `header` on the request to
+ * the audience service; `expires_at` is epoch seconds (the token lives ~120s).
+ */
+export interface SprigrAssertionMintResult {
+  /** The signed `saa5` token. */
+  assertion: string;
+  /** The header name to send it under, e.g. `X-Sprigr-Actor-Assertion`. */
+  header: string;
+  /** Epoch seconds at which the assertion expires. */
+  expires_at: number;
+}
+
+/**
+ * `env.SPRIGR.assertions`: mint audience-bound actor assertions for a service
+ * OUTSIDE the platform's own bridges (decision 0188). The platform signs it
+ * from this install's token, naming only this install and company; every
+ * verifier that does not name its own audience refuses it. Call it per
+ * request, not once per tool call, because the token lives ~120s.
+ *
+ * Audiences are a closed set on the platform (e.g. `'gpu-broker'` for the GPU
+ * broker, sprigr-team#9433); an unknown audience is refused.
+ */
+export interface SprigrAssertionsApi {
+  /**
+   * Mint an assertion bound to `audience`. Resolves to the token, the header
+   * to send it under, and its expiry. Rejects if the audience is unknown or
+   * the install's marketplace bindings are not configured.
+   */
+  mint(audience: string): Promise<SprigrAssertionMintResult>;
+}
+
+/** The `error` values {@link SprigrMeApi.signature} can resolve with. */
+export type SprigrMeSignatureError = 'no_person' | 'actor_unverified' | 'invalid' | 'unavailable';
+
+/**
+ * The result of {@link SprigrMeApi.signature} (sprigr-team decision 0255).
+ * `ok: true` names the person whose signature it is (`platform_user_id`, a
+ * `usr_` id) and their sanitized HTML signature, or `html: null` when they set
+ * none. `ok: false` is a refusal; the method never rejects.
+ */
+export type SprigrMeSignatureResult =
+  | { ok: true; platform_user_id: string; html: string | null }
+  | { ok: false; error: SprigrMeSignatureError; message: string };
+
+/**
+ * `env.SPRIGR.me`: reads about the PERSON this dispatch acts for. The platform
+ * resolves the person from the signed actor assertion on the dispatch, which
+ * the bridge forwards itself; nothing an app passes can name another person.
+ */
+export interface SprigrMeApi {
+  /**
+   * The acting person's Inbox email signature for `channel` (the mail channel
+   * slug, e.g. `'outlook_mail'` or `'google_mail'`): their override for that
+   * channel's family if they set one, else their default. Append it only when
+   * `platform_user_id` owns the mailbox you are sending from (never from a
+   * shared mailbox), and skip it when the body already contains it.
+   * Resolves `no_person` when nobody is acting (a webhook, an agent with no
+   * person behind it, a member who left). Never rejects.
+   */
+  signature(input: { channel: string }): Promise<SprigrMeSignatureResult>;
+}
+
+/** The `error` values {@link SprigrTeamsApi} methods can resolve with. */
+export type SprigrTeamsError =
+  | 'scope_not_granted'
+  | 'person_mismatch'
+  | 'install_not_found_or_inactive'
+  | 'invalid'
+  | 'unavailable';
+
+/** One of the install company's teams. Store `id`: a slug can be renamed. */
+export interface SprigrTeam {
+  id: string;
+  slug: string;
+  name: string;
+  /** People in the team; agents are not counted. */
+  memberCount: number;
+}
+
+/** Result of {@link SprigrTeamsApi.list}. Never rejects. */
+export type SprigrTeamsListResult =
+  | { ok: true; teams: SprigrTeam[] }
+  | { ok: false; error: SprigrTeamsError; message: string };
+
+/** Result of {@link SprigrTeamsApi.mine}. Never rejects. */
+export type SprigrTeamsMineResult =
+  | { ok: true; teamIds: string[] }
+  | { ok: false; error: SprigrTeamsError; message: string };
+
+/**
+ * `env.SPRIGR.teams` (sprigr-team#13028): the install company's teams and the
+ * teams of the person asking. Needs the `teams:read` manifest scope. Treat
+ * every refusal as "not a member".
+ */
+export interface SprigrTeamsApi {
+  /** The company's teams, by name. */
+  list(): Promise<SprigrTeamsListResult>;
+  /**
+   * The team ids of `platformUserId`, which must be the person this call is
+   * signed for: the dispatch's actor (`args.actor.personId`, else the bound
+   * `platformUserId`, forwarded for you), or the viewer whose raw
+   * `X-Sprigr-Viewer` page token you pass as `viewerToken`. Anyone else is
+   * `person_mismatch`, and so is a Home dispatch, which carries no signed
+   * person. A membership change can take up to 60 seconds to show.
+   */
+  mine(platformUserId: string, opts?: { viewerToken?: string }): Promise<SprigrTeamsMineResult>;
 }
 
 /**
@@ -498,10 +646,12 @@ export interface SprigrFilesApi {
    * Stream bytes into the app's store under `key` (app-relative; the platform
    * adds/strips the `_apps/{installId}/` prefix). A `ReadableStream` is piped
    * straight through to R2 without buffering whole in the isolate, so use it
-   * for multi-MB blobs (videos, full-res photos, PDFs). Size cap: 50 MB.
+   * for multi-MB blobs (videos, full-res photos, PDFs). Size cap: 200 MB
+   * (`MAX_STREAM_PUT_BYTES` in sprigr-team `wfp-files.ts`).
    * `opts.length` declares the byte length so the platform can enforce the cap
    * before opening the write; forward it for streamed bodies, which carry no
-   * Content-Length (`bytes` comes back `null` when it is omitted).
+   * Content-Length. The platform checks the cap ONLY against a declared
+   * length, so always pass it (`bytes` comes back `null` when it is omitted).
    */
   putStream(
     key: string,
@@ -557,6 +707,19 @@ export interface SprigrFilesApi {
    * Optional: see `put`.
    */
   delete?(key: string, opts?: { owner_ref?: string; ownerless?: boolean }): Promise<{ ok: boolean; key: string }>;
+  /**
+   * Delete the CALLING user's per-user files on this install: their copy of
+   * every `actor_scoped_storage_prefixes` key, uploaded before this call. Use
+   * it when a user disconnects. The platform resolves the user from the
+   * dispatch's signed actor; the app never names one, and the answer never
+   * reveals the owner. Queued, not inline: the files go within minutes, and
+   * anything the user writes after the call (a reconnect) is kept. A call with
+   * no actor (schedule, webhook, event) throws `err.code === 'actor_required'`
+   * (403); for a retired user, sweep with the `storageOwnerRef` that
+   * `on_actor_retired` passes instead. Optional: absent on wrapper builds
+   * before sprigr-team#13242, so feature-detect.
+   */
+  purgeOwner?(): Promise<{ ok: boolean; purge_id: string }>;
 }
 
 /** One entry of `env.SPRIGR.files.list`. `owner_ref` / `ownerless` appear only
@@ -762,10 +925,12 @@ export {
   deleteSnapshotIds,
   purgeIndexByPrefix,
   DATA_DELETE_MAX_IDS,
+  MAX_LIST_PAGES,
 } from './data-purge';
 export type {
   DataClient,
   DataIdsOpts,
+  DataListIdsOpts,
   DataListIdsResult,
   DataTransport,
   IdPrefixSpec,
@@ -775,3 +940,16 @@ export type {
 
 export { getCompanyTimezone } from './company';
 export type { CompanyTimezoneEnv } from './company';
+
+export { emailBodyHtml, hasHtmlMarkup } from './email-body';
+
+// sprigr-team decision 0255: the sender's Inbox signature on app-sent mail.
+export { withSenderSignature } from './sender-signature';
+
+// sprigr-app-kit#170: a dispatcher tool's manifest `dispatch` block from the action registry.
+export { ACTION_DESCRIPTION_MAX_CHARS, buildDispatchManifest, buildParamsDescription, oneLineDescription } from './dispatch-manifest';
+export type { DispatchActionSpec } from './dispatch-manifest';
+
+// sprigr-apps#4001: a bounded age sweep for an app's D1 audit table.
+export { pruneAuditTable } from './audit-retention';
+export type { PruneAuditTableOpts, PruneAuditTableResult } from './audit-retention';

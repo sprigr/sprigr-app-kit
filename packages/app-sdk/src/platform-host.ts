@@ -30,9 +30,10 @@
  * Apps that receive webhooks on their OWN per-install URL (e.g.
  * procore POSTs to `<procore-XXX.staging-apps.sprigr.com>/api/webhook/procore`)
  * don't go through the marketplace runtime dispatcher. Those apps
- * derive the callback URL from the inbound request's `Host` header
- * instead, which is naturally env-correct. This helper is only for
- * the marketplace-dispatcher pattern.
+ * build the callback URL from `publicBaseUrl(env)` below. Never from
+ * the inbound request's `Host` or `X-Forwarded-Host`: a visitor
+ * controls those, and a callback URL built from one hands an outside
+ * host to the provider (sprigr-apps#3453).
  */
 
 /**
@@ -93,6 +94,50 @@ export function buildMarketplaceWebhookUrl(
 ): string {
   const base = resolvePlatformWebhookBase(env, override);
   return `${base}/webhook/marketplace/${installId}/${topicPath}`;
+}
+
+/* ------------------------------------------------------------------ *
+ * The install's own public origin
+ * ------------------------------------------------------------------ */
+
+/** Minimal env shape `publicBaseUrl` reads; pass the full app env. */
+export interface PublicBaseUrlEnv {
+  SITE_PUBLIC_BASE_URL?: string;
+}
+
+/**
+ * This install's own public https origin, as the platform bound it:
+ * the install site's custom domain when one is configured, else its
+ * slug-free `<app>-<tail>.apps.sprigr.com` host (`.staging-apps` on
+ * staging). Never has a trailing slash or a path.
+ *
+ *   const base = publicBaseUrl(env);
+ *   if (!base) return refuse('no_public_base_url');
+ *   const callbackUrl = `${base}/api/public/myapp/webhook/${subKey}`;
+ *
+ * Use it for every URL handed to an outside system: webhook and push
+ * callbacks, links in outbound mail, a provider's "return to" URL.
+ * Do NOT derive one from a request's `Host` / `X-Forwarded-Host` (a
+ * visitor sets those), and do NOT store a request-derived origin for
+ * later use (sprigr-apps#3453). The binding is not tied to the
+ * company slug, so it survives a company rename (sprigr-team#11787).
+ * It does change when a custom domain is added or removed (the
+ * platform rebinds the install), so an app that registered callbacks
+ * should re-check them on its reconcile, not only at connect time.
+ *
+ * Returns `null` when the binding is absent or is not an https URL
+ * (a unit test, a local `sprigr app dev`). Callers should refuse and
+ * say why rather than fall back to a request-derived host.
+ */
+export function publicBaseUrl(env: PublicBaseUrlEnv): string | null {
+  const raw = typeof env.SITE_PUBLIC_BASE_URL === 'string' ? env.SITE_PUBLIC_BASE_URL.trim() : '';
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    return url.protocol === 'https:' ? url.origin : null;
+  } catch {
+    return null;
+  }
 }
 
 /* ------------------------------------------------------------------ *

@@ -1,5 +1,53 @@
 import { describe, expect, it } from 'vitest';
-import { actorKey, ownerFromActorKey, parseActor } from '../src/actor';
+import { actorKey, ownerFromActorKey, parseActor, CALLER_SURFACES, PERSON_SOURCES } from '../src/actor';
+
+describe('parseActor: caller surface and person (sprigr-team decision 0305)', () => {
+  it('carries surface, personId and personSource beside the bound user', () => {
+    const actor = parseActor({
+      actor: { agentId: 'agt_1', platformUserId: 'usr_bound', surface: 'portal', personId: 'usr_chatting', personSource: 'live' },
+    });
+    expect(actor).toEqual({ agentId: 'agt_1', platformUserId: 'usr_bound', surface: 'portal', personId: 'usr_chatting', personSource: 'live' });
+  });
+
+  it('a website visitor: public surface, no person, bound user kept for credentials', () => {
+    const actor = parseActor({ actor: { agentId: 'agt_1', platformUserId: 'usr_bound', surface: 'website' } });
+    expect(actor).toEqual({ agentId: 'agt_1', platformUserId: 'usr_bound', surface: 'website' });
+    expect(actor!.personId).toBeUndefined();
+  });
+
+  it('drops a surface outside the platform list instead of passing it on', () => {
+    const actor = parseActor({ actor: { agentId: 'agt_1', surface: 'staff' } });
+    expect(actor).toEqual({ agentId: 'agt_1' });
+  });
+
+  it('drops a personSource that has no personId, and an unknown personSource', () => {
+    expect(parseActor({ actor: { agentId: 'agt_1', personSource: 'live' } })).toEqual({ agentId: 'agt_1' });
+    expect(parseActor({ actor: { agentId: 'agt_1', personId: 'usr_x', personSource: 'impersonated' } })).toEqual({ agentId: 'agt_1', personId: 'usr_x' });
+  });
+
+  it('every listed surface parses', () => {
+    for (const s of CALLER_SURFACES) expect(parseActor({ actor: { surface: s } })).toEqual({ surface: s });
+  });
+
+  // The platform stamps five person sources: `live`, and the four signed
+  // driver sources of sprigr-team actor-assertion.ts. A source missing from
+  // PERSON_SOURCES is dropped, so the app sees a personId with no source.
+  it('lists every person source the platform stamps', () => {
+    expect([...PERSON_SOURCES]).toEqual(['live', 'schedule_creator', 'workflow_saver', 'workflow_starter', 'delegation_originator']);
+  });
+
+  it('a delegated turn: the person who asked, with delegation_originator (sprigr-team#13005)', () => {
+    const actor = parseActor({
+      actor: { agentId: 'agt_specialist', platformUserId: 'usr_bound', surface: 'delegated', personId: 'usr_asker', personSource: 'delegation_originator' },
+    });
+    expect(actor).toEqual({ agentId: 'agt_specialist', platformUserId: 'usr_bound', surface: 'delegated', personId: 'usr_asker', personSource: 'delegation_originator' });
+  });
+
+  it('a manually started workflow run: the person who started it, with workflow_starter (sprigr-team#13083)', () => {
+    const actor = parseActor({ actor: { surface: 'workflow', personId: 'usr_starter', personSource: 'workflow_starter' } });
+    expect(actor).toEqual({ surface: 'workflow', personId: 'usr_starter', personSource: 'workflow_starter' });
+  });
+});
 
 describe('parseActor', () => {
   it('returns undefined when args lacks an actor (webhook / schedule path)', () => {

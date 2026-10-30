@@ -10,6 +10,7 @@ End-to-end guide for building, publishing, and shipping a marketplace app on the
 - Per-install state lives in a per-install **D1 database** (`env.DB`) bound at upload time. The manifest declares migrations; the platform runs them after every successful build.
 - Every install gets its manifest **secrets** plus a set of runtime bindings stamped at upload time (`INSTALL_ID`, `COMPANY_ID`, `APP_SLUG`, an install token, the platform base URL) and the `env.SPRIGR.*` runtime object.
 - OAuth flows through the **shared bouncer** at `oauth-bouncer.sprigr.com`. One redirect URI per environment; the bouncer dispatches the callback back to the correct install via the WFP dispatcher namespace.
+- **Never buffer a file.** An app worker has about 128 MB, and a tool call must finish in 28 s (reads) or 25 s (writes). Stream a provider's body into `env.SPRIGR.files.putStream` (always pass `length`; cap 200 MB) and return a `file_key` plus `files.url`, never the bytes. Recipe and limits: "Large files: stream, never buffer" in [platform-reference](platform-reference.md); longer transfers go in a durable job ([section 2c](#2c-durable-jobs--the-scoped-store)).
 
 ---
 
@@ -194,8 +195,8 @@ Typical candidates: `*_or_create_*` composites, `sync_*`, `reconcile_*`, and any
 
 - **Declaring it forces the write tier** regardless of the name: shorter budget, no automatic retry on a dispatch timeout or a DO disconnect, idempotency token forwarded.
 - **Omitting it changes nothing.** The name heuristic decides, exactly as it does for every app published so far. This field is opt-in and inert until you set it.
-- **`"read"` is not accepted.** Declaring `write` can only ever narrow what your app is granted, which is what makes it app-declarable; the opposite direction would let a manifest opt a write into the blind retry, so the platform does not honour it.
-- **A value other than `"write"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
+- **`"read"` is honoured, except for the retry.** On a read-only tool whose name is not a read verb (`preview_*`, `query_*`), it buys the read dispatch budget and timeout wording, lets the tool run in Plan Mode, and skips the chat-turn approval card (decision 0294). The blind retry still goes by the name, so a read tool should still carry a read-verb name where it can. The platform takes the declaration as stated, so declare `"read"` only on a tool that never writes. Today publish still logs a server-side warning calling a `"read"` declaration ignored; that warning is out of date.
+- **A value other than `"write"` or `"read"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
 
 In TypeScript the field is on `ManifestToolLike` in `@sprigr/apps-app-sdk`, typed `AppToolEffectsDeclaration`.
 
@@ -575,7 +576,7 @@ Plus a companion `@sprigr/apps-oauth-utils` with:
 - `OAuthError` typed errors, with a message that never carries the provider's raw response body
 
 Three more packages cover the rest of an OAuth app's plumbing. Every OAuth app needs the first two; reach for the third when the app has one token per user:
-- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page.
+- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page. `makeOAuthRefusals` and `consumeOAuthCallback` do the same for a callback that refused after the consume, so a reload repeats the refusal and its hint.
 - `@sprigr/apps-redact` - `redactSecrets` / `redactErrorMessage` strip codes, client secrets, tokens and API keys out of a string (JSON pairs, form pairs, `Bearer` values, known token prefixes, JSON nested inside a string) while keeping status codes and provider error text. Run every error you store in an audit row or `last_error` column through it.
 - `@sprigr/apps-actor-token-refresh` - `ActorRefreshLatch` coalesces concurrent refreshes for one user onto one in-flight call, and `needsRefresh` / `REFRESH_BUFFER_MS` decide when to refresh. Pass a lease config to `run` for providers that rotate refresh tokens, so two invocations in different isolates never spend the same refresh token.
 
@@ -622,6 +623,7 @@ Every per-install WFP script gets these bindings stamped at upload time:
 | `APP_SLUG` | plain_text | your app slug | Self-identification in logs |
 | `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for `env.SPRIGR.*` calls back to platform |
 | `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | The platform API base for this environment |
+| `SITE_PUBLIC_BASE_URL` | plain_text | the install site's custom domain, else its `<app>-<tail>.apps.sprigr.com` host | Every URL you hand to an outside system; read it with `publicBaseUrl(env)` (below) |
 | Plus every manifest `secrets[]` entry | secret_text | the install's secret store | Per-install OAuth keys, webhook signing keys, etc. |
 
 Declare them in your env type so `getCloudflareContext({ async: true }).env` is typed:
@@ -658,6 +660,24 @@ const { env } = await getCloudflareContext({ async: true });
 // not env. Easy to misread the type signature.
 const { env } = await getCloudflareContext<MyEnv>();
 ```
+
+### Your install's own URL: `SITE_PUBLIC_BASE_URL`, never a request header
+
+Any URL you give to an outside system (a webhook or push callback, a link in outbound mail, a provider's return URL) must be built on the https origin the platform bound as `SITE_PUBLIC_BASE_URL`. Read it with `publicBaseUrl(env)` from `@sprigr/apps-app-sdk` (0.28.0+). It returns that origin, or `null` when the binding is absent (a unit test, a local dev run). When it is null, refuse and say why.
+
+**Until your app pins app-sdk 0.28.0 or later** (not yet published at the time of writing), read the binding directly. Use `env.SITE_PUBLIC_BASE_URL` only when it parses as a URL whose protocol is `https:`, and use its `origin` (no path, no trailing slash). Otherwise treat it as absent.
+
+```ts
+import { publicBaseUrl } from '@sprigr/apps-app-sdk'; // 0.28.0+
+
+const base = publicBaseUrl(env);
+if (!base) return { ok: false, error: 'no_public_base_url' };
+const callbackUrl = `${base}/api/public/my-crm/webhook/${subKey}`;
+```
+
+Never derive the origin from the request's `Host` or `X-Forwarded-Host`, and never store a request-derived origin for later use. A visitor sets those headers, so any member who could load your settings page could point your webhooks, and their signed payloads, at a host they own. The Trello app shipped exactly that until the fix in sprigr-apps#3454 (issue sprigr-apps#3453).
+
+The binding has no company slug in it, so it survives a company rename. It does change when the install adds or removes a custom domain (the platform rebinds the install), so reconcile registered callbacks against the current base on a schedule, not only at connect time.
 
 ## 5. The build / publish pipeline
 
@@ -721,6 +741,7 @@ Implementation rules:
 - `/oauth/start` puts the `installId` in the state (from `env.INSTALL_ID`), encodes with `encodeStateWithinEnvelope()` (plain `encodeState()` when nothing in the state is caller-supplied), and uses the bouncer URL as `redirect_uri`. Pick the bouncer URL by environment from the request host so one bundle serves every environment. The production bouncer is `https://oauth-bouncer.sprigr.com/<slug>/oauth/callback`; for local testing the CLI dev harness listens on `http://localhost:8666/<slug>/oauth/callback`. The scaffolder generates this environment-aware selection for you.
 - The bouncer dispatches to `/__sprigr/tool/<app-slug-snake-case>_oauth_callback`. Your manifest **must** declare that tool (`my_crm_oauth_callback`), mark it `"internal": true`, and point its `handler` at a module that takes `{ code, state, redirectUri, environment }` and exchanges the code with the provider. The bouncer always sends `state`, so the handler refuses a call without one, or with a csrf it did not mint, before any exchange; otherwise anything else that can reach the tool could bind the install to another provider account (sprigr-apps#2442).
 - When exchanging the code, use the **bouncer's** `redirectUri` (passed in the args), not the install's own URL. Providers validate that the `redirect_uri` matches what was sent at `/oauth/start`.
+- **Emit your authorize URL only through a signable exit.** The platform signs the OAuth `state` on the way out, but only on the exits it controls: the `/oauth/start` 3xx redirect (above), an agent tool result, and the connect-link. Do **not** render the authorize URL in an HTML page body or return it as JSON from a website route: those bodies stream to the browser unsigned and the platform does not scan them. Once signed state is enforced platform-wide, an unsigned authorize URL is refused at the bouncer with a 400, so a hand-rendered link breaks the connect. (Platform decision 0190.)
 
 Common failure modes:
 - **"redirect uri is malformed or doesn't match"** → either you're hitting a stale OAuth state from before you fixed the redirect URI, OR the provider dev app hasn't been registered with the bouncer URL for that environment. Refresh, then check the address bar - `redirect_uri=oauth-bouncer.sprigr.com/...` is correct. Remember production and any pre-production environment use **different** bouncer URLs; register each.
@@ -733,8 +754,10 @@ Your install's site is **private by default**. Per-install sites are created wit
 
 | Path shape | Methods | For |
 |---|---|---|
-| `/api/webhook/*` | `POST` only | Third-party webhook receivers arriving with their own signature or bearer scheme |
+| `/api/webhook/*` | `POST`, `OPTIONS`, and on your install site `GET` and `HEAD` | Third-party webhook receivers arriving with their own signature, bearer scheme or path token. `OPTIONS` is for a browser caller's CORS preflight. `GET`/`HEAD` are for a provider's subscribe handshake or callback probe (ServiceM8's subscribe challenge, Shopify FulfillmentService's `fetch_stock.json`); they are exempt only on marketplace install sites (sprigr-team decision 0227) |
 | `/api/public/*` | any | Anything else a visitor with no Sprigr session must reach |
+
+**A `GET` or `HEAD` handler under `/api/webhook/` is public on every install from its first deploy.** Authenticate it the way the `POST` beside it is authenticated (a constant-time path token compared before any work, or the provider's signature), answer a mismatch with 404, and never return install data from it. sprigr-apps' servicem8 `[token]` route is the worked example.
 
 **Anything outside those two 302s an anonymous visitor to `team.sprigr.com/login`.** That redirect is the whole failure mode: it looks like a broken link to the person you sent it to, and it will not show up in your own testing, because you are signed in and your session sails straight through.
 

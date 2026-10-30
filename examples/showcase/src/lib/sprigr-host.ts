@@ -45,6 +45,15 @@ export interface SprigrHostError extends Error {
 
 export type StoreScope = 'company' | 'publisher';
 
+/**
+ * `env.SPRIGR.me.signature` answer. Mirrors `SprigrMeSignatureResult` in
+ * @sprigr/apps-app-sdk 0.30.0+; declared locally for the same reason as
+ * SprigrLogEntry above.
+ */
+export type SprigrMeSignatureResult =
+  | { ok: true; platform_user_id: string; html: string | null }
+  | { ok: false; error: 'no_person' | 'actor_unverified' | 'invalid' | 'unavailable'; message: string };
+
 export interface SprigrHost {
   /** Emit a marketplace event. opts.targetAppInstallationId pins delivery. */
   emit(
@@ -67,6 +76,16 @@ export interface SprigrHost {
    * in @sprigr/apps-app-sdk.
    */
   log(input: SprigrLogEntry | SprigrLogEntry[]): Promise<SprigrLogResult>;
+
+  /**
+   * Reads about the PERSON this dispatch acts for, resolved on the platform
+   * from the signed actor assertion; nothing the app passes names a person.
+   * `signature({ channel })` is their Inbox email signature (sanitized HTML,
+   * null when they set none). Never rejects. Optional: feature-detect it.
+   */
+  me?: {
+    signature(input: { channel: string }): Promise<SprigrMeSignatureResult>;
+  };
 
   usage: {
     /** Report billed token usage for metering. billedTokens rounds to int. */

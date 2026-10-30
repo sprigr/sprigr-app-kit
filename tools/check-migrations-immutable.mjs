@@ -59,6 +59,8 @@ if (!base) {
   process.exit(2);
 }
 const ALLOWLIST_PATH = 'tools/migration-ledger-renames.json';
+// Every root that ships migrations, as in tools/sync-vendor.mjs APP_ROOTS.
+const MIGRATION_PATHSPECS = ['apps', 'examples'].map((r) => `'${r}/*/migrations/*.sql'`).join(' ');
 
 function sh(cmd) {
   return execSync(cmd, { encoding: 'utf8' });
@@ -116,7 +118,7 @@ function isAllowedLedgerRename(allowlist, from, to) {
 let modified = '';
 try {
   modified = sh(
-    `git diff --diff-filter=M --name-only ${base}...HEAD -- 'apps/*/migrations/*.sql'`,
+    `git diff --diff-filter=M --name-only ${base}...HEAD -- ${MIGRATION_PATHSPECS}`,
   ).trim();
 } catch (e) {
   console.error('migration-immutability check could not run git diff:', e.message);
@@ -128,7 +130,7 @@ try {
 let renamedOrDeleted = '';
 try {
   renamedOrDeleted = sh(
-    `git diff --diff-filter=RD --name-status ${base}...HEAD -- 'apps/*/migrations/*.sql'`,
+    `git diff --diff-filter=RD --name-status ${base}...HEAD -- ${MIGRATION_PATHSPECS}`,
   ).trim();
 } catch (e) {
   console.error('migration-immutability check could not run git diff (rename/delete):', e.message);
@@ -166,7 +168,7 @@ for (const f of modified.split('\n').filter(Boolean)) {
 const allowlist = loadRenameAllowlist();
 let addedFiles = [];
 try {
-  addedFiles = sh(`git diff --diff-filter=A --name-only ${base}...HEAD -- 'apps/*/migrations/*.sql'`)
+  addedFiles = sh(`git diff --diff-filter=A --name-only ${base}...HEAD -- ${MIGRATION_PATHSPECS}`)
     .trim()
     .split('\n')
     .filter(Boolean);
