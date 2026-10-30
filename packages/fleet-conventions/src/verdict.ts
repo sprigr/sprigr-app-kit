@@ -92,8 +92,19 @@ const VERDICT_SHAPED_RE = /\[tech-lead-reviewer\][\s\S]{0,80}?VERDICT/i;
  * merge gate must fail closed on. `[*_]*` ahead of the prefix admits the
  * emphasis the same way `[\s*_]*` already does between the prefix and
  * `VERDICT:`, without loosening the anchor itself.
+ *
+ * Bare escalation (sprigr-team #11402): the reviewer posts an escalation as
+ * `[tech-lead-reviewer]` then `ESCALATE TO A HUMAN | ...` with no `VERDICT:`
+ * (live examples on sprigr-team #10975 and #10959 and sprigr-private-apps
+ * #972). Requiring `VERDICT:` made every one of them invisible: not a ruling
+ * to `parseAnchoredVerdictRuling`, not unactionable to `isUnactionableRuling`,
+ * so a merge gate fell back to an older verdict, or to "no verdict", which
+ * passes. The bare form is admitted for ESCALATE ONLY, and only as the full
+ * phrase `ESCALATE TO A HUMAN` (`A` optional) directly after the identity
+ * prefix: a bare APPROVE or REQUEST_CHANGES still needs `VERDICT:`, so nothing
+ * new can authorize a merge, and prose after the prefix still does not parse.
  */
-export const TECH_LEAD_VERDICT_FORM_RE = /^(?:<!--\s*verdict\s+sha=[^>]*-->\s*\n?)?\s*(?:#{1,6}\s*)?[*_]*\[tech-lead-reviewer\][\s*_]*VERDICT:[\s*_]*(APPROVE|REQUEST[_ ]CHANGES|ESCALATE)/i;
+export const TECH_LEAD_VERDICT_FORM_RE = /^(?:<!--\s*verdict\s+sha=[^>]*-->\s*\n?)?\s*(?:#{1,6}\s*)?[*_]*\[tech-lead-reviewer\][\s*_]*(?:VERDICT:[\s*_]*|(?=ESCALATE[\s*_]+TO[\s*_]+(?:A[\s*_]+)?HUMAN\b))(APPROVE|REQUEST[_ ]CHANGES|ESCALATE)/i;
 
 export type TechLeadVerdict = 'APPROVE' | 'REQUEST_CHANGES';
 
@@ -177,9 +188,18 @@ export function isUnparsedVerdictShaped(body: string): boolean {
  * format, not prose that happens to mention verdicts. Malformed rulings that
  * fail even the FORM pattern are prevented at post time instead
  * (add_pull_request_comment's marker validation).
+ *
+ * Reads the body's OWN anchored ruling. It used to be FORM-match AND
+ * `parseTechLeadVerdict === null`, and `parseTechLeadVerdict` is unanchored,
+ * so an escalation that quotes an older `[tech-lead-reviewer] VERDICT:
+ * APPROVE` further down its body read as NOT unactionable, and a merge gate
+ * built on this let it through after an approve on the same head. The github
+ * app's gate already read `parseAnchoredVerdictRuling === 'ESCALATE'` for that
+ * reason. The anchored reading is a strict superset of the old one: every body
+ * the old test called unactionable still is, plus the quoting escalations.
  */
 export function isUnactionableRuling(body: string): boolean {
-  return TECH_LEAD_VERDICT_FORM_RE.test(body) && parseTechLeadVerdict(body) === null;
+  return parseAnchoredVerdictRuling(body) === 'ESCALATE';
 }
 
 /** Anchored "this body opens as a reviewer comment" test. Same prefix the FORM
