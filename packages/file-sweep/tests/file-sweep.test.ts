@@ -4,13 +4,16 @@ import { runFileSweep, type FileSweepOptions, type SweepFilesApi } from '../src/
 const DAY = 86_400_000;
 const NOW = Date.parse('2026-10-30T12:00:00Z');
 
-interface StoredFile {
+type StoredFile = {
   key: string;
   bytes: number;
   uploaded: string;
-}
+};
 
-/** An in-memory files store with the platform's list shape: pages of `pageSize`, a cursor, `truncated`. */
+/**
+ * An in-memory files store with the platform's list shape: pages of `pageSize`, a cursor, `truncated`.
+ * The cursor is the last key listed, as with R2, so a delete between pages does not shift the next page.
+ */
 function fakeStore(initial: StoredFile[], pageSize = 3) {
   const objects = new Map(initial.map((f) => [f.key, f]));
   const calls = { list: 0, delete: [] as string[] };
@@ -19,10 +22,10 @@ function fakeStore(initial: StoredFile[], pageSize = 3) {
     async list(prefix, opts) {
       calls.list++;
       const keys = [...objects.keys()].filter((k) => k.startsWith(prefix)).sort();
-      const start = opts?.cursor ? Number(opts.cursor) : 0;
-      const page = keys.slice(start, start + pageSize).map((k) => objects.get(k)!);
-      const end = start + page.length;
-      return { files: page, truncated: end < keys.length, cursor: end < keys.length ? String(end) : undefined };
+      const after = opts?.cursor ? keys.filter((k) => k > opts.cursor!) : keys;
+      const page = after.slice(0, pageSize).map((k) => objects.get(k)!);
+      const more = after.length > page.length;
+      return { files: page, truncated: more, cursor: more ? page[page.length - 1]!.key : undefined };
     },
     async delete(key) {
       if (key === failDeleteOn) throw new Error('storage refused');
@@ -73,9 +76,9 @@ describe('runFileSweep', () => {
     expect(store.calls.delete).toEqual([`read_file/acme/${sha(1)}/old.ts`]);
     expect([...store.objects.keys()].sort()).toEqual([
       'read_file/',
-      'read_file/acme/not-a-sha/old.ts',
       `read_file/acme/${sha(2)}/new.ts`,
       `read_file/acme/${sha(3)}/no-time.ts`,
+      'read_file/acme/not-a-sha/old.ts',
     ]);
     expect(result.done).toBe(true);
     expect(result.finished_now).toBe(true);
@@ -137,6 +140,9 @@ describe('runFileSweep', () => {
     expect(third).toMatchObject({ done: true, deleted: 1 });
     expect(store.objects.size).toBe(0);
     expect(third.state?.deleted.read_file).toEqual({ objects: 5, bytes: 5 });
+    // Entries deleted on a cut-short page are gone when it is re-listed, so they must still be counted.
+    expect(third.state?.seen.read_file).toEqual({ objects: 5, bytes: 5 });
+    expect(third.state?.expired.read_file).toEqual({ objects: 5, bytes: 5 });
   });
 
   it('a failed delete ends the tick without throwing, and the walk resumes', async () => {

@@ -239,6 +239,7 @@ export async function runFileSweep(opts: FileSweepOptions): Promise<FileSweepRes
     const pageExpired: Record<string, Tally> = {};
     const pageSkipped = emptyTally();
     const pageSamples: string[] = [];
+    const pageDeleted: Record<string, Tally> = {};
     let complete = true;
     for (const entry of page) {
       const key = typeof entry?.key === 'string' ? entry.key : '';
@@ -268,10 +269,16 @@ export async function runFileSweep(opts: FileSweepOptions): Promise<FileSweepRes
         break;
       }
       addTally(state.deleted, kind, bytes);
+      addTally(pageDeleted, kind, bytes);
       deletedThisTick++;
     }
 
-    if (!complete) break;
+    if (!complete) {
+      // The page is listed again next tick, but the entries deleted from it are gone by then.
+      mergeInto(state.seen, pageDeleted);
+      mergeInto(state.expired, pageDeleted);
+      break;
+    }
     mergeInto(state.seen, pageSeen);
     mergeInto(state.expired, pageExpired);
     state.skipped.objects += pageSkipped.objects;
