@@ -34,6 +34,7 @@ const SPRIGR_METHODS = {
   inbox: ['append'],
   integrations: ['invoke'],
   jobs: ['cancel', 'get', 'list', 'signal', 'start'],
+  me: ['signature'],
   schedules: ['create'],
   store: ['delete', 'get', 'list', 'put'],
   usage: ['report'],

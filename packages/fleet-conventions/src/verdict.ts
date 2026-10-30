@@ -216,6 +216,61 @@ export function isMalformedVerdictPost(body: string): boolean {
   return !TECH_LEAD_VERDICT_FORM_RE.test(body);
 }
 
+/** Markdown code (fenced blocks, then inline spans of any backtick run)
+ *  removed, so only prose GitHub renders is left. A `<!-- verdict sha=... -->`
+ *  inside code is shown to the reader as a quotation; one outside code is
+ *  hidden, i.e. a real machine marker (#13017, comment 5429229662 quotes one
+ *  mid-body and must post). An inline span never crosses a blank line, as in
+ *  CommonMark. */
+function withoutMarkdownCode(body: string): string {
+  return body
+    .replace(/^[ \t]*(```|~~~)[\s\S]*?(?:^[ \t]*\1|(?![\s\S]))/gm, '')
+    .replace(/(`+)(?!`)(?:(?!\n[ \t]*\n)[\s\S])*?[^`]\1(?!`)/g, '');
+}
+
+/**
+ * POST-TIME ONLY: this body would post but be INVISIBLE to the reader.
+ *
+ * `isMalformedVerdictPost` fails open when a verdict's `VERDICT:` line sits
+ * beyond `VERDICT_STATEMENT_WINDOW` (800) chars, which is exactly how the two
+ * #12926 duplicate-verdict pairs got through: the reviewer posted a long-form
+ * verdict whose ruling landed thousands of chars down (platform#157,
+ * `VERDICT:` at offset 2467) or placed the identity prefix ABOVE the machine
+ * marker (platform#148). Both carried the marker, both failed
+ * `TECH_LEAD_VERDICT_FORM_RE`, both posted, and the merge gate / router / the
+ * review-gate then saw no verdict — so the reviewer had to repost a canonical
+ * copy, producing the duplicate. A long-form REQUEST_CHANGES is worse: it is
+ * absent to the merge gate (reads as "no verdict") until someone reposts it.
+ *
+ * This predicate is the reader's complement with NO window, for the one shape
+ * the window cannot safely cover: a body that opens as the reviewer's OWN
+ * comment (`REVIEWER_ANCHOR_RE`, which a `[dev-fixer]` note quoting a verdict
+ * does not match) and carries the machine marker OUTSIDE markdown code. The
+ * marker is the safe signal: by contract only a real verdict carries it, and a
+ * body that merely QUOTES one keeps it inside backticks, which
+ * `withoutMarkdownCode` strips before the check (#13017, comment 5429229662).
+ * So a reviewer body that carries the marker in prose and the reader cannot
+ * parse is an invisible verdict wherever its ruling sits, and tag-before-marker
+ * is caught the same way (the marker is still present).
+ *
+ * For a MARKER-LESS reviewer body it defers to `isMalformedVerdictPost`'s
+ * 800-char window unchanged: that window exists so a long reviewer consult
+ * that QUOTES `VERDICT:` deep in its prose still posts (#6484 / #7653), and
+ * dropping it here would refuse those. So a marker-less deep quote under the
+ * reviewer's own anchor keeps posting, exactly as today.
+ *
+ * (Narrower than one reading of the #12926 fix sketch, which would refuse any
+ * reviewer-anchored body with a `VERDICT:` ANYWHERE: that re-introduces the
+ * deep-quote regression the window was added to prevent. The marker clause
+ * catches every observed #12926 case without it.)
+ */
+export function wouldPostInvisibleVerdict(body: string): boolean {
+  if (TECH_LEAD_VERDICT_FORM_RE.test(body)) return false;
+  if (!REVIEWER_ANCHOR_RE.test(body)) return false;
+  if (VERDICT_MARKER_RE.test(withoutMarkdownCode(body))) return true;
+  return isMalformedVerdictPost(body);
+}
+
 /**
  * The tech-lead-reviewer persona names the head it reviewed in every verdict
  * ("First verdict on head `<sha>`" / "Round N of 2 on head `<sha>`"). When

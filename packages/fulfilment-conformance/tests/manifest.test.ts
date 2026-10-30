@@ -34,6 +34,93 @@ describe('checkAdapterManifest', () => {
     expect(failed(checkAdapterManifest(m, 'fulfilment_provider'))).toEqual(['provides.describe.version']);
   });
 
+  // An op added after 1.0.0 cannot honestly be pinned 1.0.0, so it may carry
+  // the version that introduced it (or a later 1.x). Never an earlier one,
+  // and the 1.0.0 ops keep their exact pin (the test above).
+  function withUpdateShipTo(version: string): Record<string, unknown> {
+    const m = providerManifest();
+    (m.tools as Record<string, unknown>[]).push({
+      name: 'tiny_wh_update_ship_to',
+      handler: 'src/handlers/provider.ts',
+      effects: 'write',
+    });
+    (m.cross_tenant_tools as Record<string, unknown>[]).push({
+      tool_name: 'tiny_wh_update_ship_to',
+      resource_type: 'fulfilment',
+      action: 'write',
+      description: 'op update_ship_to',
+      input_schema: { type: 'object', properties: {} },
+      provides: { interface: 'fulfilment-hub/fulfilment_provider', op: 'update_ship_to', version },
+    });
+    (m.events as { emits: Record<string, unknown>[] }).emits.push(
+      { name: 'provider.order.address_updated', scope: 'per_install' },
+      { name: 'provider.order.address_update_refused', scope: 'per_install' },
+    );
+    return m;
+  }
+
+  it('accepts update_ship_to pinned at 1.4.0 (when it was added), a later 1.x, or 1.0.0', () => {
+    for (const v of ['1.4.0', '1.5.2', '1.0.0']) {
+      expect(failed(checkAdapterManifest(withUpdateShipTo(v), 'fulfilment_provider')), v).toEqual([]);
+    }
+  });
+
+  it('fails update_ship_to pinned before it existed, or outside 1.x', () => {
+    for (const v of ['1.3.0', '2.0.0', '1.4', 'latest']) {
+      expect(failed(checkAdapterManifest(withUpdateShipTo(v), 'fulfilment_provider')), v).toEqual([
+        'provides.update_ship_to.version',
+      ]);
+    }
+  });
+
+  // create_inbound (1.5.0) follows the same rules as update_ship_to: pinned at
+  // 1.5.0 or later, and claiming it requires the two answer events (but not
+  // `received`, which arrives later and answers nothing).
+  function withCreateInbound(version: string, emits: string[]): Record<string, unknown> {
+    const m = providerManifest();
+    (m.tools as Record<string, unknown>[]).push({
+      name: 'tiny_wh_create_inbound',
+      handler: 'src/handlers/provider.ts',
+      effects: 'write',
+    });
+    (m.cross_tenant_tools as Record<string, unknown>[]).push({
+      tool_name: 'tiny_wh_create_inbound',
+      resource_type: 'fulfilment',
+      action: 'write',
+      description: 'op create_inbound',
+      input_schema: { type: 'object', properties: {} },
+      provides: { interface: 'fulfilment-hub/fulfilment_provider', op: 'create_inbound', version },
+    });
+    (m.events as { emits: Record<string, unknown>[] }).emits.push(
+      ...emits.map((name) => ({ name, scope: 'per_install' })),
+    );
+    return m;
+  }
+  const INBOUND_EMITS = ['provider.inbound.accepted', 'provider.inbound.refused', 'provider.inbound.received'];
+
+  it('accepts create_inbound pinned at 1.5.0 or later with its events declared', () => {
+    for (const v of ['1.5.0', '1.6.1', '1.0.0']) {
+      const report = checkAdapterManifest(withCreateInbound(v, INBOUND_EMITS), 'fulfilment_provider');
+      expect(failed(report), `${v}\n${formatReport(report)}`).toEqual([]);
+    }
+    // `received` is not required by the op.
+    const m = withCreateInbound('1.5.0', ['provider.inbound.accepted', 'provider.inbound.refused']);
+    expect(failed(checkAdapterManifest(m, 'fulfilment_provider'))).toEqual([]);
+  });
+
+  it('fails create_inbound pinned before it existed', () => {
+    for (const v of ['1.4.0', '2.0.0']) {
+      expect(failed(checkAdapterManifest(withCreateInbound(v, INBOUND_EMITS), 'fulfilment_provider')), v).toEqual([
+        'provides.create_inbound.version',
+      ]);
+    }
+  });
+
+  it('fails create_inbound claimed without its answer events', () => {
+    const m = withCreateInbound('1.5.0', ['provider.inbound.accepted']);
+    expect(failed(checkAdapterManifest(m, 'fulfilment_provider'))).toEqual(['events.required_emits_declared']);
+  });
+
   it('fails a write op with no effects: write', () => {
     const m = providerManifest();
     delete (m.tools as Record<string, unknown>[])[2]!.effects;

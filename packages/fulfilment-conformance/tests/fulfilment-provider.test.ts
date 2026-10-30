@@ -21,6 +21,128 @@ describe('runFulfilmentProviderConformance', () => {
     expect(vendor.calls).toBe(2);
   });
 
+  // update_ship_to is `optionalSince: '1.4.0'`: a provider written against
+  // 1.3.0 has no handler for it and must stay conformant, and one that CLAIMS
+  // the capability must actually implement it.
+  it('leaves a pre-1.4.0 provider conformant: no update_ship_to handler, no capability, no failure', async () => {
+    const { handlers, vendor } = makeProviderAdapter();
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name.startsWith('update_ship_to.'))).toBe(false);
+  });
+
+  it('fails a provider that claims supports_address_update and answers "unsupported"', async () => {
+    const { handlers, vendor } = makeProviderAdapter({
+      tiny_wh_describe: () => ({
+        adapter_slug: 'tiny-wh',
+        capabilities: {
+          supports_cancel: true,
+          supports_split: false,
+          supports_hold: false,
+          supports_address_update: true,
+          tracking_mode: 'push',
+          stock_mode: 'snapshot',
+          countries: ['AU'],
+        },
+      }),
+      tiny_wh_update_ship_to: () => ({ status: 'rejected', reason: 'unsupported' }),
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual(['update_ship_to.matches_capability']);
+  });
+
+  it('passes a provider that claims supports_address_update and queues the change', async () => {
+    const { handlers, vendor } = makeProviderAdapter({
+      tiny_wh_describe: () => ({
+        adapter_slug: 'tiny-wh',
+        capabilities: {
+          supports_cancel: true,
+          supports_split: false,
+          supports_hold: false,
+          supports_address_update: true,
+          tracking_mode: 'push',
+          stock_mode: 'snapshot',
+          countries: ['AU'],
+        },
+      }),
+      tiny_wh_update_ship_to: () => ({ status: 'queued', reason: 'emailed to the warehouse' }),
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report), formatReport(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name === 'update_ship_to.matches_capability' && c.ok)).toBe(true);
+  });
+
+  // create_inbound is `optionalSince: '1.5.0'`: a provider written against
+  // 1.4.0 has no handler for it and must stay conformant, and one that CLAIMS
+  // supports_inbound must actually implement it.
+  const inboundCaps = () => ({
+    adapter_slug: 'tiny-wh',
+    capabilities: {
+      supports_cancel: true,
+      supports_split: false,
+      supports_hold: false,
+      supports_inbound: true,
+      tracking_mode: 'push',
+      stock_mode: 'snapshot',
+      countries: ['AU'],
+    },
+  });
+
+  it('leaves a 1.4.0 provider conformant: no create_inbound handler, no capability, no failure', async () => {
+    const { handlers, vendor } = makeProviderAdapter();
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name.startsWith('create_inbound.'))).toBe(false);
+  });
+
+  it('fails a provider that claims supports_inbound and answers "unsupported"', async () => {
+    const { handlers, vendor } = makeProviderAdapter({
+      tiny_wh_describe: inboundCaps,
+      tiny_wh_create_inbound: () => ({ status: 'rejected', reason: 'unsupported' }),
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual(['create_inbound.matches_capability']);
+  });
+
+  it('passes a provider that claims supports_inbound and queues the purchase order', async () => {
+    let received: Record<string, unknown> | undefined;
+    const { handlers, vendor } = makeProviderAdapter({
+      tiny_wh_describe: inboundCaps,
+      tiny_wh_create_inbound: (args: never) => {
+        received = args as unknown as Record<string, unknown>;
+        return { status: 'queued', provider_ref: 'inb_ref_1', reason: 'emailed to the warehouse' };
+      },
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report), formatReport(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name === 'create_inbound.matches_capability' && c.ok)).toBe(true);
+    expect(received).toMatchObject({ inbound_id: expect.any(String), po_number: expect.any(String), warehouse_key: 'wh_a' });
+  });
+
   it('fails when a repeat push_order reaches the vendor again', async () => {
     const vendor = { calls: 0 };
     let seq = 0;

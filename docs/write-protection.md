@@ -264,6 +264,42 @@ The platform dispatches the reversal with **no memory of which connection the or
 
 The journal migration is a literal `.sql` file; generate the DDL once with `undoJournalSchemaSql('acme_undo_journal')` from `@sprigr/apps-undo-journal` and paste it.
 
+## Idempotent writes: answering the agent's retry
+
+A write dispatch has 25 s and the platform never retries it. When one times out, the agent is told to check whether it landed and retry only if it did not. A slow upstream often finishes after the 25 s, so a create the agent retries can land twice. Platform decision: sprigr-team 0260.
+
+Opt a tool in with `idempotency: { mode: 'request' }`; restrict a dispatcher to its non-idempotent actions with `actionField` + `actions`:
+
+```jsonc
+{ "name": "acme", "idempotency": { "mode": "request", "actionField": "action", "actions": ["create_note", "create_invoice"] } }
+```
+
+For an opted-in call the platform sends a content-stable write key (the turn, workflow step, tool and input, with no per-call id), and the wrapper hands it to the handler as `args._write_key`. A caller cannot set it: a body copy is deleted. Wrap the write with `makeIdempotentWrite` from `@sprigr/apps-dedup-latch`:
+
+```ts
+import { makeIdempotentWrite, idempotentToolResult } from '@sprigr/apps-dedup-latch';
+
+const writes = makeIdempotentWrite({ db: env.DB, table: 'acme_write_keys' });
+const outcome = await writes.run(args._write_key, () => createNote(env, args));
+return idempotentToolResult(outcome);
+```
+
+- First call: claims the key, runs the write, stores the result. A repeat after it finished gets the stored result (`replayed`) and the write does not run again.
+- A repeat while the first is still running is refused with `write_in_progress`, never run.
+- A claim left `running` past `staleRunningSec` (default 120 s) means the first invocation died mid-write: the repeat is refused once with `write_outcome_unknown` ("this write may already have happened: read back before retrying"). That refusal is the agent's one chance to check: the NEXT identical call runs the write for real.
+- The write throws: the claim is released, so a real retry runs. When the error means the write may have landed (a timeout after the request went out), pass `releaseOnError: (err) => !(err instanceof MyTimeoutAfterSend)`: the claim turns `interrupted` and the repeat is told to check upstream.
+- No key (an older platform, a tool that did not opt in): the write runs directly.
+
+The table is the app's own migration, with no secondary index:
+
+```sql
+CREATE TABLE acme_write_keys (id TEXT PRIMARY KEY, state TEXT NOT NULL, result TEXT, claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL);
+```
+
+Each guarded write costs one insert and one update. Claims live 24 h by default (`ttlSec`); call `writes.sweep()` from a schedule. A result over `maxResultBytes` (64 KiB) is stored as a `result_not_stored` marker, so a replay says the write succeeded instead of returning a cut value.
+
+Two deliberately identical calls in the same turn and step share one key, and the second collapses into the first. Make the inputs differ (a line reference, a position) when both are wanted, or leave that action out of `actions`.
+
 ## The lint
 
 `sprigr-check-write-protection` ships as a bin with the SDK. It scans every `apps/*/sprigr-app.json` and fails on a tool, or an enumerated dispatcher action, whose name is destructive (`delete`, `remove`, `cancel`, `void`, `refund`, `unship`, `rotate`, `offboard`, `purge`, `clear`, `reset`, `revoke`, `unregister`, `force`, `deactivate`, `suspend`, `destroy`, `capture_payment`, `complete_draft`) and that carries no `confirmation` entry. A dispatcher that does not enumerate its actions cannot be inspected and is a finding until it does.

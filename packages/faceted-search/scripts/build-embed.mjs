@@ -7,14 +7,15 @@
  * to preact/compat so the whole UI plus renderer fits in one small file. CSS is
  * inlined by the component (a <style> tag), so there is no separate stylesheet.
  *
- * The bundle is a COMMITTED artifact, published to the Sprigr-hosted embeds
- * site by scripts/publish-embed.mjs (this repo is private, so agents fetch
+ * The bundle is published to the Sprigr-hosted embeds site by
+ * scripts/publish-embed.mjs (this repo is private, so agents fetch
  * https://sprigr-hq-embeds.sites.sprigr.com/facet-browse/v1/facet-browse.js
- * rather than a raw GitHub URL). To keep the committed copy honest:
+ * rather than a raw GitHub URL). dist/ is gitignored and no CI job runs the
+ * check; it is a local gate that publish-embed.mjs runs before uploading:
  *
  *   node scripts/build-embed.mjs           # rebuild dist/facet-browse.js
  *   node scripts/build-embed.mjs --check   # rebuild to a temp buffer and diff;
- *                                           # exit 1 if dist is stale (CI gate)
+ *                                           # exit 1 if dist is stale
  *
  * The --check mode mirrors tools/sync-vendor.mjs --check: it never writes when
  * the committed file already matches, and fails the build when it drifts.
