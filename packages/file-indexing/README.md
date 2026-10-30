@@ -36,6 +36,7 @@ import {
   createD1FileIndexingStore,
   createDeadline,
   drainPendingExtractions,
+  drainPendingPurges,
   fileActorStillConnected,
   indexActorFiles,
   INDEX_FILES_BUDGET_MS,
@@ -44,6 +45,7 @@ import {
 export async function runIndexFiles(env: DropboxEnv) {
   const store = createD1FileIndexingStore(env.DB); // the package's default tables
   const deadline = createDeadline(INDEX_FILES_BUDGET_MS); // once per tick
+  await drainPendingPurges(store, env, { deadline });       // unfinished disconnects first
   for (const { scope } of await store.listEnabled()) {      // stale-first
     if (Date.now() >= deadline.at) break;                    // the rest sort first next tick
     if (!(await fileActorStillConnected(dropboxAdapter, scope, env))) continue;
@@ -243,9 +245,11 @@ const msStore = createD1FileIndexingStore(env.DB, {
 | `aclRefreshColumns` | where `refreshAclPrincipals` keeps its continuation and last completion |
 | `identityLinkedColumn` | an INTEGER column recording the last accepted owner identity link (sprigr-app-kit#227). With it a pass skips `acl.linkIdentity` for `IDENTITY_LINK_BACKOFF_MS` (24 h) after a success; without it every pass on a fresh isolate pays the call. No app has it by default: add `ALTER TABLE <t> ADD COLUMN identity_linked_at INTEGER` in the app's own migration, then pass the name. Changing `connected_email`, disabling, or a failed or refused link clears it |
 
-## Disconnect purge: you provide the queue
+## Disconnect purge: the package queues the rest
 
-`purgeActor(adapter, store, env, scope, { deadline })` switches indexing off first, drops the owner identity link, then deletes the scope's rows from the ACL index until the deadline leaves less than `MIN_PURGE_LEG_MS`. When it cannot finish (a large index, a truncated listing, a delete error) it returns `complete: false` with the rows it did remove in `removed`, and **that is all it does about the rest**. The store keeps no durable "purge pending" state, so nothing in this package will come back for the remainder. The app must: either record the unfinished prefixes in a queue of its own and drain them from a later tick with `purgeIndexPrefix` (microsoft-365 does this with its `ms_file_index_purge` table), or tell the user plainly that the disconnect did not finish and must be run again (google-workspace's behaviour today). Because indexing is switched off before any delete, an unfinished purge never re-indexes; it only leaves rows behind until the next attempt.
+`purgeActor(adapter, store, env, scope, { deadline })` switches indexing off first, drops the owner identity link, then deletes the scope's rows from the ACL index until the deadline leaves less than `MIN_PURGE_LEG_MS`. When it cannot finish (a large index, a truncated listing, a delete error) it returns `complete: false` with the rows it did remove in `removed`. Since 0.2.4 it also records each unfinished prefix in the store's pending table (no migration) and names them in `queued`; call `drainPendingPurges(store, env, { deadline })` on every indexing tick, before the walk, and the rest goes on later ticks without the person running the disconnect again (sprigr-app-kit#96). A queued prefix re-checks purgeActor's guards when it drains: if the person reconnected, or another actor now indexes an install-wide prefix, the queued purge is dropped and their rows stay. `queued` is empty when the purge finished, was skipped (`purgeSkipped`), or the store has no queue (a custom store without `listPendingContentFills`); in the last case, queue the prefixes yourself as microsoft-365 does with its `ms_file_index_purge` table. Because indexing is switched off before any delete, an unfinished purge never re-indexes; it only leaves rows behind until the drain.
+
+`drainPendingPurges` never throws. It returns `{ purged, removed, dropped, remaining, errors }`, looks at up to `MAX_PURGES_PER_DRAIN` (20) queued prefixes, starts none once the deadline leaves under `MIN_PURGE_LEG_MS`, and moves a prefix it could not finish to the back of the queue.
 
 `purgeIndexPrefix(env, store, prefix, { deadline })` is one drain pass over one prefix, and it never throws. It returns `{ removed, complete, truncated, cut, unavailable?, error? }`: `truncated` means the listing stopped at the platform cap, `cut` means the deadline stopped the deletes, and `error` carries a listing, delete or cleanup failure, with `removed` still counting the chunks deleted before it. `complete` is true only when none of those happened. A queue drain keeps the row queued on `!complete` and records `error` as the row's last error when it is set:
 
@@ -264,7 +268,7 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 - **`<cursorResetDetail>`**: the provider rejected the cursor; it is reset and the next pass does a full walk.
 - **`busy: true`**: `adapter.runExclusive` found another invocation holding the scope; nothing ran.
 - **`purgeSkipped: 'shared_prefix'` / `'no_indexing_row'`**: see "Disconnect purge" above. Indexing is still switched off and the identity unlinked.
-- **`purgeActor` returns `complete: false`**: the rest is yours to queue; see "Disconnect purge" above. A failed pass is in `errors` as `purge <prefix>: <message>`.
+- **`purgeActor` returns `complete: false`**: the prefixes in `queued` finish on later `drainPendingPurges` calls; an empty `queued` means the rest is yours (see "Disconnect purge" above). A failed pass is in `errors` as `purge <prefix>: <message>`.
 - **`purgeIndexPrefix` returns `error`**: the listing or a delete failed; `removed` counts what went before it. It no longer throws (0.1.0 did).
 - **Reconcile skipped with "walk state moved"**: another invocation finished or restarted the walk; its reconcile covers it.
 - **`content_fill_record_failed: ...`**: the files this pass could not fetch text for could not be queued (a store write failed). The pass keeps its cursor and imports nothing, so the next pass re-walks them rather than importing them without text and forgetting them.
@@ -301,6 +305,10 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 4. **`MAX_CONTENT_FILLS_PER_PASS` is 200** (was 100), and the drain imports in calls of up to 100 rows.
 5. **New:** `ContentFillOutcome.peakInFlight`, `EnrichSummary.attempted`, the `deadline` option of `enrichObjectsWithContent`, the optional `adapter.isThrottleError`, and the optional `env.SPRIGR.log` member (`FileIndexingLogEntry`). An app whose env already declares the app-sdk's `SprigrLogFn` fits it.
 
+## Upgrading from 0.2.3
+
+0.2.4 (sprigr-app-kit#96) needs no migration. Add `drainPendingPurges(store, env, { deadline })` to the indexing tick, before the walk. Without that call the queue only fills: `purgeActor` records unfinished prefixes either way. An app that already queues its own purges (microsoft-365) can keep its queue; the package's rows for the same prefixes are harmless and, drained, finish the same work. `PurgeActorResult` gains `queued`.
+
 ## Upgrading to 0.2.5
 
 0.2.5 (sprigr-apps#2690) needs no migration and no code change. It tightens the empty-walk rule 0.1.1 introduced, which deleted every row under the prefix on the FIRST completed walk that saw nothing. No consumer loses the empty-walk purge; every consumer gains the two-walk rule; adapters may add `confirmEmpty` for an independent check.
@@ -318,7 +326,9 @@ Content: `MAX_CONTENT_BYTES`, `MAX_CONTENT_CHARS`, `MAX_EXTRACT_INLINE_BYTES`, `
 
 Content fills: `CONTENT_FILL_TOKEN_PREFIX`, `CONTENT_FILL_BUDGET_MS`, `IDLE_CONTENT_FILL_BUDGET_MS`, `CONTENT_FILL_CONCURRENCY`, `CONTENT_FILL_IMPORT_CHUNK`, `MAX_CONTENT_FILLS_PER_PASS`, `MAX_CONTENT_FILL_ATTEMPTS`, `contentFillToken`, `isContentFillToken`, `storeSupportsContentFills`, `recordContentFills`, `drainContentFills`, `countPendingContentFills`, `describeContentPending`, `syncPendingRecordPrincipals`.
 
-Passes: `indexActorFiles`, `reconcileWalk`, `emptyWalkMarkerKey`, `EMPTY_WALKS_BEFORE_PURGE`, `drainPendingExtractions`, `refreshPendingExtractions`, `forgetPendingExtractions`, `purgeActor`, `purgeIndexPrefix`, `refreshAclPrincipals`, `aclRefreshDue`, `countIndexedItems`, `importFileObjects`, `emitFileEvents`, `actorOfFileRow`, `fileActorStillConnected`.
+Pending purges: `PURGE_PENDING_TOKEN`, `MAX_PURGES_PER_DRAIN`, `isPurgePendingToken`, `storeSupportsPurgeQueue`, `drainPendingPurges`, `DrainPendingPurgesResult`, `QueuedPurge`.
+
+Passes: `indexActorFiles`, `reconcileWalk`, `emptyWalkMarkerKey`, `EMPTY_WALKS_BEFORE_PURGE`, `drainPendingExtractions`, `refreshPendingExtractions`, `forgetPendingExtractions`, `purgeActor`, `purgeIndexPrefix`, `drainPendingPurges`, `refreshAclPrincipals`, `aclRefreshDue`, `countIndexedItems`, `importFileObjects`, `emitFileEvents`, `actorOfFileRow`, `fileActorStillConnected`.
 
 Budgets: `TickBudget`, `mapWithConcurrency`, `createDeadline`, `deadlinePassed`, `budgetBelow`, `remainingBudgetMs`, `INDEX_FILES_BUDGET_MS`, `EXTRACTION_DRAIN_BUDGET_MS`, `EMIT_BUDGET_MS`, `MIN_ITEM_BUDGET_MS`. The `Deadline` type is `@sprigr/apps-fetch-budget`'s, so one deadline bounds both the loop and each fetch.
 

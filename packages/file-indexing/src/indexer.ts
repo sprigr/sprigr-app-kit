@@ -31,6 +31,13 @@ import { ownerPrincipalOf, stampEntries } from './stamp';
 import { emitFileEvents, fileEventNames, type FileEvent } from './events';
 import { importFileObjects, MAX_OBJECTS_PER_IMPORT } from './import';
 import { forgetPendingExtractions, refreshPendingExtractions, syncPendingRecordPrincipals } from './pending';
+import {
+  MAX_PURGES_PER_DRAIN,
+  PURGE_PENDING_TOKEN,
+  enqueuePurges,
+  parseQueuedPurge,
+  storeSupportsPurgeQueue,
+} from './purge-pending';
 import { EMIT_BUDGET_MS, budgetBelow, deadlinePassed } from './tick-budget';
 import type {
   ChangePage,
@@ -1138,8 +1145,12 @@ export interface PurgeActorResult {
   unlinked: boolean;
   prefixes: string[];
   removed: number;
-  /** Every prefix was listed in full and deleted. False = call again later. */
+  /** Every prefix was listed in full and deleted. False = call again later,
+   *  unless `queued` names the prefixes drainPendingPurges will finish. */
   complete: boolean;
+  /** Unfinished prefixes recorded for drainPendingPurges (0.2.4). Empty when
+   *  the purge finished, was skipped, or the store has no queue. */
+  queued: string[];
   /** Why rows were not purged: install-scoped objectIDs shared with other
    *  actors (google-workspace with more than one indexing user); install-
    *  scoped ids and this actor has no indexing row (nothing in the index is
@@ -1169,7 +1180,7 @@ export async function purgeActor<TEntry, TEnv extends FileIndexingEnv>(
   scope: FileIndexingScope,
   opts: { deadline?: Deadline; now?: () => number; email?: string | null } = {},
 ): Promise<PurgeActorResult> {
-  const result: PurgeActorResult = { disabled: false, unlinked: false, prefixes: [], removed: 0, complete: false, errors: [] };
+  const result: PurgeActorResult = { disabled: false, unlinked: false, prefixes: [], removed: 0, complete: false, queued: [], errors: [] };
   if (!actorKey(scope.actor)) return { ...result, purgeSkipped: 'no_actor_key' };
   let row: FileIndexingRow | null = null;
   try {
@@ -1215,15 +1226,23 @@ export async function purgeActor<TEntry, TEnv extends FileIndexingEnv>(
     prefixes = [];
   }
   result.prefixes = prefixes;
-  let allComplete = true;
+  const unfinished: string[] = [];
   for (const prefix of prefixes) {
     const r = await purgeIndexPrefix(env, store, prefix, opts);
     result.removed += r.removed;
     if (r.unavailable) result.purgeSkipped = 'unavailable';
-    if (!r.complete) allComplete = false;
+    if (!r.complete) unfinished.push(prefix);
     if (r.error !== undefined) result.errors.push(`purge ${prefix}: ${r.error}`);
   }
-  result.complete = allComplete && result.errors.length === 0 && !result.purgeSkipped;
+  result.complete = unfinished.length === 0 && result.errors.length === 0 && !result.purgeSkipped;
+  if (unfinished.length > 0 && !result.purgeSkipped && storeSupportsPurgeQueue(store)) {
+    try {
+      await enqueuePurges(store, scope, unfinished, adapter.objectIdsActorScoped === true);
+      result.queued = unfinished;
+    } catch (err) {
+      result.errors.push(`queue: ${errMsg(err)}`);
+    }
+  }
   try {
     await store.clearWalkSeen(ctx.walkKey);
     if (ctx.walkKey) await store.clearWalkSeen(emptyWalkMarkerKey(ctx.walkKey));
@@ -1239,6 +1258,80 @@ export async function purgeActor<TEntry, TEnv extends FileIndexingEnv>(
       await store.deletePendingContentFills(contentFillToken(ctx.walkKey));
     } catch (err) {
       result.errors.push(`content_fills: ${errMsg(err)}`);
+    }
+  }
+  return result;
+}
+
+export interface DrainPendingPurgesResult {
+  /** Queued prefixes finished and dequeued. */
+  purged: number;
+  /** Rows deleted from the index across every prefix this drain touched. */
+  removed: number;
+  /** Queued purges dropped without purging: the actor reconnected, another
+   *  actor now indexes an install-wide prefix, or the row was unreadable. */
+  dropped: number;
+  /** Queued purges still waiting after this drain. */
+  remaining: number;
+  errors: string[];
+}
+
+/**
+ * Finish the purges purgeActor could not (sprigr-app-kit#96). Call it on each
+ * indexing tick, before the walk. Each queued prefix re-checks the guards
+ * purgeActor applied: a reconnected actor keeps its rows, and an install-wide
+ * prefix is dropped once its actor has no row or another actor indexes. Never
+ * throws; stops starting prefixes once the deadline leaves under
+ * MIN_PURGE_LEG_MS.
+ */
+export async function drainPendingPurges(
+  store: FileIndexingStore,
+  env: FileIndexingEnv,
+  opts: { deadline?: Deadline; now?: () => number } = {},
+): Promise<DrainPendingPurgesResult> {
+  const now = opts.now ?? Date.now;
+  const result: DrainPendingPurgesResult = { purged: 0, removed: 0, dropped: 0, remaining: 0, errors: [] };
+  if (!storeSupportsPurgeQueue(store)) return result;
+  let rows: Awaited<ReturnType<NonNullable<FileIndexingStore['listPendingContentFills']>>>;
+  try {
+    rows = await store.listPendingContentFills!(PURGE_PENDING_TOKEN, MAX_PURGES_PER_DRAIN);
+  } catch (err) {
+    result.errors.push(`list: ${errMsg(err)}`);
+    return result;
+  }
+  for (const [i, row] of rows.entries()) {
+    if (budgetBelow(MIN_PURGE_LEG_MS, opts.deadline, now)) {
+      result.remaining += rows.length - i;
+      break;
+    }
+    try {
+      const q = parseQueuedPurge(row);
+      const scope: FileIndexingScope | null = q ? { actor: q.actor, ...(q.connectionId !== undefined ? { connectionId: q.connectionId } : {}) } : null;
+      const owner = scope ? await store.load(scope) : null;
+      const stale =
+        !q ||
+        !scope ||
+        owner?.enabled === 1 ||
+        (!q.actorScoped && (owner === null || (await store.countOtherActors(scope)) > 0));
+      if (stale) {
+        await store.deletePendingExtraction(row.object_id);
+        result.dropped++;
+        continue;
+      }
+      const r = await purgeIndexPrefix(env, store, q.prefix, opts);
+      result.removed += r.removed;
+      if (r.error !== undefined) result.errors.push(`purge ${q.prefix}: ${r.error}`);
+      if (r.complete) {
+        await store.deletePendingExtraction(row.object_id);
+        result.purged++;
+      } else {
+        // Rotate to the back so one huge prefix cannot starve the others.
+        await store.bumpPendingExtraction(row.object_id);
+        result.remaining++;
+      }
+    } catch (err) {
+      result.errors.push(`${row.object_id}: ${errMsg(err)}`);
+      result.remaining++;
     }
   }
   return result;
