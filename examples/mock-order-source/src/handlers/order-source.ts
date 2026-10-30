@@ -169,6 +169,7 @@ export async function markShipped(
     notify_customer?: boolean;
   },
 ): Promise<Ack> {
+  if (await deps.store.takeFault('mark_shipped')) return errored(FAULT_REASON);
   if (!args?.carrier || !args?.tracking_number) {
     return rejected('carrier and tracking_number are required to mark a request shipped');
   }
@@ -319,6 +320,7 @@ export async function addNote(
   deps: OrderSourceDeps,
   args: { source_ref: string; note: string; tags?: string[] },
 ): Promise<Ack> {
+  if (await deps.store.takeFault('add_note')) return errored(FAULT_REASON);
   const order = await deps.store.getOrder(args?.source_ref ?? '');
   if (!order) return rejected(`no order ${args?.source_ref}`);
   // Append. Nothing here trims the existing notes or the incoming one: a
@@ -338,6 +340,30 @@ export async function addNote(
 // ---------------------------------------------------------------------------
 // The shakedown lever
 // ---------------------------------------------------------------------------
+
+/** The ops `fail_next` can arm: the write ops whose resend the hub logs. */
+export const FAULT_OPS = ['add_note', 'mark_shipped'] as const;
+const FAULT_REASON = 'injected fault (mock_order_source_fail_next)';
+
+/**
+ * Arm `op` to answer `error` (the retryable ack) on its next `count` calls,
+ * so a shakedown can watch the hub resend a write. `count` 0 disarms it.
+ */
+export async function failNext(
+  deps: OrderSourceDeps,
+  args: { op?: string; count?: number },
+): Promise<{ ok: boolean; op?: string; count?: number; reason?: string }> {
+  const op = args?.op ?? '';
+  if (!(FAULT_OPS as readonly string[]).includes(op)) {
+    return { ok: false, reason: `op must be one of ${FAULT_OPS.join(', ')}` };
+  }
+  const count = args?.count ?? 1;
+  if (!Number.isInteger(count) || count < 0 || count > 5) {
+    return { ok: false, reason: 'count must be an integer from 0 to 5' };
+  }
+  await deps.store.armFault(op, count);
+  return { ok: true, op, count };
+}
 
 export interface PlaceOrderArgs {
   source_number?: string;
@@ -495,4 +521,6 @@ export default {
   ) => addNote(depsFor(env), args),
   mock_order_source_place_order: (args: PlaceOrderArgs, env: MockOrderSourceEnv) =>
     placeOrder(env, depsFor(env), args),
+  mock_order_source_fail_next: (args: { op?: string; count?: number }, env: MockOrderSourceEnv) =>
+    failNext(depsFor(env), args),
 };

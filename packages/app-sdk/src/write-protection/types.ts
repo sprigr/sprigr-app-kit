@@ -125,6 +125,23 @@ export interface AppApprovalEnvelope {
    * back to them.
    */
   preview?: ApprovalPreviewSpec;
+  /**
+   * Who this call reaches (sprigr-team decision 0312). When every recipient
+   * is the person on the turn and you send as them, the platform runs the
+   * send with no card. Set it only when you know the COMPLETE set: a reply-all
+   * that keeps the thread's cc, or a post into an existing chat, must omit it.
+   * Build it with `emailAudience`. The platform makes the decision from the
+   * person's verified address; an older platform ignores the field.
+   */
+  audience?: AppApprovalAudience;
+}
+
+/** `_approval.audience`: every address the call delivers to, and how it is sent. */
+export interface AppApprovalAudience {
+  /** Bare addresses, lowercased: to, cc, bcc and any recipient the call implies. At most 50. */
+  recipients: string[];
+  /** 'actor': through the actor's own per-actor connection. 'other': a shared, delegate or service mailbox. */
+  sender: 'actor' | 'other';
 }
 
 /** A slot bound to an argument name or dotted path, or a value you state. */

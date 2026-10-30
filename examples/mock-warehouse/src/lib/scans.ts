@@ -68,7 +68,7 @@ export function parseScans(scansJson: string): ScanRecord[] {
   }
 }
 
-/** The shipment a scan hangs off. Deterministic, and the same ref `ship` emits. */
+/** The default shipment ref: what `ship` emits, and scans hang off, unless a ship named another. */
 export function shipmentRefFor(fulfilmentRequestId: string): string {
   return `mws_${fulfilmentRequestId}`;
 }
