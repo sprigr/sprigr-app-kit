@@ -982,3 +982,7 @@ export type { DispatchActionSpec } from './dispatch-manifest';
 // sprigr-apps#4001: a bounded age sweep for an app's D1 audit table.
 export { pruneAuditTable } from './audit-retention';
 export type { PruneAuditTableOpts, PruneAuditTableResult } from './audit-retention';
+
+// Durable jobs (env.SPRIGR.jobs) types and liveness helper (#176).
+export { jobIsLive, LIVE_JOB_STATUSES } from './jobs';
+export type { JobDirective, JobStepArgs, SprigrJobsApi, SprigrJobRecord, SprigrJobStatus } from './jobs';
