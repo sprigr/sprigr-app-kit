@@ -273,6 +273,7 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 - **Reconcile skipped with "walk state moved"**: another invocation finished or restarted the walk; its reconcile covers it.
 - **`content_fill_record_failed: ...`**: the files this pass could not fetch text for could not be queued (a store write failed). The pass keeps its cursor and imports nothing, so the next pass re-walks them rather than importing them without text and forgetting them.
 - **`outcome.contentPending > 0`**: files imported without their text that later passes are filling; see "Content fills" above. Not an error.
+- **`extract failed for <id> (<format>) [stage=... branch=... attempt=... redownload=...]`**: a binary extraction failed and the file keeps empty content. The bracket says where: `stage` (download, put or extract), how the bytes were staged (`branch=stream` when the download declared a length, else `buffered`), the put attempt, and the re-download retry (0.2.6, sprigr-team#13096): a streamed put that fails with a transient R2 fault (10001, 10043, 503) downloads the file once more and retries with the fresh stream, because the bridge cannot replay a spent stream. `redownload` is `not-run`, `ok`, `put-failed`, `download-failed` (with `redownload_status` for a non-ok answer) or `skipped-deadline`. A buffered put is left to the bridge's own retry.
 
 ## Upgrading from 0.1.0
 
@@ -317,6 +318,10 @@ It purges nothing, and says why in `purgeSkipped`, when the rows cannot be told 
 2. **Optional: implement `confirmEmpty`.** Each of the two walks must then also be confirmed by it; `false` or a throw deletes nothing.
 3. **The empty-walk purge is bounded by the pass deadline** and resumes on the next full walk. The non-empty diff is unchanged.
 4. **New:** `adapter.confirmEmpty`, `outcome.emptyWalkFollowUp`, `EMPTY_WALKS_BEFORE_PURGE`, `emptyWalkMarkerKey`. A direct `reconcileWalk(..., { completedWalk: true })` call follows the same rule and keeps returning the number of rows removed.
+
+## Upgrading to 0.2.6
+
+0.2.6 (sprigr-team#13096) needs no code change. Bump the pin. A streamed staging put that hits a transient R2 fault now re-downloads the file once and retries (one extra provider download, only on that fault, skipped past the tick deadline), and the extract logs name the stage, branch, attempt and retry outcome (see "Failure modes").
 
 ## API
 
