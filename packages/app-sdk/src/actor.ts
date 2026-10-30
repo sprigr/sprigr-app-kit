@@ -12,7 +12,8 @@
  *   x-sprigr-actor-surface            : where the turn came from (portal,
  *                                       website, external_channel, ...)
  *   x-sprigr-actor-person-id          : the person the call is made for
- *   x-sprigr-actor-person-source      : live | schedule_creator | workflow_saver
+ *   x-sprigr-actor-person-source      : live | schedule_creator | workflow_saver |
+ *                                       workflow_starter | delegation_originator
  *
  * The sprigr-wrapper parses these and surfaces an `Actor` via `args.actor`
  * to handler code. Apps that need per-user scoping (per-actor OAuth tokens,
@@ -42,7 +43,13 @@ export interface Actor {
   personId?: string;
   /** How `personId` is the person: `live` (chatting now), `schedule_creator`
    *  (created the schedule that fired), `workflow_saver` (last saved the
-   *  workflow). Present only with `personId`. */
+   *  workflow), `workflow_starter` (started this run by hand, and also last
+   *  saved the workflow's code), `delegation_originator` (drove the portal or
+   *  MCP turn that delegated this one to the agent; first hop only). Every
+   *  source but `live` is a person acting through the platform, not one in
+   *  the conversation: an app that opens data only for a stamped person
+   *  treats the last two as it treats `workflow_saver`. Present only with
+   *  `personId`. */
   personSource?: PersonSource;
 }
 
@@ -62,7 +69,9 @@ export const CALLER_SURFACES = [
 ] as const;
 export type CallerSurface = (typeof CALLER_SURFACES)[number];
 
-export const PERSON_SOURCES = ['live', 'schedule_creator', 'workflow_saver'] as const;
+export const PERSON_SOURCES = [
+  'live', 'schedule_creator', 'workflow_saver', 'workflow_starter', 'delegation_originator',
+] as const;
 export type PersonSource = (typeof PERSON_SOURCES)[number];
 
 /**

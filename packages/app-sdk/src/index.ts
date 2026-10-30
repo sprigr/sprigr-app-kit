@@ -495,13 +495,16 @@ export interface SprigrDataApi {
   /**
    * List the objectIDs that start with `prefix` (non-empty, so a listing is
    * always scoped). Returns at most 50000 with `truncated: true` past that.
+   * Pass `after` ('' to start) to page in objectID order: the response then
+   * carries `next_after` for the next call, null on the last page
+   * (sprigr-team#11515; absent on a platform or wrapper build without it).
    * `?`-optional for older wrapper builds; `makeDataClient` and
    * `purgeIndexByPrefix` fall back to the install-token route.
    */
   listIds?(
     prefix: string,
-    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
-  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean }>;
+    opts?: SprigrDataIndexOpts & { withAcl?: boolean; after?: string },
+  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean; next_after?: string | null }>;
 }
 
 /**
@@ -704,6 +707,19 @@ export interface SprigrFilesApi {
    * Optional: see `put`.
    */
   delete?(key: string, opts?: { owner_ref?: string; ownerless?: boolean }): Promise<{ ok: boolean; key: string }>;
+  /**
+   * Delete the CALLING user's per-user files on this install: their copy of
+   * every `actor_scoped_storage_prefixes` key, uploaded before this call. Use
+   * it when a user disconnects. The platform resolves the user from the
+   * dispatch's signed actor; the app never names one, and the answer never
+   * reveals the owner. Queued, not inline: the files go within minutes, and
+   * anything the user writes after the call (a reconnect) is kept. A call with
+   * no actor (schedule, webhook, event) throws `err.code === 'actor_required'`
+   * (403); for a retired user, sweep with the `storageOwnerRef` that
+   * `on_actor_retired` passes instead. Optional: absent on wrapper builds
+   * before sprigr-team#13242, so feature-detect.
+   */
+  purgeOwner?(): Promise<{ ok: boolean; purge_id: string }>;
 }
 
 /** One entry of `env.SPRIGR.files.list`. `owner_ref` / `ownerless` appear only
@@ -909,10 +925,12 @@ export {
   deleteSnapshotIds,
   purgeIndexByPrefix,
   DATA_DELETE_MAX_IDS,
+  MAX_LIST_PAGES,
 } from './data-purge';
 export type {
   DataClient,
   DataIdsOpts,
+  DataListIdsOpts,
   DataListIdsResult,
   DataTransport,
   IdPrefixSpec,
@@ -931,3 +949,7 @@ export { withSenderSignature } from './sender-signature';
 // sprigr-app-kit#170: a dispatcher tool's manifest `dispatch` block from the action registry.
 export { ACTION_DESCRIPTION_MAX_CHARS, buildDispatchManifest, buildParamsDescription, oneLineDescription } from './dispatch-manifest';
 export type { DispatchActionSpec } from './dispatch-manifest';
+
+// sprigr-apps#4001: a bounded age sweep for an app's D1 audit table.
+export { pruneAuditTable } from './audit-retention';
+export type { PruneAuditTableOpts, PruneAuditTableResult } from './audit-retention';
