@@ -186,6 +186,17 @@ export interface FetchWithBudgetOptions {
    * tests, and for a caller that wraps fetch (tracing, a mock provider).
    */
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  /**
+   * Opt-in stall bound for the response body, in ms. When set, the body is
+   * read through a stream that errors with `FetchBudgetTimeoutError` (phase
+   * `'attempt'`) and aborts the request once no bytes have arrived for this
+   * long. The clock runs only while a read waits on the network, so a body
+   * that keeps sending is never cut however long it takes, and a slow
+   * consumer is not a stall. Unset, the body read is unbounded as before:
+   * the guarded body is a new `Response` (`url` and `redirected` copied
+   * across), and existing callers stream bodies this cap was never sized for.
+   */
+  bodyStallMs?: number;
 }
 
 /**
@@ -206,10 +217,8 @@ export interface FetchWithBudgetOptions {
  * cancelled properly; one that ignores it still cannot outlive the
  * budget.
  *
- * The cap covers the body too: when a response has a body, the timer stays
- * armed after the headers arrive and aborts the request when it fires, so a
- * body that stalls rejects its read with the `FetchBudgetTimeoutError`
- * instead of hanging. A bodiless response clears the timer at once.
+ * Both clocks stop at the headers. A body that stalls after them is bounded
+ * only by `opts.bodyStallMs`, which measures silence, not duration.
  */
 export async function fetchWithBudget(
   input: RequestInfo | URL,
@@ -237,29 +246,76 @@ export async function fetchWithBudget(
   const signal = callerSignal ? anySignal(callerSignal, controller.signal) : controller.signal;
 
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let headersIn = false;
   const budgetCut = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       const err = new FetchBudgetTimeoutError(url, timeoutMs, phase);
-      // After the headers, aborting is what errors a stalled body read.
       controller.abort(err);
-      if (!headersIn) reject(err);
+      reject(err);
     }, timeoutMs);
   });
 
+  let response: Response;
   try {
-    const response = await Promise.race([doFetch(input, { ...init, signal }), budgetCut]);
-    headersIn = true;
-    if (response.body === null && timer !== undefined) clearTimeout(timer);
-    return response;
+    response = await Promise.race([doFetch(input, { ...init, signal }), budgetCut]);
   } catch (err) {
-    if (timer !== undefined) clearTimeout(timer);
     if (isFetchBudgetTimeout(err)) throw err;
     // The caller's own cancellation is theirs to interpret.
     if (callerSignal?.aborted) throw err;
     if (isAbortLike(err)) throw new FetchBudgetTimeoutError(url, timeoutMs, phase);
     throw err;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
+
+  if (opts.bodyStallMs === undefined || response.body === null) return response;
+  return withBodyStallBound(response, response.body, url, opts.bodyStallMs, controller);
+}
+
+/** `response` with its body read through a stall timer (see `bodyStallMs`). */
+function withBodyStallBound(
+  response: Response,
+  source: ReadableStream<Uint8Array>,
+  url: string,
+  stallMs: number,
+  controller: AbortController,
+): Response {
+  const reader = source.getReader();
+  const body = new ReadableStream<Uint8Array>(
+    {
+      // pull runs only when the consumer wants bytes, so the timer measures
+      // the network's silence and never the consumer's pace.
+      async pull(out) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stalled = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            const err = new FetchBudgetTimeoutError(url, stallMs, 'attempt');
+            controller.abort(err);
+            reader.cancel(err).catch(() => {});
+            reject(err);
+          }, stallMs);
+        });
+        try {
+          const chunk = await Promise.race([reader.read(), stalled]);
+          if (chunk.done) out.close();
+          else out.enqueue(chunk.value);
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const guarded = new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  Object.defineProperty(guarded, 'url', { value: response.url });
+  Object.defineProperty(guarded, 'redirected', { value: response.redirected });
+  return guarded;
 }
 
 /**

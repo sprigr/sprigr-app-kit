@@ -41,7 +41,7 @@ while (cursor && !budgetExhausted(deadline, 3_000)) {
 - `remainingMs(deadline?) => number` - ms left; `Infinity` when there is no deadline.
 - `budgetExhausted(deadline?, minMs?) => boolean` - gate before starting new work. `minMs` is the smallest useful leg (one page, one token refresh).
 - `attemptTimeoutMs(deadline | undefined, capMs) => number` - `min(cap, time left)`, never negative.
-- `fetchWithBudget(input, init, deadline?, { attemptCapMs?, fetchImpl? }) => Promise<Response>` - `fetch` bounded by both clocks, body read included: a body that stalls after the headers rejects its read at the same cap. Composes (never replaces) `init.signal`.
+- `fetchWithBudget(input, init, deadline?, { attemptCapMs?, fetchImpl?, bodyStallMs? }) => Promise<Response>` - `fetch` bounded by both clocks up to the headers. Composes (never replaces) `init.signal`. With `bodyStallMs`, a body that sends no bytes for that long rejects its read with `FetchBudgetTimeoutError`; a body that keeps sending is never cut, and a slow consumer is not a stall. Without it the body read is unbounded.
 - `budgetSignal(deadline | undefined, capMs, callerSignal?) => AbortSignal` - the bounded signal alone, for a client that owns its own `fetch` call.
 - `FetchBudgetTimeoutError` - `retryable = true`, `phase: 'attempt' | 'budget'`, `url` (query stripped), `timeoutMs`. `isFetchBudgetTimeout(err)` narrows it.
 - `isAbortLike(err)` - true for an `AbortError` / `TimeoutError` rejection, matched by name so a test double is recognised too.
