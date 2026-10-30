@@ -9,6 +9,8 @@ export { encodeState, decodeState, encodeStateWithinEnvelope, oauthStateEnvelope
 export type { OAuthState, EncodeStateWithinEnvelopeOptions, EncodedStateWithinEnvelope } from './state';
 export { fetchWithRetry } from './fetch';
 export type { FetchWithRetryOptions } from './fetch';
+export { invokeWithBusyRetry, isPlatformBusyError, PLATFORM_D1_EXPORT_BUSY_CODE } from './invoke-retry';
+export type { InvokeWithBusyRetryOptions, SprigrInvokeEnv } from './invoke-retry';
 export {
   bytesToBase64,
   base64ToBytes,
@@ -17,6 +19,7 @@ export {
   assertFetchableFileUrl,
   FileUrlRefusedError,
   DEFAULT_MAX_FILE_BYTES,
+  MAX_FILE_REDIRECTS,
 } from './file';
 export type { FetchFileResult, FetchFileOptions, AllowedFileHosts, FileUrlRefusal } from './file';
 export {
@@ -62,6 +65,7 @@ export {
 } from './wfp-bridge';
 export type {
   EmitResult,
+  EmitSettled,
   EmitTransport,
   EmitMarketplaceEventOptions,
   InstallBridge,
@@ -70,6 +74,7 @@ export type {
 } from './wfp-bridge';
 export {
   logToPlatform,
+  logQuietly,
   withSprigrLogFallback,
   canLog,
   validateLogEntry,
@@ -162,6 +167,7 @@ export {
 } from './app-files';
 export type {
   AppFilesEnv,
+  AppFilesCallOptions,
   PutAppFileArgs,
   PutAppFileResult,
   PutAppFileStreamArgs,
@@ -216,8 +222,13 @@ export interface MarketplaceEventEmitOpts {
   /** Pin delivery to a single install in the receiving tenant.
    *  Omit for broadcast (the default). */
   targetAppInstallationId?: string;
-  /** Reserved for future at-least-once dedup. Apps can set it now;
-   *  the platform stores it but doesn't enforce dedup yet. */
+  /** Provider-stable id for this event (e.g. the webhook delivery id). The
+   *  platform drops a repeat of the same `dedupId` from the same install to the
+   *  same target within 48 h of the first queued emit, answering
+   *  `{ queued: true, settled: 'deduped', eventId: <first emit's id> }`. A failed
+   *  emit is not remembered, so retrying it is safe. A value that is not a
+   *  non-empty string of at most 512 chars is ignored. Two copies emitted within
+   *  about a second can both pass (the store is eventually consistent). */
   dedupId?: string;
 }
 
@@ -495,8 +506,10 @@ export interface SprigrDataApi {
   /**
    * List the objectIDs that start with `prefix` (non-empty, so a listing is
    * always scoped). Returns at most 50000 with `truncated: true` past that.
-   * Pass `after` ('' to start) to page in objectID order: the response then
-   * carries `next_after` for the next call, null on the last page
+   * `truncated: false` is not proof of a complete listing: an index still
+   * settling a recent write can omit it, so never delete on one listing alone.
+   * Send `after` (`''` starts at the beginning) to page in objectID order;
+   * `next_after` is then the next call's `after`, null on the last page
    * (sprigr-team#11515; absent on a platform or wrapper build without it).
    * `?`-optional for older wrapper builds; `makeDataClient` and
    * `purgeIndexByPrefix` fall back to the install-token route.
@@ -504,7 +517,41 @@ export interface SprigrDataApi {
   listIds?(
     prefix: string,
     opts?: SprigrDataIndexOpts & { withAcl?: boolean; after?: string },
-  ): Promise<{ objectIDs: string[]; total?: number; truncated: boolean; next_after?: string | null }>;
+  ): Promise<SprigrDataListIdsResult>;
+  /**
+   * Which of up to 100 `objectIDs` the index holds, in request order, so a
+   * mirroring app can tell a new item from a changed one without listing the
+   * index. IDs only, so it works on the ACL index; single indexes only.
+   * `?`-optional: feature-detect, since older wrapper builds lack it.
+   */
+  exists?(
+    objectIDs: string[],
+    opts?: SprigrDataIndexOpts & { withAcl?: boolean },
+  ): Promise<{ ok: boolean; existing: string[]; index: string }>;
+}
+
+/** The raw answer of {@link SprigrDataApi.listIds}; `makeDataClient` normalises it to `DataListIdsResult`. */
+export interface SprigrDataListIdsResult {
+  ok?: boolean;
+  objectIDs: string[];
+  total?: number;
+  truncated: boolean;
+  index?: string;
+  /** Present only when the call sent `after`: the next page's `after`, or null when done. */
+  next_after?: string | null;
+}
+
+/**
+ * `env.SPRIGR.registerWebhookTenant(tenantId, { path? })`: for an app whose
+ * manifest declares a `shared` webhook (one delivery URL fanned out per
+ * tenant). Call it at connect, and idempotently on token refresh, once the
+ * provider tenant id is known, so the shared receiver routes that tenant's
+ * events to this install. `path` picks the shared webhook when the manifest
+ * declares more than one. Throws when the manifest declares no matching
+ * shared webhook. `?`-optional: feature-detect.
+ */
+export interface SprigrWebhookTenantApi {
+  registerWebhookTenant?(tenantId: string, opts?: { path?: string }): Promise<{ ok: boolean }>;
 }
 
 /**
@@ -851,9 +898,27 @@ export interface WebhookArgs {
   headers?: Record<string, string>;
 }
 
+/**
+ * The args a manifest schedule's handler receives: the dispatcher's POST
+ * body, passed through by the wrapper. `deadline_at` / `dispatch_timeout_ms`
+ * say when the dispatcher stops waiting; read them instead of hard-coding it.
+ */
 export interface ScheduleArgs {
-  name: string;
+  /** The manifest schedule's name. */
+  schedule: string;
+  cron?: string;
+  timezone?: string;
+  /** The slot this fire is for (ISO). */
   scheduled_at?: string;
+  /** When the dispatcher fired it (ISO). */
+  fired_at?: string;
+  /** The platform's id for this fire; echo it in env.SPRIGR.log() to join the fire rows. */
+  fire_id?: string;
+  /** When the dispatcher stops waiting for this handler (ISO). */
+  deadline_at?: string;
+  dispatch_timeout_ms?: number;
+  /** @deprecated Never sent by the dispatcher; use `schedule`. */
+  name?: string;
 }
 
 export interface EventArgs {
@@ -953,3 +1018,7 @@ export type { DispatchActionSpec } from './dispatch-manifest';
 // sprigr-apps#4001: a bounded age sweep for an app's D1 audit table.
 export { pruneAuditTable } from './audit-retention';
 export type { PruneAuditTableOpts, PruneAuditTableResult } from './audit-retention';
+
+// Durable jobs (env.SPRIGR.jobs) types and liveness helper (#176).
+export { jobIsLive, listedJobs, LIVE_JOB_STATUSES } from './jobs';
+export type { JobDirective, JobStepArgs, SprigrJobsApi, SprigrJobsListResult, SprigrJobRecord, SprigrJobStatus } from './jobs';

@@ -302,7 +302,7 @@ Two deliberately identical calls in the same turn and step share one key, and th
 
 ## The lint
 
-`sprigr-check-write-protection` ships as a bin with the SDK. It scans every `apps/*/sprigr-app.json` and fails on a tool, or an enumerated dispatcher action, whose name is destructive (`delete`, `remove`, `cancel`, `void`, `refund`, `unship`, `rotate`, `offboard`, `purge`, `clear`, `reset`, `revoke`, `unregister`, `force`, `deactivate`, `suspend`, `destroy`, `capture_payment`, `complete_draft`) and that carries no `confirmation` entry. A dispatcher that does not enumerate its actions cannot be inspected and is a finding until it does.
+`sprigr-check-write-protection` ships as a bin with the SDK. It scans every `apps/*/sprigr-app.json` and fails on a tool, or an enumerated dispatcher action, whose name is destructive (`delete`, `remove`, `destroy`, `cancel`, `void`, `refund`, `unship`, `rotate`, `offboard`, `purge`, `wipe`, `drop`, `terminate`, `clear`, `reset`, `revoke`, `unregister`, `force`, `deactivate`, `suspend`, `capture_payment`, `complete_draft`; the list lives in `src/write-protection/destructive-verbs.json`, and `checkConfirmationPolicy` treats the same verbs as writes) and that carries no `confirmation` entry. A dispatcher that does not enumerate its actions cannot be inspected and is a finding until it does.
 
 - `apps/<app>/write-protection.json`: `{ "allow": { "acme_refund_rate": "a read; reports the refund ratio" } }`. Every entry needs a reason; a stale entry fails.
 - `tools/write-protection-baseline.json`: the ratchet. `--write-baseline` banks the current state; anything new fails; anything fixed must be banked.
