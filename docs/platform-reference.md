@@ -543,7 +543,9 @@ The member is `?`-optional on wrapper builds older than the platform route. The 
 
 ```ts
 // 1. Define once (idempotent). ALWAYS returns the full index name in
-//    .collection; capture it for ingest/query. Best called from on_install.
+//    .collection; capture it for ingest/query. Best called from on_install
+//    (the tool must be named exactly `on_install`; see "Lifecycle hooks"
+//    in marketplace-app-development.md).
 const { collection } = await env.SPRIGR.collections.define({
   scope: 'company',
   name_suffix: 'oms-orders',
