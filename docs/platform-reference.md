@@ -130,7 +130,7 @@ Single source of truth. Validated server-side at publish.
     "framework": "next"                      // 'next' | 'astro' | 'remix' | 'static'
   },
   "permissions": {
-    "scopes": ["tools:register", "sprigr.data:write", "sprigr.knowledge:write"],
+    "scopes": ["tools:register"],          // platform scopes only; env.SPRIGR.data needs none
     "network_domains": [                     // DECLARATIVE allowlist — NOT a WFP outbound firewall (see §2 gotchas)
       "api.procore.com", "sandbox.procore.com", "login.procore.com",
       "login-sandbox.procore.com"
