@@ -5,7 +5,7 @@
   "metadata": {
     "name": "Mock Warehouse",
     "slug": "mock-warehouse",
-    "version": "0.0.3",
+    "version": "0.0.4",
     "description": "Deterministic fulfilment-hub/fulfilment_provider implementer. Accepts every push, holds it until mock_warehouse_advance fires provider.order.accepted then provider.shipment.created, drives the carrier scans and the delivery through provider.shipment.event, and answers get_stock from a fixed fixture. The shakedown fixture for the hub, and the worked reference for a real warehouse adapter.",
     "author": {
       "name": "Sprigr Company",
@@ -40,6 +40,11 @@
       "file": "migrations/0002_scan_history.sql",
       "version": 2,
       "description": "Adds scans_json and delivered_at to the one request row: the carrier-scan history and the delivery stamp."
+    },
+    {
+      "file": "migrations/0003_shipment_ref.sql",
+      "version": 3,
+      "description": "Adds shipment_ref: the provider_shipment_ref the last ship emitted, which later scans hang off."
     }
   ],
   "tools": [
@@ -523,6 +528,10 @@
           },
           "tracking_number": {
             "type": "string"
+          },
+          "shipment_ref": {
+            "type": "string",
+            "description": "to=ship only: the provider_shipment_ref to emit. Re-shipping a shipped request under a new ref with a new tracking_number drives a carrier hand-off at the hub. Defaults to the ref of the last ship."
           },
           "stage": {
             "type": "string",

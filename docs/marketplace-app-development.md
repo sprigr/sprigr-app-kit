@@ -195,8 +195,8 @@ Typical candidates: `*_or_create_*` composites, `sync_*`, `reconcile_*`, and any
 
 - **Declaring it forces the write tier** regardless of the name: shorter budget, no automatic retry on a dispatch timeout or a DO disconnect, idempotency token forwarded.
 - **Omitting it changes nothing.** The name heuristic decides, exactly as it does for every app published so far. This field is opt-in and inert until you set it.
-- **`"read"` is not accepted.** Declaring `write` can only ever narrow what your app is granted, which is what makes it app-declarable; the opposite direction would let a manifest opt a write into the blind retry, so the platform does not honour it.
-- **A value other than `"write"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
+- **`"read"` is honoured, except for the retry.** On a read-only tool whose name is not a read verb (`preview_*`, `query_*`), it buys the read dispatch budget and timeout wording, lets the tool run in Plan Mode, and skips the chat-turn approval card (decision 0294). The blind retry still goes by the name, so a read tool should still carry a read-verb name where it can. The platform takes the declaration as stated, so declare `"read"` only on a tool that never writes. Today publish still logs a server-side warning calling a `"read"` declaration ignored; that warning is out of date.
+- **A value other than `"write"` or `"read"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
 
 In TypeScript the field is on `ManifestToolLike` in `@sprigr/apps-app-sdk`, typed `AppToolEffectsDeclaration`.
 
@@ -576,7 +576,7 @@ Plus a companion `@sprigr/apps-oauth-utils` with:
 - `OAuthError` typed errors, with a message that never carries the provider's raw response body
 
 Three more packages cover the rest of an OAuth app's plumbing. Every OAuth app needs the first two; reach for the third when the app has one token per user:
-- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page.
+- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page. `makeOAuthRefusals` and `consumeOAuthCallback` do the same for a callback that refused after the consume, so a reload repeats the refusal and its hint.
 - `@sprigr/apps-redact` - `redactSecrets` / `redactErrorMessage` strip codes, client secrets, tokens and API keys out of a string (JSON pairs, form pairs, `Bearer` values, known token prefixes, JSON nested inside a string) while keeping status codes and provider error text. Run every error you store in an audit row or `last_error` column through it.
 - `@sprigr/apps-actor-token-refresh` - `ActorRefreshLatch` coalesces concurrent refreshes for one user onto one in-flight call, and `needsRefresh` / `REFRESH_BUFFER_MS` decide when to refresh. Pass a lease config to `run` for providers that rotate refresh tokens, so two invocations in different isolates never spend the same refresh token.
 

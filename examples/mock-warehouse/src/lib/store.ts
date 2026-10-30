@@ -9,7 +9,7 @@
 
 import type { D1Like } from '@sprigr/apps-app-sdk';
 
-export type RequestStage = 'queued' | 'accepted' | 'shipped' | 'delivered' | 'cancelled';
+export type RequestStage = 'pushing' | 'queued' | 'accepted' | 'shipped' | 'delivered' | 'cancelled';
 
 export interface RequestRecord {
   fulfilment_request_id: string;
@@ -24,6 +24,8 @@ export interface RequestRecord {
   scans_json: string;
   /** ISO 8601 UTC, empty until the delivered scan is emitted. */
   delivered_at: string;
+  /** The ref the last ship emitted; empty means `shipmentRefFor(fulfilment_request_id)`. */
+  shipment_ref: string;
   created_at: string;
   updated_at: string;
 }
@@ -35,12 +37,18 @@ export interface RequestRecord {
  * the row back just to pass its own value through.
  */
 export type RequestPatch = Pick<RequestRecord, 'stage' | 'carrier' | 'tracking_number' | 'updated_at'> &
-  Partial<Pick<RequestRecord, 'scans_json' | 'delivered_at'>>;
+  Partial<Pick<RequestRecord, 'scans_json' | 'delivered_at' | 'shipment_ref'>>;
 
 export interface WarehouseStore {
   get(fulfilmentRequestId: string): Promise<RequestRecord | null>;
-  /** Insert only. The caller reads first, so this never fires on a repeat push. */
-  insert(record: RequestRecord): Promise<void>;
+  /**
+   * The push_order latch. Writes the record BEFORE the vendor call (stage
+   * 'pushing', no provider_ref yet) and answers whether THIS call wrote it,
+   * so of two deliveries of one request only one reaches the vendor.
+   */
+  claim(record: RequestRecord): Promise<boolean>;
+  /** The winner's vendor call returned: record its ref and move the row to 'queued'. */
+  setPushed(fulfilmentRequestId: string, providerRef: string, updatedAt: string): Promise<void>;
   update(fulfilmentRequestId: string, patch: RequestPatch): Promise<void>;
 }
 
@@ -50,19 +58,19 @@ export function d1Store(db: D1Like): WarehouseStore {
       return db
         .prepare(
           `SELECT fulfilment_request_id, provider_ref, order_id, warehouse_key, lines_json,
-                  stage, carrier, tracking_number, scans_json, delivered_at, created_at, updated_at
+                  stage, carrier, tracking_number, scans_json, delivered_at, shipment_ref, created_at, updated_at
              FROM mock_warehouse_requests WHERE fulfilment_request_id = ?`,
         )
         .bind(id)
         .first<RequestRecord>();
     },
-    async insert(record) {
-      await db
+    async claim(record) {
+      const result = await db
         .prepare(
           `INSERT INTO mock_warehouse_requests
              (fulfilment_request_id, provider_ref, order_id, warehouse_key, lines_json,
-              stage, carrier, tracking_number, scans_json, delivered_at, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              stage, carrier, tracking_number, scans_json, delivered_at, shipment_ref, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(fulfilment_request_id) DO NOTHING`,
         )
         .bind(
@@ -76,9 +84,26 @@ export function d1Store(db: D1Like): WarehouseStore {
           record.tracking_number,
           record.scans_json,
           record.delivered_at,
+          record.shipment_ref,
           record.created_at,
           record.updated_at,
         )
+        .run();
+      const changes = (result as { meta?: { changes?: unknown } } | null)?.meta?.changes;
+      // Refuse to guess: false would leave every order unpushed, true would
+      // let a repeat through to the vendor.
+      if (typeof changes !== 'number') {
+        throw new Error('D1 run() reported no meta.changes, so the push_order claim cannot tell whether it won');
+      }
+      return changes === 1;
+    },
+    async setPushed(id, providerRef, updatedAt) {
+      await db
+        .prepare(
+          `UPDATE mock_warehouse_requests SET provider_ref = ?, stage = 'queued', updated_at = ?
+            WHERE fulfilment_request_id = ? AND stage = 'pushing'`,
+        )
+        .bind(providerRef, updatedAt, id)
         .run();
     },
     async update(id, patch) {
@@ -90,7 +115,8 @@ export function d1Store(db: D1Like): WarehouseStore {
           `UPDATE mock_warehouse_requests
               SET stage = ?, carrier = ?, tracking_number = ?, updated_at = ?,
                   scans_json = COALESCE(?, scans_json),
-                  delivered_at = COALESCE(?, delivered_at)
+                  delivered_at = COALESCE(?, delivered_at),
+                  shipment_ref = COALESCE(?, shipment_ref)
             WHERE fulfilment_request_id = ?`,
         )
         .bind(
@@ -100,6 +126,7 @@ export function d1Store(db: D1Like): WarehouseStore {
           patch.updated_at,
           patch.scans_json ?? null,
           patch.delivered_at ?? null,
+          patch.shipment_ref ?? null,
           id,
         )
         .run();
@@ -113,8 +140,14 @@ export function memoryStore(): WarehouseStore {
     async get(id) {
       return rows.get(id) ?? null;
     },
-    async insert(record) {
-      if (!rows.has(record.fulfilment_request_id)) rows.set(record.fulfilment_request_id, { ...record });
+    async claim(record) {
+      if (rows.has(record.fulfilment_request_id)) return false;
+      rows.set(record.fulfilment_request_id, { ...record });
+      return true;
+    },
+    async setPushed(id, providerRef, updatedAt) {
+      const row = rows.get(id);
+      if (row?.stage === 'pushing') rows.set(id, { ...row, provider_ref: providerRef, stage: 'queued', updated_at: updatedAt });
     },
     async update(id, patch) {
       const row = rows.get(id);
@@ -123,6 +156,7 @@ export function memoryStore(): WarehouseStore {
       const next: RequestRecord = { ...row, ...patch };
       if (patch.scans_json === undefined) next.scans_json = row.scans_json;
       if (patch.delivered_at === undefined) next.delivered_at = row.delivered_at;
+      if (patch.shipment_ref === undefined) next.shipment_ref = row.shipment_ref;
       rows.set(id, next);
     },
   };
