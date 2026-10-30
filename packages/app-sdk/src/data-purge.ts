@@ -24,9 +24,12 @@
  * flow that must finish; the result carries `error` and `truncated` so the
  * caller can audit an incomplete purge instead of losing it in a catch.
  *
- * Wire contract (workers/provisioning/src/wfp-data.ts in sprigr-team):
- *   POST /internal/wfp/data/list-ids { prefix, index?, withAcl? }
+ * Wire contract (workers/provisioning/src/wfp-data-list-ids.ts in sprigr-team):
+ *   POST /internal/wfp/data/list-ids { prefix, index?, withAcl?, after? }
  *     200 { objectIDs, total, truncated }   (prefix must be non-empty; cap 50000)
+ *     With `after` (sprigr-team#11515): objectID order from after onward, plus
+ *     next_after (null on the last page). A platform without the cursor
+ *     ignores `after` and answers without next_after.
  *   POST /internal/wfp/data/delete   { objectIDs, index?, withAcl? }
  *     200 { ok, deleted, index }             (max 1000 ids; unknown ids are no-ops)
  */
@@ -47,11 +50,23 @@ export interface DataIdsOpts extends SprigrDataIndexOpts {
   withAcl?: boolean;
 }
 
+/** listIds options: the id-route options plus the paging cursor. */
+export interface DataListIdsOpts extends DataIdsOpts {
+  /** List the ids after this one, in objectID order. '' starts at the beginning. */
+  after?: string;
+}
+
 export interface DataListIdsResult {
   objectIDs: string[];
   total: number;
   /** The platform returned its cap's worth and stopped: more rows exist. */
   truncated: boolean;
+  /**
+   * Present only when the platform answered a paged request: the next call's
+   * `after`, or null on the last page. Absent from a platform (or an app
+   * built on a wrapper) that predates the cursor (sprigr-team#11515).
+   */
+  nextAfter?: string | null;
 }
 
 /** How a data call reaches the platform. `none` means it cannot. */
@@ -71,7 +86,7 @@ export interface DataClient {
     opts?: SprigrDataPartialUpdateOpts,
   ): Promise<SprigrDataPartialUpdateResult>;
   delete(objectIDs: string[], opts?: DataIdsOpts): Promise<{ ok: boolean; deleted: number; index: string }>;
-  listIds(prefix: string, opts?: DataIdsOpts): Promise<DataListIdsResult>;
+  listIds(prefix: string, opts?: DataListIdsOpts): Promise<DataListIdsResult>;
 }
 
 /** Bridge call ceiling: a purge sits inside a connect or disconnect request. */
@@ -102,6 +117,12 @@ function idsOpts(opts?: DataIdsOpts): Record<string, unknown> {
   };
 }
 
+/** A listing's cursor, only when the response carried one. */
+function nextAfterOf(r: Record<string, unknown> | null | undefined): { nextAfter?: string | null } {
+  if (!r || !('next_after' in r)) return {};
+  return { nextAfter: typeof r.next_after === 'string' ? r.next_after : null };
+}
+
 /**
  * The app's data surface on either transport, or null when neither exists.
  *
@@ -118,7 +139,7 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
       search: DataClient['search'];
       get: DataClient['get'];
       delete: (ids: string[], o?: DataIdsOpts) => Promise<{ ok?: boolean; deleted?: number; index?: string }>;
-      listIds: (p: string, o?: DataIdsOpts) => Promise<{ objectIDs?: string[]; total?: number; truncated?: boolean }>;
+      listIds: (p: string, o?: DataListIdsOpts) => Promise<{ objectIDs?: string[]; total?: number; truncated?: boolean; next_after?: string | null }>;
     };
     return {
       via: 'binding',
@@ -133,7 +154,12 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
       async listIds(prefix, opts) {
         const r = await d.listIds(prefix, opts);
         const objectIDs = Array.isArray(r?.objectIDs) ? r.objectIDs : [];
-        return { objectIDs, total: typeof r?.total === 'number' ? r.total : objectIDs.length, truncated: r?.truncated === true };
+        return {
+          objectIDs,
+          total: typeof r?.total === 'number' ? r.total : objectIDs.length,
+          truncated: r?.truncated === true,
+          ...nextAfterOf(r as Record<string, unknown> | undefined),
+        };
       },
     };
   }
@@ -189,9 +215,15 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
       return { ok: r.ok !== false, deleted: typeof r.deleted === 'number' ? r.deleted : objectIDs.length, index: String(r.index ?? opts?.index ?? '') };
     },
     async listIds(prefix, opts) {
-      const r = await post('/internal/wfp/data/list-ids', { prefix, ...idsOpts(opts) }, 'data.listIds');
+      const body = { prefix, ...idsOpts(opts), ...(typeof opts?.after === 'string' ? { after: opts.after } : {}) };
+      const r = await post('/internal/wfp/data/list-ids', body, 'data.listIds');
       const objectIDs = Array.isArray(r.objectIDs) ? (r.objectIDs as string[]) : [];
-      return { objectIDs, total: typeof r.total === 'number' ? r.total : objectIDs.length, truncated: r.truncated === true };
+      return {
+        objectIDs,
+        total: typeof r.total === 'number' ? r.total : objectIDs.length,
+        truncated: r.truncated === true,
+        ...nextAfterOf(r),
+      };
     },
   };
 }
@@ -226,10 +258,20 @@ function groupKey(index: string | undefined, withAcl: boolean | undefined): stri
   return `${withAcl ? 'acl' : 'plain'}\u0000${index ?? ''}`;
 }
 
+/** Pages one prefix may take (5,000,000 ids at the platform's 50,000 a page). */
+export const MAX_LIST_PAGES = 100;
+
 /**
  * Every id matching the prefixes right now. Never throws. With no data path
  * at all the app cannot have written rows, so the snapshot is empty with
  * `via: 'none'` and no error.
+ *
+ * On a platform with the list-ids cursor (sprigr-team#11515) each prefix is
+ * listed page by page to the end, all before anything is deleted, so no page
+ * is read again after deletes the index may not reflect yet. A platform or
+ * wrapper without the cursor answers one page, as before, and a cut-off
+ * listing still reports `truncated`. So do the page ceiling and a cursor that
+ * fails to move forward.
  */
 export async function snapshotIndexIds(env: WfpBridgeEnv, prefixes: readonly IdPrefixSpec[]): Promise<IdSnapshot> {
   const client = makeDataClient(env);
@@ -246,13 +288,25 @@ export async function snapshotIndexIds(env: WfpBridgeEnv, prefixes: readonly IdP
         group = { ...(s.index ? { index: s.index } : {}), ...(s.withAcl ? { withAcl: true } : {}), ids: new Set() };
         byGroup.set(key, group);
       }
-      const r = await client.listIds(s.prefix, { index: s.index, withAcl: s.withAcl });
-      // The platform filters by prefix; this guard keeps a listing bug from
-      // ever widening a purge past what the caller named.
-      r.objectIDs.forEach((id) => {
-        if (id.startsWith(s.prefix)) group!.ids.add(id);
-      });
-      snap.truncated ||= r.truncated;
+      let after = '';
+      for (let page = 1; ; page++) {
+        const r = await client.listIds(s.prefix, { index: s.index, withAcl: s.withAcl, after });
+        // The platform filters by prefix; this guard keeps a listing bug from
+        // ever widening a purge past what the caller named.
+        r.objectIDs.forEach((id) => {
+          if (id.startsWith(s.prefix)) group!.ids.add(id);
+        });
+        if (r.nextAfter === undefined) {
+          snap.truncated ||= r.truncated;
+          break;
+        }
+        if (r.nextAfter === null) break;
+        if (page >= MAX_LIST_PAGES || r.nextAfter <= after) {
+          snap.truncated = true;
+          break;
+        }
+        after = r.nextAfter;
+      }
     }
   } catch (err) {
     snap.error = `list: ${message(err)}`;
