@@ -36,7 +36,11 @@
  * D1 cost (sprigr-team CLAUDE.md "D1 rows written are a bill"): one insert
  * plus one update per guarded write, a TTL of 24 h by default (it only needs
  * to outlive the agent's retry), a sweep the app schedules, and NO secondary
- * index: the sweep scans a table that holds at most a day of writes.
+ * index. The sweep is bounded like makeDedupLatch's (at most 1000 rows per
+ * statement, 5000 per call, `more: true` when a backlog is left), so an
+ * install whose sweep never ran drains over several ticks. Without an index
+ * each statement scans until it finds `batch` expired rows: quick on a
+ * backlog, and a full scan only of a table that holds about a day of writes.
  *
  * Timestamps are written AND compared as ISO strings
  * (`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`), never against `datetime('now')`,
@@ -50,6 +54,7 @@
  */
 
 import type { D1Like, D1RunResult } from './types';
+import { sweepExpired, type SweepOpts } from './dedup-latch';
 
 const NOW_ISO_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
 
@@ -75,7 +80,7 @@ export interface IdempotentWrite {
    */
   run<R>(key: string | null | undefined, fn: () => Promise<R>): Promise<IdempotentWriteOutcome<R>>;
   /** Delete claims past `expires_at`. Safe to call any time. */
-  sweep(): Promise<{ deleted: number }>;
+  sweep(opts?: SweepOpts): Promise<{ deleted: number; more: boolean }>;
 }
 
 export interface MakeIdempotentWriteOpts {
@@ -205,9 +210,8 @@ export function makeIdempotentWrite(opts: MakeIdempotentWriteOpts): IdempotentWr
       return { status: 'in_progress' };
     },
 
-    async sweep() {
-      const raw = await db.prepare(`DELETE FROM ${table} WHERE expires_at <= ${NOW_ISO_SQL}`).bind().run();
-      return { deleted: changes(raw) };
+    async sweep(sweepOpts = {}) {
+      return sweepExpired(db, table, sweepOpts);
     },
   };
 }
