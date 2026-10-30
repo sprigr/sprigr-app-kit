@@ -73,6 +73,7 @@ export type {
 } from './wfp-bridge';
 export {
   logToPlatform,
+  logQuietly,
   withSprigrLogFallback,
   canLog,
   validateLogEntry,
