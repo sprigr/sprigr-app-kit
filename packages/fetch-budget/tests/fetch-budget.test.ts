@@ -330,6 +330,102 @@ describe('fetchWithBudget', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  describe('body reads (sprigr-app-kit#87)', () => {
+    const enc = new TextEncoder();
+
+    /** A body that sends `chunks` one every `everyMs`, then ends, and errors
+     *  when the request signal aborts, as a real fetch body does. */
+    const dripping =
+      (chunks: string[], everyMs: number, extra: ResponseInit = {}): FetchImpl =>
+      async (_input, init) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              init?.signal?.addEventListener('abort', () => controller.error(init.signal!.reason), { once: true });
+              chunks.forEach((c, i) =>
+                setTimeout(() => {
+                  controller.enqueue(enc.encode(c));
+                  if (i === chunks.length - 1) controller.close();
+                }, everyMs * (i + 1)),
+              );
+            },
+          }),
+          extra,
+        );
+
+    it('without bodyStallMs hands back the response itself, with no timer left', async () => {
+      const response = okResponse();
+      const got = await fetchWithBudget('https://api.example.com/x', undefined, undefined, {
+        attemptCapMs: 1_000,
+        fetchImpl: respondWith(response),
+      });
+      expect(got).toBe(response);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('a body that keeps sending for longer than attemptCapMs still reads in full', async () => {
+      const response = await fetchWithBudget('https://api.example.com/big', undefined, createDeadline(30_000), {
+        attemptCapMs: 1_000,
+        bodyStallMs: 1_000,
+        fetchImpl: dripping(['a', 'b', 'c', 'd', 'e'], 600),
+      });
+      const text = response.text();
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(text).resolves.toBe('abcde');
+    });
+
+    it('a body silent for bodyStallMs rejects its read and aborts the request', async () => {
+      let signal: AbortSignal | undefined;
+      const fetchImpl: FetchImpl = async (input, init) => {
+        signal = init?.signal ?? undefined;
+        return dripping(['a'], 5_000)(input, init);
+      };
+      const response = await fetchWithBudget('https://api.example.com/slow?token=s3cret', undefined, undefined, {
+        bodyStallMs: 1_000,
+        fetchImpl,
+      });
+      const read = expect(response.text()).rejects.toMatchObject({
+        name: 'FetchBudgetTimeoutError',
+        phase: 'attempt',
+        timeoutMs: 1_000,
+        url: 'https://api.example.com/slow',
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await read;
+      expect(signal?.aborted).toBe(true);
+    });
+
+    it('a consumer slower than bodyStallMs is not a stall', async () => {
+      const response = await fetchWithBudget('https://api.example.com/x', undefined, undefined, {
+        bodyStallMs: 1_000,
+        fetchImpl: dripping(['a', 'b'], 10),
+      });
+      const reader = response.body!.getReader();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe('a');
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(new TextDecoder().decode((await reader.read()).value)).toBe('b');
+      expect((await reader.read()).done).toBe(true);
+    });
+
+    it('the guarded response keeps status, headers and url', async () => {
+      const original = new Response('x', { status: 201, statusText: 'Created', headers: { 'x-k': 'v' } });
+      Object.defineProperty(original, 'url', { value: 'https://api.example.com/final' });
+      const got = await fetchWithBudget('https://api.example.com/x', undefined, undefined, {
+        bodyStallMs: 1_000,
+        fetchImpl: respondWith(original),
+      });
+      expect(got).not.toBe(original);
+      expect([got.status, got.statusText, got.headers.get('x-k'), got.url]).toEqual([
+        201,
+        'Created',
+        'v',
+        'https://api.example.com/final',
+      ]);
+      await expect(got.text()).resolves.toBe('x');
+    });
+  });
+
   it('accepts a URL object and a Request as input', async () => {
     const fetchImpl = vi.fn(neverSettles);
     const promise = fetchWithBudget(new URL('https://api.example.com/u?x=1'), undefined, undefined, {
@@ -337,7 +433,7 @@ describe('fetchWithBudget', () => {
       fetchImpl,
     });
     const assertion = expect(promise).rejects.toMatchObject({
-      url: 'https://api.example.com/u?x=1',
+      url: 'https://api.example.com/u',
       message: expect.stringContaining('https://api.example.com/u'),
     });
     await vi.advanceTimersByTimeAsync(1_000);
