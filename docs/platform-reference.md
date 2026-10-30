@@ -582,11 +582,11 @@ interface SprigrEnv {
   collections: {
     define(args: Record<string, unknown>): Promise<{ collection: string; created: boolean }>;
     ingest(args: { collection: string; records: Record<string, unknown>[]; merge_policy?: string }): Promise<{ ok: boolean; ingested: number }>;
-    ingestFromTable(args: Record<string, unknown>): Promise<{ ok: boolean; ingested: number }>;
+    ingestFromTable(args: { collection: string; rows: Record<string, unknown>[]; mapping: Record<string, string | { field: string; from_unit?: string; to_unit?: string }>; constant_fields?: Record<string, unknown> }): Promise<{ ok: boolean; ingested: number }>;
     query(args: { collection: string; query?: string; filters?: string; facets?: string[]; sort_by?: string; page?: number; hits_per_page?: number }): Promise<{ hits: Record<string, unknown>[]; nbHits: number; facetCounts: Record<string, Record<string, number>> | null }>;
     describe(args: { collection: string }): Promise<Record<string, unknown>>;
     history(args: { collection: string; object_id?: string; field?: string; limit?: number }): Promise<Record<string, unknown>>;
-    reconcile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    reconcile(args: { collection: string; against: { records: Record<string, unknown>[] } | { collection: string }; match: { key: string[] }; fields_to_compare?: string[] }): Promise<Record<string, unknown>>;
   };
 }
 // add `SPRIGR?: SprigrEnv;` to your env interface.
