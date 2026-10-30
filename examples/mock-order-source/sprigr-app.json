@@ -5,7 +5,7 @@
   "metadata": {
     "name": "Mock Order Source",
     "slug": "mock-order-source",
-    "version": "0.0.1",
+    "version": "0.0.2",
     "description": "Deterministic fulfilment-hub/order_source implementer. Keeps orders in per-install D1, implements every op against that store, and fires source.order.created plus source.request.submitted from one mock_order_source_place_order call. The selling-system half of the hub shakedown fixture.",
     "author": {
       "name": "Sprigr Company",
@@ -35,6 +35,11 @@
       "file": "migrations/0001_init.sql",
       "version": 1,
       "description": "Orders, lines, fulfilment requests, locations and stock, plus the seed order a fresh install answers get_order with."
+    },
+    {
+      "file": "migrations/0002_faults.sql",
+      "version": 2,
+      "description": "Fault lever: ops armed by mock_order_source_fail_next answer error a set number of times."
     }
   ],
   "tools": [
@@ -828,6 +833,51 @@
             "items": {
               "type": "object"
             }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      }
+    },
+    {
+      "name": "mock_order_source_fail_next",
+      "description": "Shakedown lever, not part of the interface. Arms add_note or mark_shipped to answer error (the retryable ack) on its next count calls (default 1, at most 5; 0 disarms), so a shakedown can watch the hub resend a write.",
+      "handler": "src/handlers/order-source.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": [
+              "add_note",
+              "mark_shipped"
+            ]
+          },
+          "count": {
+            "type": "number",
+            "description": "Integer 0 to 5. Default 1."
+          }
+        },
+        "required": [
+          "op"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "op": {
+            "type": "string"
+          },
+          "count": {
+            "type": "number"
           },
           "reason": {
             "type": "string"

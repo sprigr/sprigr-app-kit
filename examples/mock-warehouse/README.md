@@ -21,6 +21,10 @@ mock_warehouse_advance { fulfilment_request_id: 'fr_...' }                 -> ac
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'accept' }   -> provider.order.accepted only
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'ship',
                          carrier: 'DHL', tracking_number: 'D1' }           -> provider.shipment.created
+mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'ship',
+                         carrier: 'iMile', tracking_number: 'IM1',
+                         shipment_ref: 'mws_fr_..._2' }                    -> provider.shipment.created under a new
+                                                                             ref: a carrier hand-off
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'scan',
                          stage: 'first_scan', location: 'Sydney depot' }   -> one provider.shipment.event
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'deliver' }  -> four provider.shipment.event,

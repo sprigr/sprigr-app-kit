@@ -103,6 +103,7 @@ export async function pushOrder(deps: WarehouseDeps, args: PushOrderArgs): Promi
     tracking_number: '',
     scans_json: '[]',
     delivered_at: '',
+    shipment_ref: '',
     created_at: now,
     updated_at: now,
   });
@@ -241,6 +242,11 @@ export function health() {
 // The shakedown lever
 // ---------------------------------------------------------------------------
 
+/** The ref the request's shipment is under now: the last ship's, else the default. */
+function currentShipmentRef(row: RequestRecord): string {
+  return row.shipment_ref || shipmentRefFor(row.fulfilment_request_id);
+}
+
 export interface AdvanceArgs {
   fulfilment_request_id: string;
   /**
@@ -251,6 +257,12 @@ export interface AdvanceArgs {
   to?: 'accept' | 'ship' | 'scan' | 'deliver' | 'cancel';
   carrier?: string;
   tracking_number?: string;
+  /**
+   * `to: 'ship'` only: the provider_shipment_ref to emit. A re-ship under a
+   * new ref is how a carrier hand-off reaches the hub (same parcel, new
+   * number). Defaults to the ref already on the row, else `mws_<request>`.
+   */
+  shipment_ref?: string;
   /** `to: 'scan'` only: which scan to emit. Defaults to `departed_warehouse`. */
   stage?: ShipmentStage;
   /** `to: 'scan'` only: overrides the stage's default location. */
@@ -331,11 +343,13 @@ export async function advance(
 
   const carrier = args?.carrier || 'Mock Carrier';
   const trackingNumber = args?.tracking_number || `MWTRK${row.fulfilment_request_id.replace(/[^A-Za-z0-9]/g, '').toUpperCase()}`;
+  const shipmentRef = args?.shipment_ref || currentShipmentRef(row);
   const shippedAt = deps.now();
   await deps.store.update(row.fulfilment_request_id, {
     stage: 'shipped',
     carrier,
     tracking_number: trackingNumber,
+    shipment_ref: shipmentRef,
     updated_at: shippedAt,
   });
   emitted.push(
@@ -345,7 +359,7 @@ export async function advance(
       fulfilment_request_id: row.fulfilment_request_id,
       provider_ref: row.provider_ref,
       shipment: {
-        provider_shipment_ref: shipmentRefFor(row.fulfilment_request_id),
+        provider_shipment_ref: shipmentRef,
         carrier,
         tracking_number: trackingNumber,
         tracking_url: `https://track.mock-warehouse.test/${trackingNumber}`,
@@ -454,7 +468,7 @@ async function emitScans(
   const history = parseScans(row.scans_json);
   const emitted: EmitOutcome[] = [];
   const minted: ScanRecord[] = [];
-  const shipmentRef = shipmentRefFor(row.fulfilment_request_id);
+  const shipmentRef = currentShipmentRef(row);
 
   for (const { stage, occurred_at, location, detail } of requested) {
     // The ref counts scans of this stage already on the row PLUS the ones
