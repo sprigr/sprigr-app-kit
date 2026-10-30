@@ -572,6 +572,113 @@ export interface SprigrMeApi {
   signature(input: { channel: string }): Promise<SprigrMeSignatureResult>;
 }
 
+/** The `error` values {@link SprigrEmailApi.send} can resolve with. */
+export type SprigrEmailSendError = 'recipient_not_verified' | 'cap_exceeded' | 'invalid' | 'unavailable';
+
+/** Why a send skipped a member it was given in `to_members`. */
+export type SprigrEmailMemberSkipReason = 'not_subscribed' | 'not_member' | 'cannot_see_install';
+
+/** Input to {@link SprigrEmailApi.send}. At least one of `to` or `to_members` is required. */
+export interface SprigrEmailSendInput {
+  /** Addresses an owner or admin allowlisted for this install and that confirmed (sprigr-team decision 0254). */
+  to?: string | string[];
+  /** Copied on every message to `to`; needs a `to`. */
+  cc?: string | string[];
+  /**
+   * Company members by platform user id, at most 50 (decision 0323). Each must
+   * have subscribed themselves with {@link SprigrEmailMembersApi.subscribe}.
+   * Store the id those methods return; never take one from a request body.
+   */
+  to_members?: string[];
+  subject: string;
+  text: string;
+  html?: string;
+  reply_to?: string;
+}
+
+/** Result of {@link SprigrEmailApi.send}. Never rejects. */
+export type SprigrEmailSendResult =
+  | {
+      ok: true;
+      message_id: string | null;
+      message_ids: string[];
+      /** The `to` addresses sent. A member's address is never returned. */
+      sent: string[];
+      /** Present when `to_members` was given. A skipped member is not an error. */
+      members?: { sent: string[]; skipped: Array<{ platform_user_id: string; reason: SprigrEmailMemberSkipReason }> };
+    }
+  | { ok: false; error: SprigrEmailSendError; message: string; recipients?: string[] };
+
+/** The `error` values {@link SprigrEmailRecipientsApi} methods can resolve with. */
+export type SprigrEmailRecipientError =
+  | 'not_admin'
+  | 'no_person'
+  | 'actor_unverified'
+  | 'too_many_recipients'
+  | 'verification_cap_exceeded'
+  | 'invalid'
+  | 'unavailable';
+
+export type SprigrEmailRecipientStatus = 'pending' | 'verified' | 'revoked';
+
+/** Result of {@link SprigrEmailRecipientsApi.add} and `.revoke`. Never rejects. */
+export type SprigrEmailRecipientResult =
+  | { ok: true; email: string; status: SprigrEmailRecipientStatus; detail: string; expires_at?: string; pre_verified?: boolean }
+  | { ok: false; error: SprigrEmailRecipientError; message: string };
+
+/**
+ * `env.SPRIGR.email.recipients` (decision 0323): the app's dashboard manages
+ * the install's address allowlist for its signed-in owner or admin. `add` and
+ * `revoke` act for the person driving the dispatch, whose current role the
+ * platform re-reads; `list` needs only the install. Every method resolves.
+ */
+export interface SprigrEmailRecipientsApi {
+  /** Add an address: `pending` until the person there confirms, or `verified` at once when an owner passes `pre_verified`. */
+  add(input: { email: string; pre_verified?: boolean }): Promise<SprigrEmailRecipientResult>;
+  /** Revoke an address at once. */
+  revoke(input: { email: string }): Promise<SprigrEmailRecipientResult>;
+  list(): Promise<
+    | { ok: true; recipients: Array<{ email: string; status: SprigrEmailRecipientStatus; [k: string]: unknown }> }
+    | { ok: false; error: SprigrEmailRecipientError; message: string }
+  >;
+}
+
+/** The `error` values {@link SprigrEmailMembersApi} methods can resolve with. */
+export type SprigrEmailMemberError = 'no_person' | 'actor_unverified' | 'not_member' | 'cannot_see_install' | 'unavailable';
+
+/**
+ * Result of a {@link SprigrEmailMembersApi} method. `platform_user_id` is the
+ * signed-in person the platform verified: the id to store and later pass to
+ * `to_members`.
+ */
+export type SprigrEmailMemberResult =
+  | { ok: true; status: 'active' | 'revoked' | 'none'; platform_user_id: string }
+  | { ok: false; error: SprigrEmailMemberError; message: string };
+
+/**
+ * `env.SPRIGR.email.members` (decision 0323): the person signed in to the
+ * app's dashboard opts THEMSELVES in or out of the app's email. No method
+ * takes a person, so nobody can subscribe someone else; a webhook, schedule
+ * or agent with no person behind it gets `no_person`.
+ */
+export interface SprigrEmailMembersApi {
+  /** Needs an active member who can see this install. This call is their consent. */
+  subscribe(): Promise<SprigrEmailMemberResult>;
+  unsubscribe(): Promise<SprigrEmailMemberResult>;
+  status(): Promise<SprigrEmailMemberResult>;
+}
+
+/**
+ * `env.SPRIGR.email`: mail from the app (sprigr-team decisions 0254, 0323).
+ * Feature-detect each part: older wrappers lack `recipients`, `members` and
+ * `to_members`.
+ */
+export interface SprigrEmailApi {
+  send(input: SprigrEmailSendInput): Promise<SprigrEmailSendResult>;
+  recipients?: SprigrEmailRecipientsApi;
+  members?: SprigrEmailMembersApi;
+}
+
 /** The `error` values {@link SprigrTeamsApi} methods can resolve with. */
 export type SprigrTeamsError =
   | 'scope_not_granted'
