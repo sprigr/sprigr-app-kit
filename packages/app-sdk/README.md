@@ -73,7 +73,7 @@ export default {
 
 ## Misc
 
-- `fetchWithRetry` — rate-limit-header-aware, jittered retry
+- `fetchWithRetry`: rate-limit-header-aware, jittered retry. A 429 is retried for every method. A 5xx or a thrown network error is retried only for an idempotent request: GET, HEAD, OPTIONS, PUT and DELETE (idempotent by RFC 9110), a POST or PATCH with a non-empty `Idempotency-Key` or `Idempotency-Token` header, or `idempotent: true` (`idempotent: false` keeps any request, a PUT or DELETE included, to one attempt). The caller's abort or timeout ends the call with no further attempt, including during a backoff, and a response dropped for a retry has its body cancelled. **Behaviour change in 0.52.0 (sprigr-app-kit#83):** a POST or PATCH answered 5xx is returned, not sent again. On bumping: a read sent as POST (realestate's realty GraphQL search, atlassian's Jira approximate-count) needs `idempotent: true` to keep its 5xx retry; PUT and DELETE retries are unchanged.
 - `invokeWithBusyRetry(env, toolName, args, { maxAttempts, deadlineAt })` (0.44.0): retries `env.SPRIGR.invoke` only on the platform's 503 `platform_d1_export_busy`, which is sent before anything is dispatched, waiting 30 s between attempts and never past `deadlineAt`. Every other failure is rethrown, since it may follow a real dispatch. Use it in a job loop, not to stretch a single call.
 - `constantTimeEqual(a, b)` — bearer-secret verification
 - `encodeState` / `decodeState` — OAuth state base64url
