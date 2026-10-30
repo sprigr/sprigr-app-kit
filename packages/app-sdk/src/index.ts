@@ -9,6 +9,8 @@ export { encodeState, decodeState, encodeStateWithinEnvelope, oauthStateEnvelope
 export type { OAuthState, EncodeStateWithinEnvelopeOptions, EncodedStateWithinEnvelope } from './state';
 export { fetchWithRetry } from './fetch';
 export type { FetchWithRetryOptions } from './fetch';
+export { invokeWithBusyRetry, isPlatformBusyError, PLATFORM_D1_EXPORT_BUSY_CODE } from './invoke-retry';
+export type { InvokeWithBusyRetryOptions, SprigrInvokeEnv } from './invoke-retry';
 export {
   bytesToBase64,
   base64ToBytes,
