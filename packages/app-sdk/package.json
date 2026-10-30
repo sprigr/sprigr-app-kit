@@ -31,6 +31,7 @@
   "files": [
     "dist",
     "bin",
+    "src/write-protection/destructive-verbs.json",
     "README.md"
   ],
   "bin": {
