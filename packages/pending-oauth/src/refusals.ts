@@ -32,7 +32,8 @@ import { hashCsrf } from './hash';
 import { COMPLETION_TRIM_MS, COMPLETION_WINDOW_MS, type OAuthCompletions } from './completions';
 
 export interface OAuthRefusals<R extends object> {
-  /** Remember the refusal for this flow. Never throws. */
+  /** Remember the refusal for this flow. Never throws. This is the unguarded
+   *  primitive: callbacks use `refuse` from consumeOAuthCallback instead. */
   record(csrf: string, refusal: R): Promise<void>;
   /** The refusal recorded for `csrf` within `windowMs`, or null. Never throws. */
   recent(csrf: string, windowMs?: number): Promise<R | null>;
