@@ -526,6 +526,21 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
 
+  packages/home-conformance:
+    devDependencies:
+      '@sprigr/apps-app-sdk':
+        specifier: 0.18.0
+        version: 0.18.0
+      '@sprigr/apps-home':
+        specifier: 0.2.0
+        version: 0.2.0(@sprigr/apps-app-sdk@0.18.0)
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.16.9)
+
   packages/oauth-utils:
     devDependencies:
       '@cloudflare/workers-types':
@@ -2293,6 +2308,7 @@ packages:
   '@smithy/core@3.29.8':
     resolution: {integrity: sha512-rpCbCV+TimOBi3VLNBMmtTvgfOWcFIEAru3+TFlG87SL2F+te4jOnnNR+cf3uR4eJ5Qf4LnT80fqnBKgPRS6zA==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.4.13':
     resolution: {integrity: sha512-X+2HNZhWi5i3rJsCas0LPf6fTQUaKyJ40zd8aTO/bwpRfpU3biYaqLr7C1WMibL7PVKJalpi1PyybjGPNoHC8Q==}
@@ -2474,6 +2490,11 @@ packages:
 
   '@sprigr/apps-fetch-budget@0.1.0':
     resolution: {integrity: sha512-C5eOffXX0Z9Ql/lYuLoWUVlF2N2Q0wY0BRjwp7bKT6291jP4HNXHTe9Eii7t+rR0v03dEX0Y2mwoQBeZ0OkiCg==}
+
+  '@sprigr/apps-home@0.2.0':
+    resolution: {integrity: sha512-bztn6aV8nbu3tMtdOVEXTVK3lb6bCI7Bxv9Ic/C6h3fEFvFI05nRcyjtmiZCzlUFDR5ETrQisR+XvMImXndPpQ==}
+    peerDependencies:
+      '@sprigr/apps-app-sdk': '>=0.18.0 <1'
 
   '@sprigr/apps-oauth-utils@0.3.0':
     resolution: {integrity: sha512-Y2Z7j0nTDHBXcIm5GS6mqAl8kWXwKIlltuNFyZbPGHMq5OfjmF2DP8Nn3LdZ0RZxz6S1n5nOO56uYtMtI1CQdA==}
@@ -5625,6 +5646,10 @@ snapshots:
   '@sprigr/apps-dedup-latch@0.1.0': {}
 
   '@sprigr/apps-fetch-budget@0.1.0': {}
+
+  '@sprigr/apps-home@0.2.0(@sprigr/apps-app-sdk@0.18.0)':
+    dependencies:
+      '@sprigr/apps-app-sdk': 0.18.0
 
   '@sprigr/apps-oauth-utils@0.3.0': {}
 
