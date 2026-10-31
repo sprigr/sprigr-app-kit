@@ -24,16 +24,16 @@ describe('offerUndo', () => {
 
   it('stores the copy and builds the envelope, naming the connection with the chosen preposition', async () => {
     const journal = { captureBefore: vi.fn(async () => ({ ref: 'cap_1' })) };
-    const env = await offerUndo({ ...base, journal, before: { Name: 'Acme' }, connection: 'BoardCave AU', connectionPreposition: 'in' });
-    expect(journal.captureBefore).toHaveBeenCalledWith({ entity: 'update_contact', originalId: 'c1', before: { Name: 'Acme' }, connection: 'BoardCave AU' });
-    expect(env).toEqual({ fidelity: 'full', warning: 'Overwrites later changes.', describes: 'contact Acme in BoardCave AU', resource: 'contact', ref: 'cap_1' });
+    const env = await offerUndo({ ...base, journal, before: { Name: 'Acme' }, connection: 'Acme AU', connectionPreposition: 'in' });
+    expect(journal.captureBefore).toHaveBeenCalledWith({ entity: 'update_contact', originalId: 'c1', before: { Name: 'Acme' }, connection: 'Acme AU' });
+    expect(env).toEqual({ fidelity: 'full', warning: 'Overwrites later changes.', describes: 'contact Acme in Acme AU', resource: 'contact', ref: 'cap_1' });
   });
 
   it('labels the connection for people while journalling the pin', async () => {
     const journal = { captureBefore: vi.fn(async () => ({ ref: 'cap_2' })) };
-    const env = await offerUndo({ ...base, journal, before: { Name: 'Acme' }, connection: 'tenant-uuid', connectionLabel: 'BoardCave AU', connectionPreposition: 'in' });
+    const env = await offerUndo({ ...base, journal, before: { Name: 'Acme' }, connection: 'tenant-uuid', connectionLabel: 'Acme AU', connectionPreposition: 'in' });
     expect(journal.captureBefore).toHaveBeenCalledWith(expect.objectContaining({ connection: 'tenant-uuid' }));
-    expect(env?.describes).toBe('contact Acme in BoardCave AU');
+    expect(env?.describes).toBe('contact Acme in Acme AU');
   });
 
   it('offers nothing on a null capture or a journal that could not store', async () => {

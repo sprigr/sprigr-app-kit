@@ -25,6 +25,23 @@
  *     refuses to advance and returns `done: true` so callers cannot
  *     accidentally loop on a stuck provider.
  *
+ * End of a walk: what gets STORED (read this before choosing a cursor):
+ *   - Returning `nextCursor: null` on the last page RESETS the stored
+ *     cursor to null (null differs from the cursor just read, so it is
+ *     treated as an advance and persisted). The next invocation then
+ *     starts from the very first page again.
+ *   - That is right for a FULL walk that should restart each pass (page
+ *     numbers or offsets; quickbooks and xero-accounting rely on it).
+ *   - It is WRONG for an ORDERED-STREAM walk whose cursor is a position
+ *     to resume from (e.g. `sortKey: UPDATED_AT` + an opaque `after`
+ *     cursor). There, return the last page's cursor on the final page,
+ *     and on an empty page return the cursor you were given. The walker
+ *     reads "not advanced" as done and keeps the stored position, so the
+ *     next invocation asks only for what changed after it.
+ *     sprigr-apps#3266: shopify returned null on its last page, so its
+ *     hourly restate reset to the oldest order every time it caught up and
+ *     re-walked the store's whole history.
+ *
  * Typical wiring (app supplies the provider-specific fetch + write):
  *
  *   const state = makeSyncState({ db: env.DB, table: 'sync_state' });
@@ -55,6 +72,12 @@ export interface RunResumablePageOpts<TRow> {
 
 export interface FetchPageResult<TRow> {
   rows: TRow[];
+  /**
+   * Where the next invocation starts. `null` ends the walk AND resets the
+   * stored cursor, so the next walk starts from the first page. For a
+   * resumable ordered stream, return the last cursor instead (see "End of a
+   * walk" above).
+   */
   nextCursor: string | null;
 }
 

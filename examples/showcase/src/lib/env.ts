@@ -5,6 +5,7 @@
  * `sprigr app dev` mirrors the shape locally:
  *   - DB          - per-install D1 (always; local SQLite under `app dev`)
  *   - INSTALL_ID / COMPANY_ID / APP_SLUG - runtime-injected identifiers
+ *   - COMPANY_TIMEZONE - the company's IANA zone, when it has one
  *   - SPRIGR      - the platform host object (env.SPRIGR.*). ALL of its
  *                   methods are staging-only: the `sprigr app dev` harness
  *                   installs a Proxy stub that THROWS on any access with a
@@ -37,6 +38,8 @@ export interface ShowcaseEnv {
   INSTALL_ID?: string;
   COMPANY_ID?: string;
   APP_SLUG?: string;
+  /** The company's IANA zone; read it with getCompanyTimezone(env). */
+  COMPANY_TIMEZONE?: string;
   /** Keep assignable to the OpenNext CloudflareEnv constraint. */
   [key: string]: unknown;
 }

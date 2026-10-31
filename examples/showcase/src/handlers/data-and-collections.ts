@@ -9,7 +9,12 @@
  *   data.get      point read by objectID.
  *
  *   collections.* a higher-level, versioned, keyed dataset with change
- *                 history + reconcile. Requires the sprigr.collections scope.
+ *                 history + reconcile. No manifest scope: the platform
+ *                 authenticates the install token and keeps every call in the
+ *                 install's own company (sprigr-team
+ *                 workers/provisioning/src/wfp-collections.ts). Only define
+ *                 takes scope + name_suffix; it returns the full index name,
+ *                 and every other op takes that name as `collection`.
  *
  *   fulfillment_services.register  register a Shopify fulfilment location per
  *                 warehouse (requires brand consent — err.code='no_consent'
@@ -20,6 +25,8 @@
 
 import { stagingOnly } from '../lib/env';
 import type { ShowcaseEnv, HandlerOk, HandlerStagingOnly } from '../lib/env';
+import { getSetting, setSetting } from '../lib/store';
+import type { CollectionDefinition } from '../lib/sprigr-host';
 
 // ── data index ───────────────────────────────────────────────────────────────
 export async function cacheContacts(
@@ -54,44 +61,71 @@ export async function getContact(env: ShowcaseEnv, contactId: string): Promise<H
 }
 
 // ── collections (keyed, versioned, reconcilable) ─────────────────────────────
-export async function defineDealsCollection(env: ShowcaseEnv): Promise<HandlerOk | HandlerStagingOnly> {
-  return stagingOnly(
-    () =>
-      env.SPRIGR.collections.define({
-        scope: 'company',
-        name_suffix: 'acme-deals',
-        description: 'Acme CRM deals, keyed by deal id, with change history.',
-        key: { strategy: 'composite', fields: ['deal_id'] },
-        fields: [
-          { name: 'deal_id', type: 'string', facet: false },
-          { name: 'stage', type: 'string', facet: true },
-          { name: 'amount', type: 'number', facet: false },
-        ],
-        searchable: ['deal_id', 'stage'],
-        history: true,
-      }),
-    'defineDealsCollection calls env.SPRIGR.collections.define — publish to staging.',
-  );
+type Deal = { deal_id: string; stage: string; amount: number };
+
+const DEALS_COLLECTION_SETTING = 'deals_collection';
+
+/** The define body. define is idempotent: re-calling it unchanged is a cheap no-op. */
+const DEALS_DEFINITION: CollectionDefinition = {
+  scope: 'company',
+  name_suffix: 'acme-deals',
+  description: 'Acme CRM deals, keyed by deal id, with change history.',
+  // natural = one key field; composite = several. Either derives the
+  // record's objectID from the key, so re-ingesting a deal updates it.
+  key: { strategy: 'natural', fields: ['deal_id'] },
+  fields: [
+    { name: 'deal_id', type: 'string', facet: false },
+    { name: 'stage', type: 'string', facet: true },
+    { name: 'amount', type: 'number', facet: false },
+  ],
+  searchable: ['deal_id', 'stage'],
+  history: true,
+};
+
+/**
+ * The collection's full index name, which define returns and every other op
+ * takes as `collection`. Cached in showcase_settings so only the first call
+ * pays for the define round trip.
+ */
+async function dealsCollection(env: ShowcaseEnv): Promise<string> {
+  const cached = await getSetting(env.DB, DEALS_COLLECTION_SETTING);
+  if (cached) return cached;
+  const { collection } = await env.SPRIGR.collections.define(DEALS_DEFINITION);
+  await setSetting(env.DB, DEALS_COLLECTION_SETTING, collection);
+  return collection;
 }
 
-export async function ingestDeals(
-  env: ShowcaseEnv,
-  rows: Array<{ deal_id: string; stage: string; amount: number }>,
-): Promise<HandlerOk | HandlerStagingOnly> {
+export async function defineDealsCollection(env: ShowcaseEnv): Promise<HandlerOk | HandlerStagingOnly> {
+  return stagingOnly(async () => {
+    const res = await env.SPRIGR.collections.define(DEALS_DEFINITION);
+    await setSetting(env.DB, DEALS_COLLECTION_SETTING, res.collection);
+    return res;
+  }, 'defineDealsCollection calls env.SPRIGR.collections.define — publish to staging.');
+}
+
+/** Upsert deals by the declared key. At most 1000 records per call: chunk larger batches. */
+export async function ingestDeals(env: ShowcaseEnv, deals: Deal[]): Promise<HandlerOk | HandlerStagingOnly> {
   return stagingOnly(
-    () => env.SPRIGR.collections.ingest({ scope: 'company', name_suffix: 'acme-deals', rows }),
+    async () => env.SPRIGR.collections.ingest({ collection: await dealsCollection(env), records: deals }),
     'ingestDeals calls env.SPRIGR.collections.ingest — publish to staging.',
   );
 }
 
-export async function ingestDealsFromTable(env: ShowcaseEnv): Promise<HandlerOk | HandlerStagingOnly> {
+/**
+ * Ingest rows you already parsed (an Acme CSV export, keyed by column
+ * header). `mapping` runs source column -> collection field; columns it
+ * does not name are dropped. The platform reads nothing itself: pass the rows.
+ */
+export async function ingestDealsFromTable(
+  env: ShowcaseEnv,
+  rows: Array<Record<string, unknown>>,
+): Promise<HandlerOk | HandlerStagingOnly> {
   return stagingOnly(
-    () =>
+    async () =>
       env.SPRIGR.collections.ingestFromTable({
-        scope: 'company',
-        name_suffix: 'acme-deals',
-        table: 'showcase_settings',
-        column_map: { deal_id: 'key', stage: 'value' },
+        collection: await dealsCollection(env),
+        rows,
+        mapping: { 'Deal ID': 'deal_id', Stage: 'stage', Amount: 'amount' },
       }),
     'ingestDealsFromTable calls env.SPRIGR.collections.ingestFromTable — publish to staging.',
   );
@@ -99,31 +133,49 @@ export async function ingestDealsFromTable(env: ShowcaseEnv): Promise<HandlerOk 
 
 export async function queryDeals(env: ShowcaseEnv, stage: string): Promise<HandlerOk | HandlerStagingOnly> {
   return stagingOnly(
-    () => env.SPRIGR.collections.query({ scope: 'company', name_suffix: 'acme-deals', filters: `stage:${stage}` }),
+    async () =>
+      env.SPRIGR.collections.query({
+        collection: await dealsCollection(env),
+        filters: `stage:${stage}`,
+        facets: ['stage'],
+        hits_per_page: 50,
+      }),
     'queryDeals calls env.SPRIGR.collections.query — publish to staging.',
   );
 }
 
-export async function reconcileDeals(
-  env: ShowcaseEnv,
-  liveKeys: string[],
-): Promise<HandlerOk | HandlerStagingOnly> {
+/**
+ * Diff Acme's current deals against the stored ones by deal_id. Read-only:
+ * it reports added / missing (gap) / changed counts plus a sample of each,
+ * and writes nothing. Commit what you decide with ingest.
+ */
+export async function reconcileDeals(env: ShowcaseEnv, liveDeals: Deal[]): Promise<HandlerOk | HandlerStagingOnly> {
   return stagingOnly(
-    () => env.SPRIGR.collections.reconcile({ scope: 'company', name_suffix: 'acme-deals', present_keys: liveKeys }),
-    'reconcileDeals calls env.SPRIGR.collections.reconcile (marks absent keys deleted) — publish to staging.',
+    async () =>
+      env.SPRIGR.collections.reconcile({
+        collection: await dealsCollection(env),
+        against: { records: liveDeals },
+        match: { key: ['deal_id'] },
+      }),
+    'reconcileDeals calls env.SPRIGR.collections.reconcile, a read-only diff. Publish to staging.',
   );
 }
 
 export async function describeDeals(env: ShowcaseEnv): Promise<HandlerOk | HandlerStagingOnly> {
   return stagingOnly(
-    () => env.SPRIGR.collections.describe({ scope: 'company', name_suffix: 'acme-deals' }),
+    async () => env.SPRIGR.collections.describe({ collection: await dealsCollection(env) }),
     'describeDeals calls env.SPRIGR.collections.describe — publish to staging.',
   );
 }
 
-export async function dealHistory(env: ShowcaseEnv, dealId: string): Promise<HandlerOk | HandlerStagingOnly> {
+/**
+ * Field-level change log for one record. `objectId` is the record's objectID
+ * from a query hit. The platform derives it from the key, so it is not the
+ * deal_id itself.
+ */
+export async function dealHistory(env: ShowcaseEnv, objectId: string): Promise<HandlerOk | HandlerStagingOnly> {
   return stagingOnly(
-    () => env.SPRIGR.collections.history({ scope: 'company', name_suffix: 'acme-deals', key: dealId }),
+    async () => env.SPRIGR.collections.history({ collection: await dealsCollection(env), object_id: objectId, limit: 50 }),
     'dealHistory calls env.SPRIGR.collections.history — publish to staging.',
   );
 }

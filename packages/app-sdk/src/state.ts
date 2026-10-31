@@ -73,3 +73,89 @@ export function decodeState(encoded: string): OAuthState {
   const json = new TextDecoder().decode(bytes);
   return JSON.parse(json) as OAuthState;
 }
+
+/**
+ * Longest platform-signed state the platform sends to a provider. Dropbox
+ * documents 500 bytes, the tightest cap among the marketplace's providers.
+ * Mirrors OAUTH_STATE_ENVELOPE_MAX_CHARS in sprigr-team
+ * packages/shared/src/utils/oauth-state-envelope.ts (decision 0190): a state
+ * whose envelope would pass it is sent UNSIGNED, and a slug on the bouncer's
+ * enforce list then refuses the connect.
+ */
+export const OAUTH_STATE_ENVELOPE_MAX_CHARS = 500;
+
+/**
+ * Characters the platform's signed envelope adds around an app's state.
+ * The wire shape is `sps1.<inner>.<payload>.<sig>`: payload is base64url JSON
+ * `{ i: installId, a: appSlug, t: <ms> }` and sig is 16 HMAC bytes, 22
+ * base64url characters (mintOAuthStateEnvelope in sprigr-team). `t` is the
+ * platform's signing time; any 13-digit ms timestamp gives the same length.
+ */
+export function oauthStateEnvelopeOverhead(installId: string, appSlug: string, t: number = Date.now()): number {
+  const payloadBytes = new TextEncoder().encode(JSON.stringify({ i: installId, a: appSlug, t })).length;
+  const payloadChars = Math.ceil((payloadBytes * 4) / 3); // unpadded base64url
+  return 'sps1.'.length + 1 + payloadChars + 1 + 22;
+}
+
+export interface EncodeStateWithinEnvelopeOptions {
+  /** The install the platform signs into the envelope (env.INSTALL_ID). */
+  installId: string;
+  /** This app's marketplace slug, also signed into the envelope. */
+  appSlug: string;
+  /**
+   * Fields that may be left out, WHOLE, when the state would not fit, tried
+   * in this order. Default `['returnTo']`. List only fields the callback can
+   * do without: without returnTo the bouncer lands the user on the install's
+   * dashboard instead of the requested page.
+   */
+  optional?: ReadonlyArray<keyof OAuthState>;
+}
+
+export interface EncodedStateWithinEnvelope {
+  /** The encoded state to put on the authorize URL. */
+  state: string;
+  /** Optional fields left out to make it fit, in the order they were dropped. */
+  omitted: string[];
+  /** False when even the state without its optional fields is too long; it is then returned in full and the platform will send it unsigned. */
+  fits: boolean;
+}
+
+/**
+ * encodeState, but leaving room for the platform's signed envelope
+ * (sprigr-apps#3190). An optional field that does not fit is left out whole,
+ * never shortened: a cut returnTo is a broken landing page, and an absent one
+ * falls back to the install's dashboard. Each omission is logged with the
+ * field's length and the state's length before and after, so the cause of a
+ * dashboard landing is findable.
+ */
+export function encodeStateWithinEnvelope(
+  state: OAuthState,
+  opts: EncodeStateWithinEnvelopeOptions,
+): EncodedStateWithinEnvelope {
+  const budget = OAUTH_STATE_ENVELOPE_MAX_CHARS - oauthStateEnvelopeOverhead(opts.installId, opts.appSlug);
+  const full = encodeState(state);
+  if (full.length <= budget) return { state: full, omitted: [], fits: true };
+
+  const trimmed: Record<string, unknown> = { ...state };
+  const omitted: string[] = [];
+  for (const key of opts.optional ?? ['returnTo']) {
+    if (!(key in trimmed) || trimmed[key] === undefined) continue;
+    const value = trimmed[key];
+    delete trimmed[key];
+    omitted.push(key);
+    const candidate = encodeState(trimmed as unknown as OAuthState);
+    if (candidate.length <= budget) {
+      console.warn(
+        `[oauth-state] ${opts.appSlug}: left ${omitted.join(', ')} out of the OAuth state so it can be signed ` +
+          `(${String(key)} was ${typeof value === 'string' ? value.length : JSON.stringify(value).length} chars; ` +
+          `state ${full.length} -> ${candidate.length} chars, room ${budget}). The connect lands on the install's dashboard.`,
+      );
+      return { state: candidate, omitted, fits: true };
+    }
+  }
+  console.warn(
+    `[oauth-state] ${opts.appSlug}: the OAuth state is ${full.length} chars and only ${budget} fit inside the signed envelope ` +
+      `even without its optional fields, so the platform will send it unsigned.`,
+  );
+  return { state: full, omitted: [], fits: false };
+}

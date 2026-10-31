@@ -44,7 +44,9 @@
  * Apps should schedule a daily sweep via env.SPRIGR.schedules.create.
  * The sweep is best-effort; a delayed sweep doesn't break correctness
  * (the unique constraint still latches future re-deliveries against
- * existing rows even if expired).
+ * existing rows even if expired). One sweep() removes at most 5000 rows
+ * by default, 1000 per statement; `more: true` means the cap was hit and
+ * the next scheduled sweep carries on with the backlog.
  */
 
 import type { D1Like, D1RunResult } from './types';
@@ -58,12 +60,23 @@ export interface DedupLatch {
   tryClaim(id: string): Promise<boolean>;
 
   /**
-   * Delete rows with `expires_at <= now()`. Returns the number
-   * deleted. Safe to call any time; missed sweeps don't break
-   * correctness.
+   * Delete rows with `expires_at <= now()`, in bounded batches. Returns
+   * the number deleted, and `more: true` when the per-call cap was
+   * reached and expired rows may remain (call again on the next tick).
+   * Safe to call any time; missed sweeps don't break correctness.
    */
-  sweep(): Promise<{ deleted: number }>;
+  sweep(opts?: SweepOpts): Promise<{ deleted: number; more: boolean }>;
 }
+
+export interface SweepOpts {
+  /** Most rows one DELETE statement removes. Default 1000. */
+  batch?: number;
+  /** Most rows one sweep() call removes, across its statements. Default 5000. */
+  max?: number;
+}
+
+const DEFAULT_SWEEP_BATCH = 1000;
+const DEFAULT_SWEEP_MAX = 5000;
 
 export interface MakeDedupLatchOpts {
   db: D1Like;
@@ -94,23 +107,59 @@ export function makeDedupLatch(opts: MakeDedupLatchOpts): DedupLatch {
       const changes = (raw as D1RunResult | null)?.meta?.changes ?? 0;
       return changes > 0;
     },
-    async sweep() {
-      // `expires_at` is written by tryClaim as an ISO string
-      // (`2026-09-03T16:25:26.636Z`). SQLite compares TEXT byte-wise, and
-      // `datetime('now')` renders `2026-09-03 16:25:26`: same date prefix,
-      // then 'T' (0x54) sorts AFTER ' ' (0x20), so an expired row never
-      // compared <= "now" until the UTC date rolled over. For webhook dedup
-      // that only meant rows lingered a day; for a tick LEASE it meant a
-      // lease left by a dead invocation blocked every tick until midnight
-      // UTC (microsoft-365 mail sync, two prod tenants, 2026-09-03). Render
-      // "now" in the SAME format the rows carry.
-      const raw = await db
-        .prepare(`DELETE FROM ${table} WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
-        .bind()
-        .run();
-      return { deleted: (raw as D1RunResult | null)?.meta?.changes ?? 0 };
+    async sweep(sweepOpts = {}) {
+      return sweepExpired(db, table, sweepOpts);
     },
   };
+}
+
+/**
+ * Delete expired rows in bounded batches; shared by makeDedupLatch and
+ * makeIdempotentWrite, whose tables both key on `id` and expire on `expires_at`.
+ */
+export async function sweepExpired(
+  db: D1Like,
+  table: string,
+  sweepOpts: SweepOpts = {},
+): Promise<{ deleted: number; more: boolean }> {
+  const batch = sweepOpts.batch ?? DEFAULT_SWEEP_BATCH;
+  const max = sweepOpts.max ?? DEFAULT_SWEEP_MAX;
+  assertPositiveInt('batch', batch);
+  assertPositiveInt('max', max);
+  // `expires_at` is written by tryClaim as an ISO string
+  // (`2026-09-03T16:25:26.636Z`). SQLite compares TEXT byte-wise, and
+  // `datetime('now')` renders `2026-09-03 16:25:26`: same date prefix,
+  // then 'T' (0x54) sorts AFTER ' ' (0x20), so an expired row never
+  // compared <= "now" until the UTC date rolled over. For webhook dedup
+  // that only meant rows lingered a day; for a tick LEASE it meant a
+  // lease left by a dead invocation blocked every tick until midnight
+  // UTC (microsoft-365 mail sync, two prod tenants, 2026-09-03). Render
+  // "now" in the SAME format the rows carry.
+  //
+  // Bounded (sprigr-app-kit#126): the first sweep on a table that was
+  // never swept used to delete the whole expired backlog in one
+  // statement. D1 has no `DELETE ... LIMIT`, so each statement picks at
+  // most `batch` ids through a subquery, and the loop stops at `max`.
+  let deleted = 0;
+  while (deleted < max) {
+    const limit = Math.min(batch, max - deleted);
+    const raw = await db
+      .prepare(
+        `DELETE FROM ${table} WHERE id IN (SELECT id FROM ${table} WHERE expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') LIMIT ?)`,
+      )
+      .bind(limit)
+      .run();
+    const n = (raw as D1RunResult | null)?.meta?.changes ?? 0;
+    deleted += n;
+    if (n < limit) return { deleted, more: false };
+  }
+  return { deleted, more: true };
+}
+
+function assertPositiveInt(name: string, value: number): void {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`dedup-latch: sweep ${name} must be a positive integer, got ${value}`);
+  }
 }
 
 const IDENT_RX = /^[A-Za-z_][A-Za-z0-9_]*$/;

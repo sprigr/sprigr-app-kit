@@ -10,7 +10,9 @@ import {
   normalizeVerdictRuling,
   isMalformedVerdictPost,
   isUnparsedVerdictShaped,
+  wouldPostInvisibleVerdict,
 } from '../src/index';
+import { readFileSync } from 'node:fs';
 
 // #6334: comment 5423054045 — a genuine APPROVE both consumers went blind to.
 // Structure verbatim from the live comment body.
@@ -261,5 +263,98 @@ describe('#7653 — isMalformedVerdictPost (post-time refusal)', () => {
     const fixerNote = '[dev-fixer] FIXED | PR #7520 merged. The reviewer left '
       + '`[tech-lead-reviewer] VERDICT: APPROVE` on the earlier head.';
     expect(isMalformedVerdictPost(fixerNote)).toBe(false);
+  });
+});
+
+// ─── #12926: duplicate verdicts from a verdict that posts but is invisible ──
+//
+// Both observed pairs were the SAME reviewer flow: a long-form verdict that
+// carried the marker but failed the reader, so it posted, the review-gate then
+// refused "no verdict", and the reviewer reposted a canonical copy. The
+// post-time guard missed them because `VERDICT:` sat beyond the 800-char
+// window (platform#157) or the identity prefix sat ABOVE the marker
+// (platform#148). `wouldPostInvisibleVerdict` is the window-free complement for
+// the reviewer's own marker-carrying bodies; it must not regress the deep-quote
+// and fixer-note cases the 800 window and the anchor protect.
+describe('#12926 — wouldPostInvisibleVerdict', () => {
+  // platform#148 6334650810: identity prefix ABOVE the marker, VERDICT far down.
+  const INVISIBLE_148 = [
+    '[tech-lead-reviewer]',
+    '<!-- verdict sha=ada4230 -->',
+    '',
+    'Reviewed the change on head `ada4230`. ' + 'The diff is small and every path is covered by a test. '.repeat(40),
+    '',
+    'VERDICT: APPROVE | ships.',
+  ].join('\n');
+
+  // platform#157 6358629806: marker, then prefix, then prose, VERDICT far down.
+  const INVISIBLE_157 = [
+    '<!-- verdict sha=703bf4c -->',
+    '[tech-lead-reviewer]',
+    '',
+    'Reviewed head `703bf4c`, walking the change file by file. ' + 'Here is the reasoning in detail. '.repeat(40),
+    '',
+    'VERDICT: APPROVE | good to merge.',
+  ].join('\n');
+
+  it('flags both real #12926 pairs (marker present, reader cannot parse)', () => {
+    // Faithful to the live structure: VERDICT past the 800-char window, so the
+    // old isMalformedVerdictPost failed open on them.
+    expect(INVISIBLE_148.indexOf('VERDICT:')).toBeGreaterThan(800);
+    expect(INVISIBLE_157.indexOf('VERDICT:')).toBeGreaterThan(800);
+    expect(isMalformedVerdictPost(INVISIBLE_148)).toBe(false);
+    expect(isMalformedVerdictPost(INVISIBLE_157)).toBe(false);
+    // The new predicate catches both.
+    expect(wouldPostInvisibleVerdict(INVISIBLE_148)).toBe(true);
+    expect(wouldPostInvisibleVerdict(INVISIBLE_157)).toBe(true);
+  });
+
+  it('passes every body the reader parses cleanly, including ESCALATE', () => {
+    for (const body of [PLAIN_APPROVE, PLAIN_REQUEST_CHANGES, PLAIN_ESCALATE, BOLDED_APPROVE]) {
+      expect(wouldPostInvisibleVerdict(body)).toBe(false);
+    }
+  });
+
+  it('does NOT regress a deep quote of a verdict in a long reviewer note (no marker)', () => {
+    // Reviewer's own anchor, no marker, VERDICT quoted beyond the 800 window:
+    // stays postable, exactly as under isMalformedVerdictPost today.
+    const deepQuote = [
+      '[tech-lead-reviewer]',
+      '',
+      'A note, not a verdict. ' + 'Context on why I am still weighing this. '.repeat(40),
+      '',
+      'Earlier I wrote VERDICT: APPROVE, but I am revisiting it before I rule.',
+    ].join('\n');
+    expect(deepQuote.indexOf('VERDICT:')).toBeGreaterThan(800);
+    expect(wouldPostInvisibleVerdict(deepQuote)).toBe(false);
+  });
+
+  it('does NOT regress a non-reviewer note, even one that quotes a marker mid-body', () => {
+    const fixerNote = '[dev-fixer] FIXED | PR #7520 merged. The reviewer left '
+      + '`[tech-lead-reviewer] VERDICT: APPROVE` on the earlier head.';
+    const quotedMarkerMidBody = '[dev-fixer] see the earlier note: <!-- verdict sha=abc1234 -->\n[tech-lead-reviewer] VERDICT: APPROVE';
+    expect(wouldPostInvisibleVerdict(fixerNote)).toBe(false);
+    expect(wouldPostInvisibleVerdict(quotedMarkerMidBody)).toBe(false);
+  });
+
+  it('passes a reviewer consult note that states no ruling', () => {
+    const note = '[tech-lead-reviewer] Post-merge note (not a verdict).\n\nThis PR merged before my review landed.';
+    expect(wouldPostInvisibleVerdict(note)).toBe(false);
+  });
+
+  it('stays consistent with isMalformedVerdictPost on the marker-less headered form', () => {
+    // No marker, VERDICT within the window under the reviewer anchor: both agree.
+    expect(isMalformedVerdictPost(HEADERED_VERDICT)).toBe(true);
+    expect(wouldPostInvisibleVerdict(HEADERED_VERDICT)).toBe(true);
+  });
+
+  it('does NOT refuse a reviewer consult whose only marker is quoted in an inline code span (#13017, comment 5429229662)', () => {
+    // Real body: [tech-lead-reviewer]-anchored "Consult answer, NOT a new
+    // verdict", and the one <!-- verdict sha=37bd972 --> is inside an inline
+    // code span, i.e. a quotation. It must post. Before the code-span strip
+    // the marker matched the raw body and this returned true.
+    const body = readFileSync(new URL('./fixtures/comment-5429229662.md', import.meta.url), 'utf8');
+    expect(body).toContain('`<!-- verdict sha=37bd972 -->`');
+    expect(wouldPostInvisibleVerdict(body)).toBe(false);
   });
 });

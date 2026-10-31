@@ -12,7 +12,7 @@ import {
  * google-workspace `drive/reads/<file>.docx`, and the readable key was the
  * minted link's path.
  */
-const INSTALL = 'inst_3fj8axd3f4jtnhkz8k2i';
+const INSTALL = 'inst_aaaaaaaaaaaaaaaaaaaa';
 const OWNER = 'a84aecf796334d794fab401aa9a8b344';
 const APP_KEY = 'drive/reads/1y3N-JCtOTg6it9rm8J42hLZ6BZlEs8S1.docx';
 const OWNED = `_apps/${INSTALL}/~u/${OWNER}/${APP_KEY}`;

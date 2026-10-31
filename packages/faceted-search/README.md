@@ -124,6 +124,8 @@ POSTs `{ args }` to the platform gateway's per-install tool endpoint with
 `credentials: 'include'`. The tool runs in dispatch context against the
 install's PRIVATE index, so the search stays server-side with no public index.
 `installId` defaults from the `#install_id=` URL hash (the iframe embed contract).
+Only a well-formed install id (`inst_` plus 20 lowercase letters or digits) is
+accepted; anything else counts as no install and sends no request.
 Host detection is automatic: a `staging` hostname routes to
 `https://staging-api-team.sprigr.com`, otherwise `https://api.team.sprigr.com`.
 The tool is expected to accept `{ query, filters, facets, page, hits_per_page }`

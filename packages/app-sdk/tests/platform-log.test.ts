@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   logToPlatform,
+  logQuietly,
   withSprigrLogFallback,
   canLog,
   validateLogEntry,
@@ -359,6 +360,30 @@ describe('logToPlatform, dispatch path (env.SPRIGR present)', () => {
     const r = await logToPlatform(env, entry());
     expect(r).toEqual({ ok: true, written: 1 });
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('logQuietly', () => {
+  it('resolves a cap violation instead of throwing, and warns once naming the category', async () => {
+    const r = await logQuietly(inlineEnv(), entry({ category: 'sync.ok', summary: 'x'.repeat(SPRIGR_LOG_LIMITS.summary + 1) }), { label: 'catalog-sync' });
+    expect(r).toMatchObject({ ok: false, error: 'invalid_entry' });
+    expect(calls).toHaveLength(0);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toMatch(/^\[sprigr-log\] catalog-sync sync\.ok not logged: invalid_entry/);
+  });
+
+  it('warns on a failed send and still resolves the result', async () => {
+    const env = inlineEnv({ SPRIGR: { log: async () => ({ ok: false, error: 'log_failed', detail: 'boom' }) } });
+    const r = await logQuietly(env, entry());
+    expect(r).toEqual({ ok: false, error: 'log_failed', detail: 'boom' });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain('webhook.ok not logged: log_failed (boom)');
+  });
+
+  it('is silent on success', async () => {
+    const r = await logQuietly(inlineEnv(), entry());
+    expect(r).toEqual({ ok: true, written: 1 });
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-app-sdk",
-  "version": "0.23.0",
+  "version": "0.52.0",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -31,6 +31,7 @@
   "files": [
     "dist",
     "bin",
+    "src/write-protection/destructive-verbs.json",
     "README.md"
   ],
   "bin": {

@@ -92,7 +92,7 @@ This is the sharpest edge in the whole contract, and it is why `connection` is a
 - **Per-call selection** (the caller passes `store` / `organisation` / `tenant` on each call): **pin it.** Resolve the connection at capture time, pass it as `connection`, and re-pin from `row.connection` on replay. You cannot refuse instead, because there is no "current" connection for the user to switch to.
 - **Session-stateful selection** (a `select_business` action sets a current one): you may **refuse** instead. Compare `row.connection` against the current one and return a clear error telling the user to switch and retry.
 
-Either way it must be in the row. Also put it in your `_undo.describes` (`credit note CN-14341 in BoardCave AU`) so a person reading `list_undoable_changes` can tell two accounts apart.
+Either way it must be in the row. Also put it in your `_undo.describes` (`credit note CN-14341 in Acme AU`) so a person reading `list_undoable_changes` can tell two accounts apart.
 
 **One more trap, learned the hard way.** If your capture runs in a wrapper that sits *outside* the layer establishing the connection pin, it will read the default connection, not the target one. Shopify shipped four bugs from exactly this, the worst being a capture reading the wrong store so a permanent delete succeeded and minted no token. Resolve and pin the connection **inside** the wrapper before calling `captureBefore`.
 

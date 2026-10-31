@@ -10,6 +10,7 @@ End-to-end guide for building, publishing, and shipping a marketplace app on the
 - Per-install state lives in a per-install **D1 database** (`env.DB`) bound at upload time. The manifest declares migrations; the platform runs them after every successful build.
 - Every install gets its manifest **secrets** plus a set of runtime bindings stamped at upload time (`INSTALL_ID`, `COMPANY_ID`, `APP_SLUG`, an install token, the platform base URL) and the `env.SPRIGR.*` runtime object.
 - OAuth flows through the **shared bouncer** at `oauth-bouncer.sprigr.com`. One redirect URI per environment; the bouncer dispatches the callback back to the correct install via the WFP dispatcher namespace.
+- **Never buffer a file.** An app worker has about 128 MB, and a tool call must finish in 28 s (reads) or 25 s (writes). Stream a provider's body into `env.SPRIGR.files.putStream` (always pass `length`; cap 200 MB) and return a `file_key` plus `files.url`, never the bytes. Recipe and limits: "Large files: stream, never buffer" in [platform-reference](platform-reference.md); longer transfers go in a durable job ([section 2c](#2c-durable-jobs--the-scoped-store)).
 
 ---
 
@@ -109,7 +110,7 @@ Single source of truth. Validated server-side at publish.
     "framework": "next"                      // 'next' | 'astro' | 'remix' | 'static'
   },
   "permissions": {
-    "scopes": ["tools:register", "sprigr.data:write", "sprigr.knowledge:write"],
+    "scopes": ["tools:register"],          // platform scopes only; env.SPRIGR.data needs none
     "network_domains": [                     // outbound fetch allowlist enforced by WFP
       "api.example.com", "login.example.com"
     ]
@@ -194,8 +195,8 @@ Typical candidates: `*_or_create_*` composites, `sync_*`, `reconcile_*`, and any
 
 - **Declaring it forces the write tier** regardless of the name: shorter budget, no automatic retry on a dispatch timeout or a DO disconnect, idempotency token forwarded.
 - **Omitting it changes nothing.** The name heuristic decides, exactly as it does for every app published so far. This field is opt-in and inert until you set it.
-- **`"read"` is not accepted.** Declaring `write` can only ever narrow what your app is granted, which is what makes it app-declarable; the opposite direction would let a manifest opt a write into the blind retry, so the platform does not honour it.
-- **A value other than `"write"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
+- **`"read"` is honoured, except for the retry.** On a read-only tool whose name is not a read verb (`preview_*`, `query_*`), it buys the read dispatch budget and timeout wording, lets the tool run in Plan Mode, and skips the chat-turn approval card (decision 0294). The blind retry still goes by the name, so a read tool should still carry a read-verb name where it can. The platform takes the declaration as stated, so declare `"read"` only on a tool that never writes. Today publish still logs a server-side warning calling a `"read"` declaration ignored; that warning is out of date.
+- **A value other than `"write"` or `"read"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
 
 In TypeScript the field is on `ManifestToolLike` in `@sprigr/apps-app-sdk`, typed `AppToolEffectsDeclaration`.
 
@@ -563,6 +564,7 @@ return {
 A small npm package (no runtime deps). Provides:
 
 - `encodeState(obj)` / `decodeState(str)` - base64url state codec for OAuth + dispatch routing
+- `encodeStateWithinEnvelope(obj, { installId, appSlug })` - `encodeState` that keeps the state small enough for the platform to sign; an over-long `returnTo` is left out whole (the connect then lands on the install's dashboard), never cut
 - `randomHex(bytes)`, `hmacSha256Hex(key, data)`, `constantTimeEqual(a, b)` - Web Crypto wrappers
 - `fetchWithRetry(url, init, options)` - exponential-backoff fetch (provider APIs rate-limit hard)
 - `fetchWithRetry` has no timeout: pair it with `@sprigr/apps-fetch-budget` for anything under a schedule or the dispatcher's 110s wall (see below)
@@ -574,7 +576,7 @@ Plus a companion `@sprigr/apps-oauth-utils` with:
 - `OAuthError` typed errors, with a message that never carries the provider's raw response body
 
 Three more packages cover the rest of an OAuth app's plumbing. Every OAuth app needs the first two; reach for the third when the app has one token per user:
-- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page.
+- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page. `makeOAuthRefusals` and `consumeOAuthCallback` do the same for a callback that refused after the consume, so a reload repeats the refusal and its hint.
 - `@sprigr/apps-redact` - `redactSecrets` / `redactErrorMessage` strip codes, client secrets, tokens and API keys out of a string (JSON pairs, form pairs, `Bearer` values, known token prefixes, JSON nested inside a string) while keeping status codes and provider error text. Run every error you store in an audit row or `last_error` column through it.
 - `@sprigr/apps-actor-token-refresh` - `ActorRefreshLatch` coalesces concurrent refreshes for one user onto one in-flight call, and `needsRefresh` / `REFRESH_BUFFER_MS` decide when to refresh. Pass a lease config to `run` for providers that rotate refresh tokens, so two invocations in different isolates never spend the same refresh token.
 
@@ -621,6 +623,7 @@ Every per-install WFP script gets these bindings stamped at upload time:
 | `APP_SLUG` | plain_text | your app slug | Self-identification in logs |
 | `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for `env.SPRIGR.*` calls back to platform |
 | `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | The platform API base for this environment |
+| `SITE_PUBLIC_BASE_URL` | plain_text | the install site's custom domain, else its `<app>-<tail>.apps.sprigr.com` host | Every URL you hand to an outside system; read it with `publicBaseUrl(env)` (below) |
 | Plus every manifest `secrets[]` entry | secret_text | the install's secret store | Per-install OAuth keys, webhook signing keys, etc. |
 
 Declare them in your env type so `getCloudflareContext({ async: true }).env` is typed:
@@ -658,6 +661,24 @@ const { env } = await getCloudflareContext({ async: true });
 const { env } = await getCloudflareContext<MyEnv>();
 ```
 
+### Your install's own URL: `SITE_PUBLIC_BASE_URL`, never a request header
+
+Any URL you give to an outside system (a webhook or push callback, a link in outbound mail, a provider's return URL) must be built on the https origin the platform bound as `SITE_PUBLIC_BASE_URL`. Read it with `publicBaseUrl(env)` from `@sprigr/apps-app-sdk` (0.28.0+). It returns that origin, or `null` when the binding is absent (a unit test, a local dev run). When it is null, refuse and say why.
+
+**Until your app pins app-sdk 0.28.0 or later** (not yet published at the time of writing), read the binding directly. Use `env.SITE_PUBLIC_BASE_URL` only when it parses as a URL whose protocol is `https:`, and use its `origin` (no path, no trailing slash). Otherwise treat it as absent.
+
+```ts
+import { publicBaseUrl } from '@sprigr/apps-app-sdk'; // 0.28.0+
+
+const base = publicBaseUrl(env);
+if (!base) return { ok: false, error: 'no_public_base_url' };
+const callbackUrl = `${base}/api/public/my-crm/webhook/${subKey}`;
+```
+
+Never derive the origin from the request's `Host` or `X-Forwarded-Host`, and never store a request-derived origin for later use. A visitor sets those headers, so any member who could load your settings page could point your webhooks, and their signed payloads, at a host they own. The Trello app shipped exactly that until the fix in sprigr-apps#3454 (issue sprigr-apps#3453).
+
+The binding has no company slug in it, so it survives a company rename. It does change when the install adds or removes a custom domain (the platform rebinds the install), so reconcile registered callbacks against the current base on a schedule, not only at connect time.
+
 ## 5. The build / publish pipeline
 
 ### Publish
@@ -676,10 +697,88 @@ What happens server-side:
 - The build-runner container picks up the job, runs `npm install` + the framework build (e.g. `opennext build` for Next.js), then uploads the bundle to WFP.
 - The build-runner allocates the per-install D1 + KV if missing, then attaches all the bindings above.
 - After upload, the platform runs the manifest's `migrations[]` against the per-install D1.
+- The success callback then fires the app's `on_install` hook, if it declares one (see [Lifecycle hooks](#lifecycle-hooks-on_install-on_upgrade-on_uninstall)).
 
 ### Upgrade
 - After publishing a new version, upgrade existing installs via the portal "Upgrade" banner or `sprigr app upgrade <slug>`.
 - The install is re-pinned to the latest approved version and the build is re-enqueued with the same website id. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
+- Once `on_install` has succeeded, every successful build fires the app's `on_upgrade` hook, if it declares one (see below).
+
+### Lifecycle hooks: `on_install`, `on_upgrade`, `on_uninstall`
+
+The platform calls three optional hooks around an install. Each one is an ordinary `tools[]` entry, dispatched as `POST /__sprigr/tool/<name>` through the same wrapper route an agent's tool call takes. File and line references in this section are to sprigr-team `main` at f7013d2ac. Most are in `workers/provisioning/src/lifecycle-dispatch.ts`, abbreviated `lifecycle-dispatch.ts`.
+
+**The name must be exactly `on_install`, `on_upgrade` or `on_uninstall`.** The platform finds a hook by comparing names exactly, `t.name === 'on_install'` (`lifecycle-dispatch.ts:270`, `:453`, `:606`). The `<slug>_<op>` prefix the rest of your tools carry does not apply here: a tool named `my_crm_on_install` is never called. The install is stamped `skipped:no_handler`, and nothing else tells you. The fulfilment-hub app shipped to staging this way, with `fh_on_install` and no collections defined (sprigr-app-kit#65).
+
+Declare each hook `"internal": true`. The platform keeps these names off the agent tool list either way (`PLATFORM_LIFECYCLE_HOOK_TOOLS` in `packages/shared/src/utils/marketplace-platform-only-tools.ts:46`). Publish logs a warning when the flag is missing (`:221`), so the flag makes the manifest say what it means.
+
+```jsonc
+{
+  "name": "on_install",                   // exactly this: a prefixed name is never called
+  "handler": "src/handlers/on-install.ts",
+  "internal": true,                       // platform-only: keep it off the agent tool list
+  "input_schema": { "type": "object" }
+}
+```
+
+```ts
+// src/handlers/on-install.ts
+export default async function onInstall(args, env) {
+  // args: { install_id, company_id, integrations: [{ integration_type, integration_id }] }
+  const { collection } = await env.SPRIGR.collections.define({ /* see "Collections" in platform-reference.md */ });
+  await env.DB.prepare(
+    'INSERT INTO my_crm_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  ).bind('orders_collection', collection).run();
+  // To have a failure retried on the next build, THROW. A returned
+  // { ok: false } is recorded as success, and the hook never runs again.
+  return { collection };
+}
+```
+
+Your migrations have already run when a hook fires. The build-runner applies `migrations[]` before it posts the success callback that fires the hooks, and a failed migration fails the build, so no hook runs (`workers/build-runner/src/publish-result.ts:593-620`).
+
+#### `on_install`: once, after the first successful build
+
+- **When it fires.** It fires on the callback of every successful build while the install's `on_install_dispatched_at` is NULL or `skipped:<reason>` (`workers/provisioning/src/build-routes.ts:789-816`, `lifecycle-dispatch.ts:247-264`). Normally that means the first build of a new install. If you add `on_install` in a later version, it runs on each existing install's build of that version, because those installs were stamped `skipped:no_handler`.
+- **What it receives.** It receives `{ install_id, company_id, integrations: [{ integration_type, integration_id }] }` as `args`, not an empty object. A deprecated `shopify_integration_id` is added when the install has exactly one Shopify binding (`lifecycle-dispatch.ts:145-157`, `:286-298`).
+- **Time limit.** 60 s, cold start included (`:319`). Defining a collection that is new to the company walks the full provisioning path. Re-declaring an unchanged one is a fast no-op (sprigr-team#8235).
+- **What gets recorded.** The platform stamps `on_install_dispatched_at` on the install. Only a timestamp is final. Every `skipped:*` value is retried on the next successful build (`:247-258`). Nothing re-fires the hook between builds.
+
+| `on_install_dispatched_at` | Meaning | Next successful build |
+|---|---|---|
+| ISO timestamp | The handler returned, whatever it returned (`:359-360`) | Does not fire it (`:258`) |
+| `skipped:no_handler` | No tool named exactly `on_install` (`:270-273`) | Fires it if the manifest now declares one |
+| `skipped:unsupported_kind` | The install has no per-install worker (`:278-280`) | Checks the install again |
+| `skipped:no_ssr` | No deployment to dispatch to yet (`:322-330`) | Retries |
+| `skipped:timeout` | Over the 60 s limit | Retries |
+| `skipped:dispatch_error` | The platform could not reach the worker | Retries |
+| `skipped:handler_failed` | The handler threw, which the wrapper answers with 500, or the bundle has no handler under that name, answered with 404 (`:336-356`) | Retries |
+
+- **Return or throw.** The wrapper answers 200 `{ ok: true, result }` for any value your handler returns, including `{ ok: false, error }` (`containers/build-runner/entrypoint/adapters/sprigr-wrapper.ts:3063-3066`), and the platform records that as a success. To have a failure retried, throw. A retry runs the handler from the top, so make it idempotent: upsert settings rows, and re-declare collections instead of assuming the first attempt got nowhere.
+
+#### `on_upgrade`: every later build
+
+- **When it fires.** It fires on every successful build of the install once `on_install_dispatched_at` holds a real timestamp, whether the build upgrades to a new version or rebuilds the current one. There is no latch and no version check (`lifecycle-dispatch.ts:383-394`, `:466-478`; `build-routes.ts:818-835`).
+- **It needs a successful `on_install`.** An app that declares `on_upgrade` without `on_install` has its installs stamped `skipped:no_handler`, so its `on_upgrade` never fires. If you only need `on_upgrade`, also declare an `on_install`, even one that just returns `{}`. Likewise, while `on_install` keeps failing, `on_upgrade` stays silent.
+- **What it receives.** `{ trigger: 'upgrade', build_id, version_id }` (`:427-431`). Read everything else from your own per-install state.
+- **Time limit.** 60 s (`:501`).
+- **What gets recorded.** Nothing is stamped on the install. A failure is logged and the deployment stands (`:405-407`). The next build fires the hook again anyway.
+- **Make it idempotent.** The hook re-runs on every build, so a handler that is not idempotent applies its effect again each time. The platform calls this "a hard contract, not a nicety" (`:394-399`). Shopify's `register_webhooks` is the model: create what is missing, skip what exists, prune what is stale.
+- **It may also fire on the first build.** Going by the code, a bootstrap build where `on_install` succeeds goes on to fire `on_upgrade` too, though the platform's own comments say a bootstrap build never fires both hooks (sprigr-team#13177; found by reading the code, not reproduced). An idempotent handler is safe either way. Do not read `on_upgrade` as "this is not the first build".
+
+#### `on_uninstall`: before teardown
+
+- **When it fires.** It fires when the install is uninstalled, before the platform tears anything down. At that point the worker, its D1 (with your provider tokens) and its secrets still exist (`lifecycle-dispatch.ts:555-572`). Use it to release what the platform cannot see. The case that motivated it is Xero's app-wide cap on connections (sprigr-apps#1001).
+- **What it receives.** `{ trigger: 'uninstall', install_id, company_id }` (`:585-589`).
+- **Time limit.** 15 s, not 60 (`:633`).
+- **What gets recorded.** Nothing. It is best effort and at most once: a failed or slow handler is logged, and the uninstall goes ahead (`:564-567`).
+
+#### Checking whether a hook ran
+
+- **`on_install`.** `GET /api/data/apps/<slug>` returns `app.installation.on_install_dispatched_at` for your company's install. `handleAppDetail` in `workers/provisioning/src/marketplace-listing-routes.ts` passes the install row through. A timestamp means the handler returned. `skipped:no_handler` on an app that declares the hook almost always means the tool name is wrong.
+- **Platform logs.** Every hook logs to the platform's system log under `marketplace.lifecycle.on_install`, `marketplace.lifecycle.on_upgrade` and `marketplace.lifecycle.on_uninstall`, at `info` on success and `warn` on failure (`lifecycle-dispatch.ts:1092-1222`). Only operators can read these today: the install's Recent issues feed does not show them (sprigr-team#13177).
+- **`on_upgrade` and `on_uninstall`.** The platform records nothing an author can read for these two. If you need to know, have the handler record it: one upserted settings row such as `last_upgrade_build_id`, not a new row per run.
+- **Locally.** `sprigr dev` runs a hook like any other tool: `curl -X POST localhost:8666/__sprigr/tool/on_install -d '{"install_id":"inst_dev","company_id":"comp_dev","integrations":[]}'` (see the [build-guide](build-guide.md)).
 
 ### Retire (per-actor apps): `on_actor_retired`
 - A per-actor app (`auth.model: per_actor`) should declare an `internal: true` tool named `on_actor_retired` and wrap its handler with `actorRetiredHook` from `@sprigr/apps-app-sdk` (0.16.0+). The platform calls it when the identity behind one of your actor keys is gone: a member removed, an agent deleted, a companion's bound user id corrected (the OLD key), or an operator retiring an orphan. Revoke the person's grant at the provider and purge what you keep for that key, exactly as your disconnect tool does.
@@ -717,9 +816,10 @@ The Sprigr solution: a **shared bouncer worker** at one stable URL that decodes 
 ```
 
 Implementation rules:
-- `/oauth/start` puts the `installId` in the state (from `env.INSTALL_ID`), encodes with `encodeState()`, and uses the bouncer URL as `redirect_uri`. Pick the bouncer URL by environment from the request host so one bundle serves every environment. The production bouncer is `https://oauth-bouncer.sprigr.com/<slug>/oauth/callback`; for local testing the CLI dev harness listens on `http://localhost:8666/<slug>/oauth/callback`. The scaffolder generates this environment-aware selection for you.
+- `/oauth/start` puts the `installId` in the state (from `env.INSTALL_ID`), encodes with `encodeStateWithinEnvelope()` (plain `encodeState()` when nothing in the state is caller-supplied), and uses the bouncer URL as `redirect_uri`. Pick the bouncer URL by environment from the request host so one bundle serves every environment. The production bouncer is `https://oauth-bouncer.sprigr.com/<slug>/oauth/callback`; for local testing the CLI dev harness listens on `http://localhost:8666/<slug>/oauth/callback`. The scaffolder generates this environment-aware selection for you.
 - The bouncer dispatches to `/__sprigr/tool/<app-slug-snake-case>_oauth_callback`. Your manifest **must** declare that tool (`my_crm_oauth_callback`), mark it `"internal": true`, and point its `handler` at a module that takes `{ code, state, redirectUri, environment }` and exchanges the code with the provider. The bouncer always sends `state`, so the handler refuses a call without one, or with a csrf it did not mint, before any exchange; otherwise anything else that can reach the tool could bind the install to another provider account (sprigr-apps#2442).
 - When exchanging the code, use the **bouncer's** `redirectUri` (passed in the args), not the install's own URL. Providers validate that the `redirect_uri` matches what was sent at `/oauth/start`.
+- **Emit your authorize URL only through a signable exit.** The platform signs the OAuth `state` on the way out, but only on the exits it controls: the `/oauth/start` 3xx redirect (above), an agent tool result, and the connect-link. Do **not** render the authorize URL in an HTML page body or return it as JSON from a website route: those bodies stream to the browser unsigned and the platform does not scan them. Once signed state is enforced platform-wide, an unsigned authorize URL is refused at the bouncer with a 400, so a hand-rendered link breaks the connect. (Platform decision 0190.)
 
 Common failure modes:
 - **"redirect uri is malformed or doesn't match"** → either you're hitting a stale OAuth state from before you fixed the redirect URI, OR the provider dev app hasn't been registered with the bouncer URL for that environment. Refresh, then check the address bar - `redirect_uri=oauth-bouncer.sprigr.com/...` is correct. Remember production and any pre-production environment use **different** bouncer URLs; register each.
@@ -732,8 +832,10 @@ Your install's site is **private by default**. Per-install sites are created wit
 
 | Path shape | Methods | For |
 |---|---|---|
-| `/api/webhook/*` | `POST` only | Third-party webhook receivers arriving with their own signature or bearer scheme |
+| `/api/webhook/*` | `POST`, `OPTIONS`, and on your install site `GET` and `HEAD` | Third-party webhook receivers arriving with their own signature, bearer scheme or path token. `OPTIONS` is for a browser caller's CORS preflight. `GET`/`HEAD` are for a provider's subscribe handshake or callback probe (ServiceM8's subscribe challenge, Shopify FulfillmentService's `fetch_stock.json`); they are exempt only on marketplace install sites (sprigr-team decision 0227) |
 | `/api/public/*` | any | Anything else a visitor with no Sprigr session must reach |
+
+**A `GET` or `HEAD` handler under `/api/webhook/` is public on every install from its first deploy.** Authenticate it the way the `POST` beside it is authenticated (a constant-time path token compared before any work, or the provider's signature), answer a mismatch with 404, and never return install data from it. sprigr-apps' servicem8 `[token]` route is the worked example.
 
 **Anything outside those two 302s an anonymous visitor to `team.sprigr.com/login`.** That redirect is the whole failure mode: it looks like a broken link to the person you sent it to, and it will not show up in your own testing, because you are signed in and your session sails straight through.
 

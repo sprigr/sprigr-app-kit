@@ -11,8 +11,9 @@
  * push that reaches the warehouse ships the order twice.
  */
 
-import { FULFILMENT_PROVIDER_OPS } from './contract';
+import { FULFILMENT_PROVIDER_ACK_STATUSES, FULFILMENT_PROVIDER_OPS, toolNameFor } from './contract';
 import { driveOp, opByName, type DriveContext } from './drive';
+import { invokeOp } from './invoke';
 import { CheckCollector, type ConformanceReport } from './report';
 import { isPlainObject } from './shape';
 import type { AdapterHandlers, ConformanceOptions } from './types';
@@ -180,6 +181,53 @@ export async function runFulfilmentProviderConformance(
     );
   }
 
+  // Two deliveries of ONE request at the same time. The outbox can hand a row
+  // out again while the first attempt is still running (a claim reclaimed
+  // after its TTL, a platform redelivery), and the sequential repeat above
+  // cannot see a read-then-push window: both deliveries read "not pushed" and
+  // the warehouse gets the order twice. The request id has to be claimed
+  // before the warehouse call (sprigr/sprigr-app-kit#78). Invoked directly
+  // rather than through driveOp: the delivery that loses may answer `queued`
+  // with no provider_ref while the winner is still at the warehouse.
+  const racedId = 'fr_conformance_c';
+  const racedArgs = { ...pushArgs(racedId, 'ord_conformance_c', warehouseKey), ...(ctx.fixtures.push_order ?? {}) };
+  const beforeRace = vendorCalls ? vendorCalls() : 0;
+  const raced = await Promise.all(
+    [0, 1].map(() => invokeOp(handlers, toolNameFor(opts.slug, 'push_order'), racedArgs, ctx.env, ctx.budgetMs)),
+  );
+  const afterRace = vendorCalls ? vendorCalls() : 0;
+  const racedAcks = raced.map((call) => (isPlainObject(call.value) ? call.value : undefined));
+  const unanswered = raced.flatMap((call, i) =>
+    call.timedOut || call.error !== undefined || !(FULFILMENT_PROVIDER_ACK_STATUSES as readonly unknown[]).includes(racedAcks[i]?.status)
+      ? [`delivery ${i + 1}: ${call.timedOut ? 'timed out' : call.error ?? `answered ${JSON.stringify(racedAcks[i]?.status)}`}`]
+      : [],
+  );
+  checks.add(
+    'push_order.concurrent_repeat_acknowledged',
+    unanswered.length === 0,
+    unanswered.length === 0
+      ? `both simultaneous pushes of ${racedId} acknowledged (${racedAcks.map((a) => String(a?.status)).join(', ')})`
+      : `both simultaneous pushes of ${racedId} must acknowledge with ${FULFILMENT_PROVIDER_ACK_STATUSES.join(' | ')}; ${unanswered.join('; ')}`,
+  );
+  const racedRefs = [...new Set(racedAcks.map((a) => a?.provider_ref).filter((r): r is string => typeof r === 'string' && r !== ''))];
+  checks.add(
+    'push_order.concurrent_repeat_one_provider_ref',
+    racedRefs.length === 1,
+    racedRefs.length === 1
+      ? `the simultaneous pushes of ${racedId} answered one provider_ref (${racedRefs[0]})`
+      : `the simultaneous pushes of ${racedId} must answer ONE provider_ref between them (the loser may answer queued with none); got ${JSON.stringify(racedRefs)}`,
+  );
+  if (vendorCalls) {
+    const raceCost = afterRace - beforeRace;
+    checks.add(
+      'push_order.concurrent_repeat_reaches_vendor_once',
+      raceCost === 1,
+      raceCost === 1
+        ? `two simultaneous pushes of ${racedId} made one vendor call`
+        : `two simultaneous pushes of ${racedId} made ${raceCost} vendor calls; exactly one may reach the warehouse. Read-then-push lets both deliveries through: write the request record FIRST (an INSERT the primary key decides) and call the warehouse only from the delivery that wrote it.`,
+    );
+  }
+
   // 4. get_order_status on the request the harness just pushed.
   await driveOp(ctx, op('get_order_status'), {
     fulfilment_request_id: firstId,
@@ -201,6 +249,58 @@ export async function runFulfilmentProviderConformance(
         ? 'capabilities say supports_cancel:false and cancel_order refuses cleanly'
         : `capabilities say supports_cancel:false but cancel_order answered "${String(cancelled.status)}"; the hub chooses its path from capabilities and would wait for an event that never arrives`,
     );
+  }
+
+  // 5b. the ship-to change (1.4.0, optional). Driven only when the adapter
+  // CLAIMS it, because a provider written against 1.3.0 has no such handler
+  // and must stay conformant (see `optionalSince` on the op). Checked for
+  // AGREEMENT: a provider that claims the capability must not answer
+  // "unsupported", or the hub sends address changes into a void.
+  if (caps.supports_address_update === true) {
+    const readdressed = await driveOp(ctx, op('update_ship_to'), {
+      fulfilment_request_id: firstId,
+      provider_ref: firstRef ?? 'unknown',
+      ship_to: { name: 'Conformance', line1: '1 Conformance Way', city: 'Brisbane', postcode: '4000', country: 'AU' },
+      reason: 'fulfilment hub conformance address change',
+    });
+    if (readdressed) {
+      const unsupported =
+        readdressed.status === 'rejected' && String(readdressed.reason ?? '').includes('unsupported');
+      checks.add(
+        'update_ship_to.matches_capability',
+        !unsupported,
+        unsupported
+          ? 'capabilities say supports_address_update:true but update_ship_to answered "unsupported"; the hub would send address changes that silently do nothing'
+          : 'capabilities say supports_address_update:true and update_ship_to is implemented',
+      );
+    }
+  }
+
+  // 5c. the inbound purchase order (1.5.0, optional). Driven only when the
+  // adapter CLAIMS it, for the same reason as 5b: a provider written against
+  // 1.4.0 has no such handler and must stay conformant. A provider that claims
+  // the capability must not answer "unsupported", or the hub sends POs that
+  // no warehouse ever sees.
+  if (caps.supports_inbound === true) {
+    const inbound = await driveOp(ctx, op('create_inbound'), {
+      inbound_id: 'inb_conformance_a',
+      po_number: 'CONF-PO-1',
+      warehouse_key: warehouseKey,
+      expected_arrival: '2030-01-15',
+      supplier: 'Conformance Supplier',
+      notes: 'fulfilment hub conformance purchase order',
+      lines: [{ line_id: 'iln_conf_1', sku: 'CONF-SKU-1', quantity: 5, barcode: '9300000000001', title: 'Conformance widget' }],
+    });
+    if (inbound) {
+      const unsupported = inbound.status === 'rejected' && String(inbound.reason ?? '').includes('unsupported');
+      checks.add(
+        'create_inbound.matches_capability',
+        !unsupported,
+        unsupported
+          ? 'capabilities say supports_inbound:true but create_inbound answered "unsupported"; the hub would send purchase orders that silently do nothing'
+          : 'capabilities say supports_inbound:true and create_inbound is implemented',
+      );
+    }
   }
 
   // 6. get_stock + health.

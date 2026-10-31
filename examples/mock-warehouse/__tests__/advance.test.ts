@@ -401,3 +401,45 @@ describe('mock_warehouse_cancel_order', () => {
     expect(env.recorded.map((e) => e.event)).toEqual(['provider.order.cancelled']);
   });
 });
+
+describe('mock_warehouse_advance to=ship with shipment_ref (a carrier hand-off)', () => {
+  let env: ReturnType<typeof fakeEnv>;
+  let deps: ReturnType<typeof freshDeps>;
+
+  beforeEach(async () => {
+    env = fakeEnv();
+    deps = freshDeps(() => '2026-09-15T00:00:00Z');
+    await pushOrder(deps, push('fr_1'));
+  });
+
+  const shipmentOf = (i: number) => env.recorded[i]!.payload.shipment as Record<string, unknown>;
+
+  it('re-ships the same lines under the new ref and number', async () => {
+    await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'ship', carrier: 'YunExpress', tracking_number: 'YT1' });
+    await advance(env, deps, {
+      fulfilment_request_id: 'fr_1',
+      to: 'ship',
+      carrier: 'iMile',
+      tracking_number: 'IM1',
+      shipment_ref: 'mws_fr_1_lastmile',
+    });
+
+    expect(env.recorded.map((e) => e.event)).toEqual(['provider.shipment.created', 'provider.shipment.created']);
+    expect(shipmentOf(0).provider_shipment_ref).toBe('mws_fr_1');
+    expect(shipmentOf(1).provider_shipment_ref).toBe('mws_fr_1_lastmile');
+    expect(shipmentOf(1).tracking_number).toBe('IM1');
+    expect(shipmentOf(1).lines).toEqual(shipmentOf(0).lines);
+  });
+
+  it('keeps the new ref for a redelivery and for later scans', async () => {
+    await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'ship', tracking_number: 'YT1' });
+    await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'ship', tracking_number: 'IM1', shipment_ref: 'mws_fr_1_lastmile' });
+    await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'ship', tracking_number: 'IM1' });
+    await advance(env, deps, { fulfilment_request_id: 'fr_1', to: 'scan', stage: 'first_scan' });
+
+    expect(shipmentOf(2).provider_shipment_ref).toBe('mws_fr_1_lastmile');
+    const scan = env.recorded[3]!.payload;
+    expect(scan.provider_shipment_ref).toBe('mws_fr_1_lastmile');
+    expect(scan.tracking_number).toBe('IM1');
+  });
+});

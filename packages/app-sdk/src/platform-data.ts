@@ -77,7 +77,12 @@ export interface SprigrDataPartialUpdateBody {
 const ACL_INDEX_SUFFIX = '-acl-files';
 
 export interface PartialUpdateDataOptions extends SprigrDataPartialUpdateOpts {
-  /** Ceiling on the HTTP fallback. No default: a data write is awaited for its result. */
+  /**
+   * Ceiling on the call, by either transport: the injected member bounds its
+   * own fetch (sprigr/sprigr-team#11950; older wrapper builds ignore it), the
+   * HTTP fallback its request. No default: a data write is awaited for its
+   * result.
+   */
   timeoutMs?: number;
 }
 
@@ -278,6 +283,7 @@ export async function partialUpdateData(
       ...(body.index !== undefined ? { index: body.index } : {}),
       createIfNotExists: body.createIfNotExists,
       ...(body.withAcl ? { withAcl: true } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
     });
     return body.withAcl ? assertAclIndex(result) : result;
   }
