@@ -24,9 +24,12 @@
  * flow that must finish; the result carries `error` and `truncated` so the
  * caller can audit an incomplete purge instead of losing it in a catch.
  *
- * Wire contract (workers/provisioning/src/wfp-data.ts in sprigr-team):
- *   POST /internal/wfp/data/list-ids { prefix, index?, withAcl? }
+ * Wire contract (workers/provisioning/src/wfp-data-list-ids.ts in sprigr-team):
+ *   POST /internal/wfp/data/list-ids { prefix, index?, withAcl?, after? }
  *     200 { objectIDs, total, truncated }   (prefix must be non-empty; cap 50000)
+ *     With `after` (sprigr-team#11515): objectID order from after onward, plus
+ *     next_after (null on the last page). A platform without the cursor
+ *     ignores `after` and answers without next_after.
  *   POST /internal/wfp/data/delete   { objectIDs, index?, withAcl? }
  *     200 { ok, deleted, index }             (max 1000 ids; unknown ids are no-ops)
  */
@@ -47,11 +50,23 @@ export interface DataIdsOpts extends SprigrDataIndexOpts {
   withAcl?: boolean;
 }
 
+/** listIds options: the id-route options plus the paging cursor. */
+export interface DataListIdsOpts extends DataIdsOpts {
+  /** List the ids after this one, in objectID order. '' starts at the beginning. */
+  after?: string;
+}
+
 export interface DataListIdsResult {
   objectIDs: string[];
   total: number;
   /** The platform returned its cap's worth and stopped: more rows exist. */
   truncated: boolean;
+  /**
+   * Present only when the platform answered a paged request: the next call's
+   * `after`, or null on the last page. Absent from a platform (or an app
+   * built on a wrapper) that predates the cursor (sprigr-team#11515).
+   */
+  nextAfter?: string | null;
 }
 
 /** How a data call reaches the platform. `none` means it cannot. */
@@ -71,11 +86,19 @@ export interface DataClient {
     opts?: SprigrDataPartialUpdateOpts,
   ): Promise<SprigrDataPartialUpdateResult>;
   delete(objectIDs: string[], opts?: DataIdsOpts): Promise<{ ok: boolean; deleted: number; index: string }>;
-  listIds(prefix: string, opts?: DataIdsOpts): Promise<DataListIdsResult>;
+  listIds(prefix: string, opts?: DataListIdsOpts): Promise<DataListIdsResult>;
 }
 
 /** Bridge call ceiling: a purge sits inside a connect or disconnect request. */
 const BRIDGE_TIMEOUT_MS = 20_000;
+/** data.import's single 503 retry (sprigr/sprigr-team#10234): its wait cap,
+ *  the window the time spent plus the wait must fit in, the total an import
+ *  may take when the caller sets no timeoutMs (inside a 28 s app dispatch),
+ *  and the least time worth giving a retry. */
+const IMPORT_RETRY_MAX_WAIT_MS = 3_000;
+const IMPORT_RETRY_WINDOW_MS = 12_000;
+const IMPORT_TOTAL_BUDGET_MS = 25_000;
+const IMPORT_RETRY_MIN_MS = 1_500;
 
 /** Max ids one delete call takes (the platform's per-call cap). */
 export const DATA_DELETE_MAX_IDS = 1000;
@@ -94,6 +117,12 @@ function idsOpts(opts?: DataIdsOpts): Record<string, unknown> {
   };
 }
 
+/** A listing's cursor, only when the response carried one. */
+function nextAfterOf(r: Record<string, unknown> | null | undefined): { nextAfter?: string | null } {
+  if (!r || !('next_after' in r)) return {};
+  return { nextAfter: typeof r.next_after === 'string' ? r.next_after : null };
+}
+
 /**
  * The app's data surface on either transport, or null when neither exists.
  *
@@ -110,7 +139,7 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
       search: DataClient['search'];
       get: DataClient['get'];
       delete: (ids: string[], o?: DataIdsOpts) => Promise<{ ok?: boolean; deleted?: number; index?: string }>;
-      listIds: (p: string, o?: DataIdsOpts) => Promise<{ objectIDs?: string[]; total?: number; truncated?: boolean }>;
+      listIds: (p: string, o?: DataListIdsOpts) => Promise<{ objectIDs?: string[]; total?: number; truncated?: boolean; next_after?: string | null }>;
     };
     return {
       via: 'binding',
@@ -125,7 +154,12 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
       async listIds(prefix, opts) {
         const r = await d.listIds(prefix, opts);
         const objectIDs = Array.isArray(r?.objectIDs) ? r.objectIDs : [];
-        return { objectIDs, total: typeof r?.total === 'number' ? r.total : objectIDs.length, truncated: r?.truncated === true };
+        return {
+          objectIDs,
+          total: typeof r?.total === 'number' ? r.total : objectIDs.length,
+          truncated: r?.truncated === true,
+          ...nextAfterOf(r as Record<string, unknown> | undefined),
+        };
       },
     };
   }
@@ -137,7 +171,35 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
   return {
     via: 'http',
     async import(objects, opts) {
-      const r = await post('/internal/wfp/data/import', { objects, ...(opts ?? {}) }, 'data.import');
+      const body = { objects, ...(opts ?? {}) };
+      const startedAt = Date.now();
+      // A caller's timeoutMs bounds the whole call, both attempts (#11950).
+      const callerMs = typeof opts?.timeoutMs === 'number' && opts.timeoutMs > 0 ? opts.timeoutMs : undefined;
+      const sendImport = (timeoutMs: number) =>
+        installTokenPost(bridge, '/internal/wfp/data/import', body, { label: 'data.import', timeoutMs });
+      let r: Record<string, unknown>;
+      try {
+        r = await sendImport(Math.min(BRIDGE_TIMEOUT_MS, callerMs ?? BRIDGE_TIMEOUT_MS));
+      } catch (err) {
+        // sprigr/sprigr-team#10234: a 503 (engine unavailable, or the index is
+        // still being created) is retried ONCE, the same as the injected
+        // env.SPRIGR.data binding: wait min(Retry-After, 3 s), and only while
+        // the time spent plus the wait stays inside 12 s, so the retry keeps
+        // most of a 28 s app dispatch. Import is an idempotent upsert.
+        const e = err as { status?: number; retryAfterSeconds?: number };
+        if (e?.status !== 503) throw err;
+        const waitMs = Math.min(
+          typeof e.retryAfterSeconds === 'number' ? e.retryAfterSeconds * 1000 : 1000,
+          IMPORT_RETRY_MAX_WAIT_MS,
+        );
+        // The retry gets only what is left of the caller's bound, or of the
+        // dispatch-safe total, never a fresh one.
+        const spentMs = Date.now() - startedAt;
+        const retryMs = Math.min(BRIDGE_TIMEOUT_MS, (callerMs ?? IMPORT_TOTAL_BUDGET_MS) - spentMs - waitMs);
+        if (spentMs + waitMs > IMPORT_RETRY_WINDOW_MS || retryMs < IMPORT_RETRY_MIN_MS) throw err;
+        if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+        r = await sendImport(retryMs);
+      }
       return { ok: r.ok !== false, indexed: typeof r.indexed === 'number' ? r.indexed : objects.length, index: String(r.index ?? opts?.index ?? '') };
     },
     async search(opts) {
@@ -153,9 +215,15 @@ export function makeDataClient(env: WfpBridgeEnv): DataClient | null {
       return { ok: r.ok !== false, deleted: typeof r.deleted === 'number' ? r.deleted : objectIDs.length, index: String(r.index ?? opts?.index ?? '') };
     },
     async listIds(prefix, opts) {
-      const r = await post('/internal/wfp/data/list-ids', { prefix, ...idsOpts(opts) }, 'data.listIds');
+      const body = { prefix, ...idsOpts(opts), ...(typeof opts?.after === 'string' ? { after: opts.after } : {}) };
+      const r = await post('/internal/wfp/data/list-ids', body, 'data.listIds');
       const objectIDs = Array.isArray(r.objectIDs) ? (r.objectIDs as string[]) : [];
-      return { objectIDs, total: typeof r.total === 'number' ? r.total : objectIDs.length, truncated: r.truncated === true };
+      return {
+        objectIDs,
+        total: typeof r.total === 'number' ? r.total : objectIDs.length,
+        truncated: r.truncated === true,
+        ...nextAfterOf(r),
+      };
     },
   };
 }
@@ -190,10 +258,20 @@ function groupKey(index: string | undefined, withAcl: boolean | undefined): stri
   return `${withAcl ? 'acl' : 'plain'}\u0000${index ?? ''}`;
 }
 
+/** Pages one prefix may take (5,000,000 ids at the platform's 50,000 a page). */
+export const MAX_LIST_PAGES = 100;
+
 /**
  * Every id matching the prefixes right now. Never throws. With no data path
  * at all the app cannot have written rows, so the snapshot is empty with
  * `via: 'none'` and no error.
+ *
+ * On a platform with the list-ids cursor (sprigr-team#11515) each prefix is
+ * listed page by page to the end, all before anything is deleted, so no page
+ * is read again after deletes the index may not reflect yet. A platform or
+ * wrapper without the cursor answers one page, as before, and a cut-off
+ * listing still reports `truncated`. So do the page ceiling and a cursor that
+ * fails to move forward.
  */
 export async function snapshotIndexIds(env: WfpBridgeEnv, prefixes: readonly IdPrefixSpec[]): Promise<IdSnapshot> {
   const client = makeDataClient(env);
@@ -210,13 +288,25 @@ export async function snapshotIndexIds(env: WfpBridgeEnv, prefixes: readonly IdP
         group = { ...(s.index ? { index: s.index } : {}), ...(s.withAcl ? { withAcl: true } : {}), ids: new Set() };
         byGroup.set(key, group);
       }
-      const r = await client.listIds(s.prefix, { index: s.index, withAcl: s.withAcl });
-      // The platform filters by prefix; this guard keeps a listing bug from
-      // ever widening a purge past what the caller named.
-      r.objectIDs.forEach((id) => {
-        if (id.startsWith(s.prefix)) group!.ids.add(id);
-      });
-      snap.truncated ||= r.truncated;
+      let after = '';
+      for (let page = 1; ; page++) {
+        const r = await client.listIds(s.prefix, { index: s.index, withAcl: s.withAcl, after });
+        // The platform filters by prefix; this guard keeps a listing bug from
+        // ever widening a purge past what the caller named.
+        r.objectIDs.forEach((id) => {
+          if (id.startsWith(s.prefix)) group!.ids.add(id);
+        });
+        if (r.nextAfter === undefined) {
+          snap.truncated ||= r.truncated;
+          break;
+        }
+        if (r.nextAfter === null) break;
+        if (page >= MAX_LIST_PAGES || r.nextAfter <= after) {
+          snap.truncated = true;
+          break;
+        }
+        after = r.nextAfter;
+      }
     }
   } catch (err) {
     snap.error = `list: ${message(err)}`;

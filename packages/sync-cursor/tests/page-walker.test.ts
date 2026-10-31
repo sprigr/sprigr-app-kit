@@ -51,7 +51,7 @@ describe('runResumablePage', () => {
     expect((await state.read('orders'))!.cursor).toBe('cursor-B');
   });
 
-  it('final page: nextCursor null marks done, cursor stays at last known', async () => {
+  it('final page: nextCursor null marks done and resets the stored cursor to null', async () => {
     const { db } = makeMockD1();
     const state = makeSyncState({ db, table: 'sync_state' });
     await state.write('orders', undefined, 'cursor-A');
@@ -66,6 +66,8 @@ describe('runResumablePage', () => {
     expect(result.done).toBe(true);
     expect(result.nextCursor).toBeNull();
     expect(result.rowsThisPage).toBe(1);
+    // The next pass starts a full walk from the top.
+    expect((await state.read('orders'))!.cursor).toBeNull();
   });
 
   it('does NOT advance cursor when fetchPage throws (retry safe)', async () => {

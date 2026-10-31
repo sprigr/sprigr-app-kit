@@ -17,8 +17,132 @@ describe('runFulfilmentProviderConformance', () => {
     });
     expect(failed(report), formatReport(report)).toEqual([]);
     expect(report.ok).toBe(true);
-    // Two distinct requests, one repeat that must not reach the vendor.
-    expect(vendor.calls).toBe(2);
+    // Three distinct requests, one of them pushed by two deliveries at once,
+    // and one repeat: neither the repeat nor the second simultaneous delivery
+    // may reach the vendor.
+    expect(vendor.calls).toBe(3);
+  });
+
+  // update_ship_to is `optionalSince: '1.4.0'`: a provider written against
+  // 1.3.0 has no handler for it and must stay conformant, and one that CLAIMS
+  // the capability must actually implement it.
+  it('leaves a pre-1.4.0 provider conformant: no update_ship_to handler, no capability, no failure', async () => {
+    const { handlers, vendor } = makeProviderAdapter();
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name.startsWith('update_ship_to.'))).toBe(false);
+  });
+
+  it('fails a provider that claims supports_address_update and answers "unsupported"', async () => {
+    const { handlers, vendor } = makeProviderAdapter({
+      tiny_wh_describe: () => ({
+        adapter_slug: 'tiny-wh',
+        capabilities: {
+          supports_cancel: true,
+          supports_split: false,
+          supports_hold: false,
+          supports_address_update: true,
+          tracking_mode: 'push',
+          stock_mode: 'snapshot',
+          countries: ['AU'],
+        },
+      }),
+      tiny_wh_update_ship_to: () => ({ status: 'rejected', reason: 'unsupported' }),
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual(['update_ship_to.matches_capability']);
+  });
+
+  it('passes a provider that claims supports_address_update and queues the change', async () => {
+    const { handlers, vendor } = makeProviderAdapter({
+      tiny_wh_describe: () => ({
+        adapter_slug: 'tiny-wh',
+        capabilities: {
+          supports_cancel: true,
+          supports_split: false,
+          supports_hold: false,
+          supports_address_update: true,
+          tracking_mode: 'push',
+          stock_mode: 'snapshot',
+          countries: ['AU'],
+        },
+      }),
+      tiny_wh_update_ship_to: () => ({ status: 'queued', reason: 'emailed to the warehouse' }),
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report), formatReport(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name === 'update_ship_to.matches_capability' && c.ok)).toBe(true);
+  });
+
+  // create_inbound is `optionalSince: '1.5.0'`: a provider written against
+  // 1.4.0 has no handler for it and must stay conformant, and one that CLAIMS
+  // supports_inbound must actually implement it.
+  const inboundCaps = () => ({
+    adapter_slug: 'tiny-wh',
+    capabilities: {
+      supports_cancel: true,
+      supports_split: false,
+      supports_hold: false,
+      supports_inbound: true,
+      tracking_mode: 'push',
+      stock_mode: 'snapshot',
+      countries: ['AU'],
+    },
+  });
+
+  it('leaves a 1.4.0 provider conformant: no create_inbound handler, no capability, no failure', async () => {
+    const { handlers, vendor } = makeProviderAdapter();
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name.startsWith('create_inbound.'))).toBe(false);
+  });
+
+  it('fails a provider that claims supports_inbound and answers "unsupported"', async () => {
+    const { handlers, vendor } = makeProviderAdapter({
+      tiny_wh_describe: inboundCaps,
+      tiny_wh_create_inbound: () => ({ status: 'rejected', reason: 'unsupported' }),
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual(['create_inbound.matches_capability']);
+  });
+
+  it('passes a provider that claims supports_inbound and queues the purchase order', async () => {
+    let received: Record<string, unknown> | undefined;
+    const { handlers, vendor } = makeProviderAdapter({
+      tiny_wh_describe: inboundCaps,
+      tiny_wh_create_inbound: (args: never) => {
+        received = args as unknown as Record<string, unknown>;
+        return { status: 'queued', provider_ref: 'inb_ref_1', reason: 'emailed to the warehouse' };
+      },
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report), formatReport(report)).toEqual([]);
+    expect(report.checks.some((c) => c.name === 'create_inbound.matches_capability' && c.ok)).toBe(true);
+    expect(received).toMatchObject({ inbound_id: expect.any(String), po_number: expect.any(String), warehouse_key: 'wh_a' });
   });
 
   it('fails when a repeat push_order reaches the vendor again', async () => {
@@ -39,6 +163,56 @@ describe('runFulfilmentProviderConformance', () => {
     expect(failed(report)).toContain('push_order.repeat_does_not_reach_vendor');
     expect(failed(report)).toContain('push_order.idempotent_provider_ref');
     expect(report.ok).toBe(false);
+  });
+
+  it('fails an adapter that reads before it pushes when two deliveries of one request arrive at once (#78)', async () => {
+    // Passes the sequential repeat: the second push finds the first's record.
+    // Two at once both read "not pushed" before either writes, and both reach
+    // the vendor.
+    const vendor = { calls: 0 };
+    const pushed = new Map<string, string>();
+    const { handlers } = makeProviderAdapter({
+      tiny_wh_push_order: async (args: never) => {
+        const id = (args as unknown as { fulfilment_request_id: string }).fulfilment_request_id;
+        const existing = await Promise.resolve(pushed.get(id));
+        if (existing) return { status: 'accepted', provider_ref: existing };
+        vendor.calls += 1;
+        const ref = await Promise.resolve(`pr_${id}`);
+        pushed.set(id, ref);
+        return { status: 'accepted', provider_ref: ref };
+      },
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report)).toEqual(['push_order.concurrent_repeat_reaches_vendor_once']);
+  });
+
+  it('passes a claim-first adapter whose losing delivery answers queued with no provider_ref yet', async () => {
+    const vendor = { calls: 0 };
+    const claims = new Map<string, string>();
+    const { handlers } = makeProviderAdapter({
+      tiny_wh_push_order: async (args: never) => {
+        const id = (args as unknown as { fulfilment_request_id: string }).fulfilment_request_id;
+        if (claims.has(id)) {
+          const ref = await Promise.resolve(claims.get(id));
+          return ref ? { status: 'queued', provider_ref: ref } : { status: 'queued' };
+        }
+        claims.set(id, '');
+        vendor.calls += 1;
+        const ref = await Promise.resolve(`pr_${id}`);
+        claims.set(id, ref);
+        return { status: 'queued', provider_ref: ref };
+      },
+    });
+    const report = await runFulfilmentProviderConformance(handlers, {
+      slug: 'tiny-wh',
+      env: () => ({}),
+      vendorCalls: () => vendor.calls,
+    });
+    expect(failed(report), formatReport(report)).toEqual([]);
   });
 
   it('fails an adapter that never calls its vendor, rather than crediting it with idempotency', async () => {

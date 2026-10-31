@@ -278,7 +278,7 @@ const packageJson = {
   dependencies: {
     ...Object.fromEntries(KIT_DEPS.map((p) => [`@sprigr/apps-${p}`, KIT_DEP_VERSIONS[p]])),
     "@opennextjs/cloudflare": "1.20.2",
-    next: "15.5.22",
+    next: "15.5.28",
     react: "19.0.0",
     "react-dom": "19.0.0",
   },
@@ -295,8 +295,11 @@ const packageJson = {
     vitest: "^2.0.0",
     // The fulfilment-hub conformance harness: drives every op of the
     // interface against this app's handler map and manifest. Exact-pinned
-    // like every other kit package.
-    ...(IS_ADAPTER ? { "@sprigr/apps-fulfilment-conformance": "0.1.0" } : {}),
+    // like every other kit package. 0.5.0 is the first that drives two
+    // simultaneous push_order deliveries (sprigr-app-kit#78), the case the
+    // generated claim-first push_order exists for; on an older pin a
+    // generated adapter could drift back to read-then-push and still pass.
+    ...(IS_ADAPTER ? { "@sprigr/apps-fulfilment-conformance": "0.5.0" } : {}),
     // Declared explicitly so the marketplace build-runner's no-lockfile npm
     // install never has to auto-pick wrangler as OpenNext's peer: the
     // auto-pick is engine-filtered by the BUILDER's node version and has
@@ -374,17 +377,17 @@ const wranglerJsonc = `{
 }
 `;
 
-const vitestConfigTs = `/**
- * Vitest config for the ${SLUG} marketplace app.
- *
- * Test files live under \`__tests__/\` (mirroring the source tree).
- * Coverage is opt-in via \`pnpm test -- --coverage\`; vendored packages
- * are excluded because they're tested upstream in \`packages/\`.
- */
-import { defineConfig } from 'vitest/config';
+// sprigr-apps#3821: a repo whose apps sit at <repo>/apps/<slug> next to a
+// shared vitest base (sprigr-apps' vitest.shared.ts: the repo-wide timeouts,
+// enforced there by tools/check-vitest-shared.mjs) gets the merge form; a
+// bare defineConfig there runs on vitest's 5 s default. Anywhere else (a
+// standalone scaffold, this repo's own --out-dir tests) stays bare, so the
+// config never imports a file that is not there.
+const SHARED_VITEST = ["vitest.shared.ts", "vitest.shared.mts", "vitest.shared.js"].some((f) =>
+  existsSync(join(APP_DIR, "..", "..", f)),
+);
 
-export default defineConfig({
-  // tsconfig sets \`jsx: "preserve"\` for Next's compiler, which would leave
+const vitestTestBlock = `  // tsconfig sets \`jsx: "preserve"\` for Next's compiler, which would leave
   // JSX untransformed here. A test that imports src/app/page.tsx (the
   // scaffolded connection-admin test does) needs the automatic runtime.
   esbuild: { jsx: 'automatic' },
@@ -398,7 +401,33 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       exclude: ['src/**/vendor/**'],
     },
-  },
+  },`;
+
+const vitestHeader = `/**
+ * Vitest config for the ${SLUG} marketplace app.
+ *
+ * Test files live under \`__tests__/\` (mirroring the source tree).
+ * Coverage is opt-in via \`pnpm test -- --coverage\`; vendored packages
+ * are excluded because they're tested upstream in \`packages/\`.
+ */`;
+
+const vitestConfigTs = SHARED_VITEST
+  ? `${vitestHeader}
+import { defineConfig, mergeConfig } from 'vitest/config';
+import { baseConfig } from '../../vitest.shared';
+
+export default mergeConfig(
+  baseConfig,
+  defineConfig({
+${vitestTestBlock}
+  }),
+);
+`
+  : `${vitestHeader}
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+${vitestTestBlock}
 });
 `;
 
@@ -462,6 +491,8 @@ const envTs = `/**
  * The marketplace runtime binds these onto the per-install WFP script:
  *   - DB          - per-install D1 (always)
  *   - INSTALL_ID / COMPANY_ID / APP_SLUG - runtime-injected identifiers
+ *   - COMPANY_TIMEZONE - the company's IANA zone, when it has one (read it
+ *     with getCompanyTimezone from @sprigr/apps-app-sdk)
  *   - SPRIGR_VIEWER_SECRET - verifies the signed viewer context
  *   - SPRIGR_INSTALL_TOKEN / SPRIGR_PLATFORM_BASE - platform API access${
    NO_OAUTH
@@ -492,6 +523,10 @@ export interface ${PASCAL}Env {
   COMPANY_ID?: string;
   /** Optional - only present when the runtime injects it. */
   APP_SLUG?: string;
+  /** The company's IANA zone (e.g. "Australia/Brisbane"). Absent when the
+   *  company has none; read it with getCompanyTimezone(env), which also
+   *  drops a value Intl does not accept. */
+  COMPANY_TIMEZONE?: string;
   /** Per-install key the platform derives and binds so the app can verify
    *  the signed \`X-Sprigr-Viewer\` context (resolveViewerContext in
    *  @sprigr/apps-app-sdk). Absent where the platform has no signing key

@@ -21,6 +21,8 @@ export interface ManifestDispatchBlock {
   actionField: string;
   actions: string[];
   actionInputs?: Record<string, { accepts: string[]; required?: string[] }>;
+  /** One line per action, shown under it in a code_mode `tools.describe` (sprigr-app-kit#170). */
+  actionDescriptions?: Record<string, string>;
 }
 
 /**

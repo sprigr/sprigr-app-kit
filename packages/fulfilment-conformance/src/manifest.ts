@@ -108,12 +108,22 @@ export function checkAdapterManifest(
     }
     claimed.set(opName, entry);
 
+    // An op that arrived after 1.0.0 (`optionalSince`) cannot honestly be
+    // tagged 1.0.0: that version had no such op. It may be pinned at the
+    // version that introduced it or any later 1.x, never earlier. Every 1.0.0
+    // op keeps the exact pin.
+    const since = contractOps.find((o) => o.name === opName)?.optionalSince;
+    const versionOk =
+      provides.version === INTERFACE_VERSION ||
+      (typeof since === 'string' && typeof provides.version === 'string' && isOneXAtLeast(provides.version, since));
     checks.add(
       `provides.${opName}.version`,
-      provides.version === INTERFACE_VERSION,
-      provides.version === INTERFACE_VERSION
-        ? `pinned at ${INTERFACE_VERSION}`
-        : `provides.version must be the exact "${INTERFACE_VERSION}"; got ${JSON.stringify(provides.version)}. The hub requires ^1 and reads the pin to decide what it may call.`,
+      versionOk,
+      versionOk
+        ? `pinned at ${String(provides.version)}`
+        : since
+          ? `provides.version must be "${INTERFACE_VERSION}" or a 1.x at least "${since}" (when ${opName} was added); got ${JSON.stringify(provides.version)}. The hub requires ^1 and reads the pin to decide what it may call.`
+          : `provides.version must be the exact "${INTERFACE_VERSION}"; got ${JSON.stringify(provides.version)}. The hub requires ^1 and reads the pin to decide what it may call.`,
     );
 
     const expected = toolNameFor(slug, opName);
@@ -208,4 +218,16 @@ export function checkAdapterManifest(
   );
 
   return checks.report();
+}
+
+/** `version` is an exact 1.x.y at or after `min` (also 1.x.y). */
+function isOneXAtLeast(version: string, min: string): boolean {
+  const parse = (v: string) => {
+    const m = /^1\.(\d+)\.(\d+)$/.exec(v);
+    return m ? [Number(m[1]), Number(m[2])] : null;
+  };
+  const a = parse(version);
+  const b = parse(min);
+  if (!a || !b) return false;
+  return a[0]! > b[0]! || (a[0] === b[0] && a[1]! >= b[1]!);
 }

@@ -33,11 +33,11 @@ describe('gatewaySearch', () => {
       ok: true,
       result: { hits: [{ objectID: '1' }], nb_hits: 1, page: 0, nb_pages: 1, facet_counts: { status: { active: 1 } } },
     });
-    const search = gatewaySearch('search_listings', 'inst_123');
+    const search = gatewaySearch('search_listings', 'inst_abcdefghij0123456789');
     const res = await search(PARAMS);
 
     const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toContain('/marketplace/installations/inst_123/tools/search_listings');
+    expect(url).toContain('/marketplace/installations/inst_abcdefghij0123456789/tools/search_listings');
     expect(init!.credentials).toBe('include');
     const sent = JSON.parse(init!.body as string);
     expect(sent).toEqual({
@@ -49,14 +49,14 @@ describe('gatewaySearch', () => {
 
   it('accepts a bare result object (no envelope)', async () => {
     mockFetch({ hits: [], nb_hits: 0, page: 0, nb_pages: 1 });
-    const res = await gatewaySearch('t', 'inst_1')(PARAMS);
+    const res = await gatewaySearch('t', 'inst_abcdefghij0123456789')(PARAMS);
     expect(res.hits).toEqual([]);
     expect(res.nb_hits).toBe(0);
   });
 
   it('throws on a non-ok response', async () => {
     mockFetch({ error: 'boom' }, false, 500);
-    await expect(gatewaySearch('t', 'inst_1')(PARAMS)).rejects.toThrow(/failed \(500\)/);
+    await expect(gatewaySearch('t', 'inst_abcdefghij0123456789')(PARAMS)).rejects.toThrow(/failed \(500\)/);
   });
 
   it('gatewayBase picks prod when no window (SSR)', () => {
@@ -74,11 +74,11 @@ describe('searchKeySearch', () => {
       nb_pages: 2,
       facets: { status: { active: 30, sold: 12 } },
     });
-    const search = searchKeySearch('boardcave_products', 'sk_test');
+    const search = searchKeySearch('demo_products', 'sk_test');
     const res = await search({ ...PARAMS, hitsPerPage: 24 });
 
     const [url, init] = fetchFn.mock.calls[0]!;
-    expect(url).toBe(`${DEFAULT_SEARCH_HOST}/1/indexes/boardcave_products/query`);
+    expect(url).toBe(`${DEFAULT_SEARCH_HOST}/1/indexes/demo_products/query`);
     const headers = init!.headers as Record<string, string>;
     expect(headers['X-Sprigr-API-Key']).toBe('sk_test');
     const sent = JSON.parse(init!.body as string);
@@ -177,7 +177,7 @@ describe('resolveSource / sourceReady', () => {
     expect(custom).toHaveBeenCalledWith(PARAMS);
   });
   it('a gateway source with an explicit installId is ready', () => {
-    expect(sourceReady({ kind: 'gateway', toolName: 't', installId: 'inst_1' })).toBe(true);
+    expect(sourceReady({ kind: 'gateway', toolName: 't', installId: 'inst_abcdefghij0123456789' })).toBe(true);
   });
   it('a gateway source with no id and no window is not ready', () => {
     expect(sourceReady({ kind: 'gateway', toolName: 't' })).toBe(false);

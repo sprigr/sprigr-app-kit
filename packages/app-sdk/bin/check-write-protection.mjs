@@ -33,13 +33,17 @@ import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } fr
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+// One list for this CLI and the SDK's DEFAULT_WRITE_PREFIXES (sprigr-app-kit#85).
+const VERBS = JSON.parse(readFileSync(new URL('../src/write-protection/destructive-verbs.json', import.meta.url), 'utf8'));
+
 /**
  * A tool or action name that destroys, reverses money, or cannot be walked
  * back. Tested against the bare name and with any leading `<app>_` prefix
  * stripped, so `shopify_delete_product` and `delete_product` both match.
  */
-export const DESTRUCTIVE_ACTION_PATTERN =
-  /(^|_)(delete|remove|destroy|cancel|void|refund|unship|rotate|offboard|purge|wipe|drop|terminate|clear|reset|revoke|unregister|force|deactivate|suspend)(_|$)|(^|_)(capture_payment|complete_draft)/;
+export const DESTRUCTIVE_ACTION_PATTERN = new RegExp(
+  `(^|_)(${VERBS.verbs.join('|')})(_|$)|(^|_)(${VERBS.compounds.join('|')})`,
+);
 
 export function isDestructiveName(name) {
   return DESTRUCTIVE_ACTION_PATTERN.test(name);
@@ -61,8 +65,16 @@ function enumeratedActions(tool) {
   return []; // a dispatcher, but nothing enumerated
 }
 
-function isGatedRule(rule) {
-  return !!rule && typeof rule === 'object' && (rule.always === true || !!rule.when);
+/**
+ * A rule that can actually fire: `always`, or a non-empty `when` whose every
+ * condition has `atLeast >= 1` (a lower threshold, or an empty list, gates
+ * nothing or everything by accident).
+ */
+export function isGatedRule(rule) {
+  if (!rule || typeof rule !== 'object') return false;
+  if (rule.always === true) return true;
+  const when = Array.isArray(rule.when) ? rule.when : rule.when ? [rule.when] : [];
+  return when.length > 0 && when.every((c) => !!c && typeof c.atLeast === 'number' && c.atLeast >= 1);
 }
 
 /**

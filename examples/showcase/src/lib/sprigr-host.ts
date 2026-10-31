@@ -45,6 +45,46 @@ export interface SprigrHostError extends Error {
 
 export type StoreScope = 'company' | 'publisher';
 
+/**
+ * `env.SPRIGR.me.signature` answer. Mirrors `SprigrMeSignatureResult` in
+ * @sprigr/apps-app-sdk 0.30.0+; declared locally for the same reason as
+ * SprigrLogEntry above.
+ */
+export type SprigrMeSignatureResult =
+  | { ok: true; platform_user_id: string; html: string | null }
+  | { ok: false; error: 'no_person' | 'actor_unverified' | 'invalid' | 'unavailable'; message: string };
+
+export type CollectionKeyNormalize = 'lower' | 'upper' | 'trim' | 'collapse_ws' | 'strip_nonalnum';
+
+/** One declared collection field (sprigr-team packages/collections/src/types.ts). */
+export interface CollectionField {
+  name: string;
+  type?: 'string' | 'number' | 'boolean' | 'enum' | 'date';
+  /** Filterable and counted as a facet. Declare facets at define time. */
+  facet?: boolean;
+  searchable?: boolean;
+  required?: boolean;
+  /** Allowed values for type 'enum'. */
+  values?: string[];
+  unit?: string;
+}
+
+/** The `env.SPRIGR.collections.define` body. `description` is required. */
+export interface CollectionDefinition {
+  scope: 'company' | 'private';
+  /** Lowercase a-z, 0-9 and dashes, at most 64 chars; may not start with "acl". */
+  name_suffix: string;
+  description: string;
+  /** natural = one key field, composite = several, surrogate = caller-supplied or random objectID. */
+  key: { strategy: 'natural' | 'composite' | 'surrogate'; fields?: string[]; normalize?: CollectionKeyNormalize[] };
+  fields: CollectionField[];
+  searchable?: string[];
+  sort_by?: string[];
+  /** Field-level change log, read with collections.history. Cannot be combined with acl. */
+  history?: boolean;
+  acl?: { enabled: boolean; user_fields?: string[]; group_fields?: string[]; public?: boolean };
+}
+
 export interface SprigrHost {
   /** Emit a marketplace event. opts.targetAppInstallationId pins delivery. */
   emit(
@@ -67,6 +107,16 @@ export interface SprigrHost {
    * in @sprigr/apps-app-sdk.
    */
   log(input: SprigrLogEntry | SprigrLogEntry[]): Promise<SprigrLogResult>;
+
+  /**
+   * Reads about the PERSON this dispatch acts for, resolved on the platform
+   * from the signed actor assertion; nothing the app passes names a person.
+   * `signature({ channel })` is their Inbox email signature (sanitized HTML,
+   * null when they set none). Never rejects. Optional: feature-detect it.
+   */
+  me?: {
+    signature(input: { channel: string }): Promise<SprigrMeSignatureResult>;
+  };
 
   usage: {
     /** Report billed token usage for metering. billedTokens rounds to int. */
@@ -171,14 +221,52 @@ export interface SprigrHost {
     get(objectID: string): Promise<{ ok: boolean; object: Record<string, unknown> | null; index: string }>;
   };
 
+  /**
+   * Each method forwards its one args object verbatim to the platform
+   * handler, so these field names are the wire contract (sprigr-team
+   * workers/provisioning/src/sprigr-collections-routes.ts). Only define takes
+   * scope + name_suffix; every other op takes the `collection` name define
+   * returned.
+   */
   collections: {
-    define(def: Record<string, unknown>): Promise<{ collection: string }>;
-    ingest(args: Record<string, unknown>): Promise<unknown>;
-    ingestFromTable(args: Record<string, unknown>): Promise<unknown>;
-    query(args: Record<string, unknown>): Promise<unknown>;
-    reconcile(args: Record<string, unknown>): Promise<unknown>;
-    describe(args: Record<string, unknown>): Promise<unknown>;
-    history(args: Record<string, unknown>): Promise<unknown>;
+    define(def: CollectionDefinition): Promise<{ collection: string; created: boolean }>;
+    /** At most 1000 records per call. */
+    ingest(args: {
+      collection: string;
+      records: Array<Record<string, unknown>>;
+      merge_policy?: 'last_write_wins' | 'merge' | 'conflict_hold';
+      source?: Record<string, unknown>;
+    }): Promise<unknown>;
+    /** `mapping` is source column -> field (or `{ field, from_unit, to_unit }`). */
+    ingestFromTable(args: {
+      collection: string;
+      rows: Array<Record<string, unknown>>;
+      mapping: Record<string, string | { field: string; from_unit?: string; to_unit?: string }>;
+      constant_fields?: Record<string, unknown>;
+      source?: Record<string, unknown>;
+    }): Promise<unknown>;
+    /** `filters` may only name declared facet fields. hits_per_page is 1-100, default 20. */
+    query(args: {
+      collection: string;
+      query?: string;
+      filters?: string;
+      facets?: string[];
+      sort_by?: string;
+      attributes_to_retrieve?: string[];
+      hits_per_page?: number;
+      page?: number;
+    }): Promise<unknown>;
+    /** Read-only diff of `against` with the collection, matched on `match.key`. Writes nothing. */
+    reconcile(args: {
+      collection: string;
+      against: { records: Array<Record<string, unknown>> } | { collection: string };
+      match: { key: string[]; normalize?: CollectionKeyNormalize[] };
+      fields_to_compare?: string[];
+      report_gaps?: 'both' | 'incoming_only' | 'existing_only';
+    }): Promise<unknown>;
+    describe(args: { collection: string }): Promise<unknown>;
+    /** `object_id` is the record's objectID (from a query hit), not its key value. limit is 1-200, default 50. */
+    history(args: { collection: string; object_id?: string; field?: string; limit?: number }): Promise<unknown>;
   };
 
   /** Cross-tenant tool dispatch (consumer -> granting app). */
