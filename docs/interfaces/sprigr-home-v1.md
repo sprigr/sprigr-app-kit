@@ -194,7 +194,7 @@ An identity read is a status read; it never mints anything.
   - `owner` is a `platformUserId` stamped on an earlier dispatch, to make one person's copy stale; without it, every copy of the provider is stale.
   - The call carries no records, so it cannot become a push path. The platform debounces it.
   - From an inline route, where `env.SPRIGR` is absent, the same body goes to `POST /internal/wfp/home/invalidate` with the install token (`homeInvalidateBodyFor`).
-- **A Home dispatch is read-only.** Its `env.SPRIGR` passes only reads (`data.search|get|listIds`, `collections.query|describe|history`, `store.get|list`, `files.get|list|job`, `jobs.get|list`, `grants.providers`, `fulfillment_services.list`, `connect.checkAgentBind`). Everything else is refused with `home_read_only`. A Home tool writes nothing to its own D1 either.
+- **A Home dispatch is read-only.** Its `env.SPRIGR` passes only reads (`data.search|get|listIds|exists`, `collections.query|describe|history`, `store.get|list`, `files.get|list|job`, `jobs.get|list`, `grants.providers`, `fulfillment_services.list`, `connect.checkAgentBind`, `teams.list|mine`). Everything else is refused with `home_read_only`. A Home tool writes nothing to its own D1 either.
 - **Budgets.** Answer inside `deadline_ms` (3500 ms), or return `rate_limited` with `retry_after_s`. Keep the answer under 64 KB.
 
 ## 9. Versioning
