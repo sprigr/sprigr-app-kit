@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import { home, homeTool, identity, metrics, schedule, type HomeRequest, type HomeResult, type ScheduleRecord } from '@sprigr/apps-home';
 import { fakeSprigrData } from '@sprigr/apps-home/testing';
-import { formatReport, runHomeConformance, type ConformanceReport } from '../src/index';
+import { formatReport, readOnlySprigr, runHomeConformance, type ConformanceReport } from '../src/index';
 
 const A = 'usr_conformance_a';
 const B = 'usr_conformance_b';
@@ -181,6 +181,19 @@ describe('runHomeConformance', () => {
     const report = await runHomeConformance({ manifest: MANIFEST, tool: importer, env: envFor });
     expect(failed(report)).toEqual(['env.sprigr_reads_only']);
     expect(report.checks.find((c) => c.name === 'env.sprigr_reads_only')!.detail).toMatch(/data\.import/);
+  });
+
+  it('lets a Home read call data.exists, teams.list and teams.mine, as the platform does', async () => {
+    const calls: string[] = [];
+    const t = readOnlySprigr({
+      data: { exists: async () => { calls.push('data.exists'); return true; } },
+      teams: { list: async () => { calls.push('teams.list'); return []; }, mine: async () => { calls.push('teams.mine'); return []; } },
+    });
+    await t.sprigr.data.exists();
+    await t.sprigr.teams.list();
+    await t.sprigr.teams.mine();
+    expect(calls).toEqual(['data.exists', 'teams.list', 'teams.mine']);
+    expect(t.refused).toEqual([]);
   });
 
   it('fails an answer over 64 KB', async () => {

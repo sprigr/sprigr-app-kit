@@ -18,6 +18,7 @@ export const HOME_DISPATCH_READ_METHODS: readonly string[] = [
   'data.search',
   'data.get',
   'data.listIds',
+  'data.exists',
   'collections.query',
   'collections.describe',
   'collections.history',
@@ -31,6 +32,8 @@ export const HOME_DISPATCH_READ_METHODS: readonly string[] = [
   'grants.providers',
   'fulfillment_services.list',
   'connect.checkAgentBind',
+  'teams.list',
+  'teams.mine',
 ];
 
 const WRITE_SQL = /^\s*(insert|update|delete|replace|upsert|create|drop|alter)\b/i;
