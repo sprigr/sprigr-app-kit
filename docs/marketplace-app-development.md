@@ -48,7 +48,7 @@ sprigr-app-kit/
 │   ├── d1-kv/                            # D1-backed token / settings stores
 │   └── ...                               # sync-cursor, dedup-latch, webhook-registry, faceted-search
 ├── tools/                                # scaffolder + sync-vendor + version/migration guards
-├── examples/                             # reference apps (harvest, showcase, static-badge, ...)
+├── examples/                             # reference apps (harvest, showcase, mock-warehouse, ...)
 ├── docs/                                 # this file + the rest of the kit docs
 ├── package.json
 ├── pnpm-workspace.yaml
@@ -66,7 +66,7 @@ import { encodeState } from '@sprigr/apps-app-sdk';   // via workspace:*
 
 There are two supported ways to get shared code into a published app:
 
-**1. Depend on the published npm packages (preferred, and what you want).** Every kit package publishes to npm as `@sprigr/apps-*`, so `npm install` in the build sandbox resolves them cleanly. The scaffolder wires these in for you. **Pin them exactly** (`"@sprigr/apps-oauth-utils": "0.1.0"`, no caret): the build-runner reinstalls on every install build, and a version range would roll new helper code into production installs with no app change and no review. Upgrading a helper is a deliberate app release: bump the pin, bump the app version, publish. See [publishing.md](publishing.md) for the full rationale.
+**1. Depend on the published npm packages (preferred, and what you want).** Every kit package publishes to npm as `@sprigr/apps-*`, so the build sandbox installs them from your app's lockfile like any other dependency. The scaffolder wires these in for you. **Pin them exactly** (`"@sprigr/apps-oauth-utils": "0.3.1"`, no caret), so the helper code you tested is the code you ship. Upgrading a helper is a deliberate app release: bump the pin, bump the app version, publish. See [publishing.md](publishing.md) for the full rationale.
 
 **2. Vendor the source (fallback, for a package that is not on npm).** No package in `packages/` is in that position today, so you should not need this. It stays documented because a future package might not be publishable, and because apps that predate a package's first publish still carry a mirror. The mechanism: declare which packages you want in your app's `package.json`, then run the sync script to copy their source into `src/lib/vendor/`.
 
@@ -111,7 +111,7 @@ Single source of truth. Validated server-side at publish.
   },
   "permissions": {
     "scopes": ["tools:register"],          // platform scopes only; env.SPRIGR.data needs none
-    "network_domains": [                     // outbound fetch allowlist enforced by WFP
+    "network_domains": [                     // every host fetch() calls; undeclared hosts are logged now, refused later
       "api.example.com", "login.example.com"
     ]
   },
@@ -119,7 +119,7 @@ Single source of truth. Validated server-side at publish.
     {
       "key": "PROVIDER_CLIENT_ID",
       "label": "Provider OAuth client_id",
-      "type": "secret",                      // ALWAYS "secret", never "string" (validation rejects)
+      "type": "secret",                      // "secret" (masked) or "text"; anything else fails validation
       "required": true,
       "description": "..."
     }
@@ -139,12 +139,12 @@ Single source of truth. Validated server-side at publish.
       "name": "refresh_tokens",              // snake_case, kebab is rejected
       "cron": "*/45 * * * *",
       "tool": "refresh_provider_tokens",     // must match a tools[].name
-      "scope": "per_install"                 // 'per_install' or 'platform' - "install" alone is rejected
+      "scope": "per_install"                 // 'per_install' (default) or 'per_tenant'; anything else is rejected
     }
   ],
   "tools": [
     {
-      "name": "my_crm",                      // snake_case; collisions across apps allowed (scoped by app)
+      "name": "my_crm",                      // snake_case; prefix with your slug: agents see every app's tools in one namespace
       "description": "...",
       "handler": "src/handlers/my-crm-tool.ts",   // path relative to app dir; built into __sprigr_handlers.js
       "input_schema": { /* JSON Schema for the tool args */ }
@@ -158,6 +158,7 @@ Single source of truth. Validated server-side at publish.
     },
     {
       "name": "my_crm_oauth_callback",        // dispatched by the bouncer
+      "description": "Completes the My CRM OAuth connection. Called by the platform only.",
       "handler": "src/handlers/oauth-callback.ts",
       "internal": true,                       // bouncer-only: keep it off the agent tool list
       "input_schema": { /* { code, state, redirectUri, environment }, state required */ }
@@ -166,12 +167,14 @@ Single source of truth. Validated server-side at publish.
 }
 ```
 
+**Handler files export an object keyed by tool name.** The build merges the default export of every `handler` file into one map and dispatches `/__sprigr/tool/<name>` to `map[name]`. Write `export default { my_crm: async (args, env) => { ... } }`. A default-exported function has no keys, so every call to it answers `404 no_handler`. One file may export several tools.
+
 **Common schema gotchas:**
-- `secrets[].type` must be `"secret"`. `"string"` is rejected with `Invalid secrets[].type`.
+- `secrets[].type` is `"secret"` or `"text"`. `"string"` is rejected with `secrets entry "X" has invalid type "string"`.
 - `schedules[].name` must be snake_case. `refresh-tokens` is rejected; `refresh_tokens` works.
-- `schedules[].scope` must be `"per_install"` or `"platform"`. `"install"` alone is rejected.
-- `runtime.tier` is required for non-agent apps (`"ssr"` for Next.js/Astro/Remix, `"static"` for plain HTML).
-- `permissions.network_domains` is an outbound allowlist - every domain `fetch()` calls **must** be there, including OAuth login hosts. WFP returns a network error otherwise.
+- `schedules[].scope` is `"per_install"` (default: one fire per install) or `"per_tenant"` (one fire per company, even if the app is installed more than once). Any other value fails publish.
+- `runtime.tier` defaults to `"ssr"` (`"static"` for plain HTML). Always set `runtime.framework` (`next`, `astro`, `remix` or `static`): an `ssr` app without it is built as static and fails at build time, not at publish.
+- `permissions.network_domains` lists every domain `fetch()` calls, including OAuth login hosts. Today the platform logs calls to undeclared hosts; once its egress fence moves to enforce mode they will be refused, so declare every host now.
 - `tools[].handler` paths are **relative to the app dir**, not the bundle root. The build-runner adapter resolves them when generating `__sprigr_handlers.js`.
 
 ### Declaring a tool's side effects (`tools[].effects`)
@@ -312,7 +315,7 @@ Doc-object shape (one concept per object, recipe-first; the platform injects `ap
 ]
 ```
 
-**Caps + validation** (publish is rejected on violation): ≤ 20 doc files, ≤ 100 objects total, ≤ 4000 chars per `content`; `objectID` must be lowercase kebab/snake and unique across all your docs files; each file must be a JSON array. The CLI checks the declaration shape + that each file exists and parses; the server re-validates the content.
+**Caps + validation** (publish is rejected on violation): ≤ 20 doc files, ≤ 100 objects total, ≤ 4000 chars per `content`; `objectID` must be lowercase kebab/snake and unique across all your docs files; each file must be a JSON array. `sprigr app validate` checks only the declaration shape; publish checks that each file is in the upload and parses, and validates the content.
 
 **Lifecycle:** every publish **replaces** your app's docs (upsert new, prune removed), so deleting an object from the file removes it from the index on the next publish. Deleting the app prunes all its docs. Ingestion is best-effort - a search hiccup logs but never fails your publish.
 
@@ -369,22 +372,25 @@ Every dispatch, your step-function tool receives `args.job` and returns a **dire
 
 ```ts
 // src/handlers/provision.ts
-export default async function provisionStep(args) {
-  const { id, name, step, attempt, params, state, signal } = args.job;
-  // step:    monotonic 0-based counter
-  // attempt: 1-based dispatch attempt of THIS step (resets when the step advances)
-  // params:  immutable, supplied at jobs.start
-  // state:   whatever the previous step's directive persisted (null on step 0)
-  // signal:  present ONLY on the dispatch right after a `wait` -   //          { delivered: true, payload } if jobs.signal resumed it,
-  //          { delivered: false } if the wait timed out
+export default {
+  provision_step: async (args, env) => {
+    const { id, name, step, attempt, params, state, signal } = args.job;
+    // step:    monotonic 0-based counter
+    // attempt: 1-based dispatch attempt of THIS step (resets when the step advances)
+    // params:  immutable, supplied at jobs.start
+    // state:   whatever the previous step's directive persisted (null on step 0)
+    // signal:  present ONLY on the dispatch right after a `wait`:
+    //          { delivered: true, payload } if jobs.signal resumed it,
+    //          { delivered: false } if the wait timed out
 
-  if (step === 0) {
-    const session = await ensureLogin();                       // do one increment of work
-    return { op: 'continue', state: { session }, label: 'logged in' };
-  }
-  // ...
-  return { op: 'complete', result: { appId } };
-}
+    if (step === 0) {
+      const session = await ensureLogin();                       // do one increment of work
+      return { op: 'continue', state: { session }, label: 'logged in' };
+    }
+    // ...
+    return { op: 'complete', result: { appId } };
+  },
+};
 ```
 
 The directive union:
@@ -683,24 +689,25 @@ The binding has no company slug in it, so it survives a company rename. It does 
 
 ### Publish
 ```bash
-# from the app's directory (or with --dir apps/<slug> from the root)
-sprigr app publish --dir .
+pnpm lock:app apps/<slug>                         # per-app pnpm-lock.yaml; commit it
+sprigr app publish --dir apps/<slug> --wait-fanout
 ```
 
 What happens server-side:
 1. The CLI POSTs `{ manifest, files: {path: content, ...} }` to the platform publish endpoint.
-2. The platform validates the manifest, upserts the app record, and creates a new version row with the source files stored on it.
-3. **No build yet** - publish only stages the source. Builds run per-install.
+2. The platform validates the manifest and refuses an app that has dependencies but no lockfile in its directory (`lockfile_required`).
+3. It stores the source, records the version, and makes it the app's current version.
+4. **It then rolls the version out.** Every install that tracks the latest version (the default for a new install) is upgraded and rebuilt. `--wait-fanout` waits for those builds; `sprigr app rollout <slug> <version>` reports progress later. Installs pinned to an older version stay put.
 
 ### Install
 - A user clicks Install in the portal → the platform creates an install record → provisions the per-install website (slug shape `<appSlug>-<lastEightOfInstallId>`, e.g. `my-crm-5oema5wd`) → grants the installer access → enqueues a build job.
-- The build-runner container picks up the job, runs `npm install` + the framework build (e.g. `opennext build` for Next.js), then uploads the bundle to WFP.
+- The build-runner installs strictly from your lockfile (`pnpm install --frozen-lockfile`) and runs the framework build (OpenNext for Next.js), then uploads the bundle to WFP. A version is compiled once; every other install of that version reuses the compiled output with its own bindings.
 - The build-runner allocates the per-install D1 + KV if missing, then attaches all the bindings above.
 - After upload, the platform runs the manifest's `migrations[]` against the per-install D1.
 - The success callback then fires the app's `on_install` hook, if it declares one (see [Lifecycle hooks](#lifecycle-hooks-on_install-on_upgrade-on_uninstall)).
 
 ### Upgrade
-- After publishing a new version, upgrade existing installs via the portal "Upgrade" banner or `sprigr app upgrade <slug>`.
+- Publishing a new version upgrades every install that tracks the latest version automatically. A pinned install moves only when its owner runs `sprigr app upgrade <slug>` or uses the portal's Upgrade banner. Installs never move to a lower version automatically.
 - The install is re-pinned to the latest approved version and the build is re-enqueued with the same website id. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
 - Once `on_install` has succeeded, every successful build fires the app's `on_upgrade` hook, if it declares one (see below).
 
@@ -723,16 +730,18 @@ Declare each hook `"internal": true`. The platform keeps these names off the age
 
 ```ts
 // src/handlers/on-install.ts
-export default async function onInstall(args, env) {
-  // args: { install_id, company_id, integrations: [{ integration_type, integration_id }] }
-  const { collection } = await env.SPRIGR.collections.define({ /* see "Collections" in platform-reference.md */ });
-  await env.DB.prepare(
-    'INSERT INTO my_crm_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
-  ).bind('orders_collection', collection).run();
-  // To have a failure retried on the next build, THROW. A returned
-  // { ok: false } is recorded as success, and the hook never runs again.
-  return { collection };
-}
+export default {
+  on_install: async (args, env) => {
+    // args: { install_id, company_id, integrations: [{ integration_type, integration_id }] }
+    const { collection } = await env.SPRIGR.collections.define({ /* see "Collections" in platform-reference.md */ });
+    await env.DB.prepare(
+      'INSERT INTO my_crm_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    ).bind('orders_collection', collection).run();
+    // To have a failure retried on the next build, THROW. A returned
+    // { ok: false } is recorded as success, and the hook never runs again.
+    return { collection };
+  },
+};
 ```
 
 Your migrations have already run when a hook fires. The build-runner applies `migrations[]` before it posts the success callback that fires the hooks, and a failed migration fails the build, so no hook runs (`workers/build-runner/src/publish-result.ts:593-620`).

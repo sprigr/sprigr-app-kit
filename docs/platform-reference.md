@@ -161,7 +161,7 @@ Single source of truth. Validated server-side at publish.
       "name": "hourly_token_refresh",        // free identifier, snake_case; may differ from tool (see gotcha below)
       "cron": "*/45 * * * *",
       "tool": "refresh_procore_tokens",      // must name a tools[] entry that declares a handler
-      "scope": "per_install"                 // 'per_install' or 'platform' — "install" alone is rejected
+      "scope": "per_install"                 // 'per_install' (default) or 'per_tenant'; anything else is rejected
     }
   ],
   "tools": [
@@ -201,9 +201,9 @@ The dedup key is `(turnId, round, toolName, canonical input)` **without** the to
 - `secrets[].type` must be `"secret"`. We initially used `"string"` — rejected with `Invalid secrets[].type`.
 - `schedules[].name` must be snake_case. `refresh-tokens` was rejected; `refresh_tokens` works.
 - `schedules[].name` is a free identifier (snake_case) and may differ from `schedules[].tool`. The platform dispatcher resolves the handler by the TOOL name (it POSTs `/__sprigr/schedule/<tool_name>`); the schedule name only labels the fire (it travels in the dispatch body, the `x-sprigr-schedule-name` header, and audit rows as `action=schedule:<schedule_name>`). Publish now validates that `schedules[].tool` references a `tools[]` entry that declares a `handler`; a dangling tool reference, or a tool without a handler, rejects the publish. Failed fires (HTTP 4xx/5xx from the handler) audit as `schedule:<name>:handler_error` and land in the platform's `system_logs`, instead of counting as fired. Rollout note: this behaviour shipped in sprigr-team PR #3093 (platform staging, 2026-07-08). Before that, dispatch went by schedule name and a name/tool mismatch silently 404d every fire (found via the shopify hourly backstop). Until the fix reaches platform prod with the next release, keep `name` equal to `tool` for apps published to prod; matching names work correctly on every dispatcher version.
-- `schedules[].scope` must be `"per_install"` or `"platform"`. `"install"` was rejected.
-- `runtime.tier` is required for non-agent apps (`"ssr"` for Next.js/Astro/Remix, `"static"` for plain HTML).
-- `permissions.network_domains` is a **declarative** allowlist, **not** a runtime outbound firewall. Your per-install WFP script can `fetch()` any host regardless of what you declare — there is **no WFP network enforcement** and no "network error" for undeclared hosts (provisioning only length-checks each entry; the build-runner attaches no outbound/WFP network config). Do **not** treat it as an SSRF sandbox. What it IS used for: (1) the inbound-OAuth SSRF guard validates a *templated* OAuth host (e.g. `https://{shop}/…`) against this list before dispatching the install callback (`workers/provisioning/.../inbound-oauth/schemes.ts`); (2) the agent code-mode sandbox uses it to route an agent's blocked `http.request` to an installed app's namespace instead of prompting for raw outbound access; (3) it documents intent for reviewers. Still declare every host you call (OAuth login hosts included) so those paths and reviewers are correct — just don't rely on it to *block* anything at runtime.
+- `schedules[].scope` is `"per_install"` (default: one fire per install) or `"per_tenant"` (one fire per company, even if the app is installed more than once). Any other value fails publish.
+- `runtime.tier` defaults to `"ssr"` (`"static"` for plain HTML). Always set `runtime.framework` (`next`, `astro`, `remix` or `static`): an `ssr` app without it is built as static and fails at build time, not at publish.
+- `permissions.network_domains` lists every host your app calls, OAuth login hosts included. The platform's egress fence (sprigr-team decision 0130) compares each outbound `fetch()` against it. Today it runs in report mode: an undeclared host is logged, not blocked. Once it moves to enforce mode an undeclared host will be refused, so declare every host now. The list is already enforced in two places: browser sessions in tenant mode may navigate only to declared hosts, and the inbound-OAuth SSRF guard checks a templated OAuth host (e.g. `https://{shop}/...`) against it. Do not treat it as your only SSRF defence.
 - `tools[].handler` paths are **relative to the app dir**, not the bundle root. The build-runner adapter resolves them when generating `__sprigr_handlers.js`.
 
 ## 2b. Shipping AI-facing docs (`docs[]`)
@@ -296,9 +296,9 @@ After [sprigr-team #836] + [#851], every per-install WFP script gets these bindi
 | `COMPANY_ID` | plain_text | `app_installations.company_id` | Stamp on outbound requests |
 | `APP_SLUG` | plain_text | `marketplace_apps.slug` | Self-identification in logs |
 | `COMPANY_TIMEZONE` | plain_text | `companies.timezone`, only when it is a valid IANA zone (sprigr-team #11038) | The tenant's "today" or a local cut-off. Read it with `getCompanyTimezone(env)` (app-sdk 0.24.0), which returns `undefined` rather than a default when the company has no zone. Fixed at upload: a zone change reaches the install on its next build |
-| `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for `env.SPRIGR.emit()` calls back to platform |
-| `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | `https://api.team.sprigr.com` (prod) or `https://staging-api-team.sprigr.com` |
-| Plus every manifest `secrets[]` entry | secret_text | the install's `SECRETS_KV` row | Per-install OAuth keys, webhook signing keys, etc. |
+| `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for every `env.SPRIGR.*` call back to the platform |
+| `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | The platform host `env.SPRIGR` calls: `https://webhooks.sprigr.com` (prod) or `https://staging-webhooks.sprigr.com` (staging). Read it from env; never hard-code it. It is not the API gateway, which does not serve `/internal/*` |
+| Plus every manifest `secrets[]` entry | secret_text | the install's encrypted secret store | Per-install OAuth keys, webhook signing keys, etc. Bound at runtime only, never at build time |
 
 Declare them in your env type so `getCloudflareContext({ async: true }).env` is typed:
 
@@ -733,24 +733,25 @@ Use this instead of a BYO key whenever you want the customer's AI spend on their
 
 ### Publish
 ```bash
-# from the app's directory
-sprigr app publish --dir .
+pnpm lock:app apps/<slug>                         # per-app pnpm-lock.yaml; commit it
+sprigr app publish --dir apps/<slug> --wait-fanout
 ```
 
 What happens server-side:
-1. CLI POSTs `{ manifest, files: {path: content, ...} }` to `https://staging-api-team.sprigr.com/api/v1/data/marketplace/apps/publish`.
-2. Provisioning's `handleMarketplaceAppPublish` validates the manifest, upserts a `marketplace_apps` row, creates a new `marketplace_app_versions` row with `source_files` JSON-stringified onto the row.
-3. **No build yet** — publish only stages the source. Builds run per-install.
+1. The CLI POSTs `{ manifest, files: {path: content, ...} }` to `<endpoint>/api/v1/data/marketplace/apps/publish`, where `<endpoint>` is the one in your CLI credentials.
+2. The platform validates the manifest and refuses an app that has dependencies but no lockfile in its directory (`lockfile_required`).
+3. It stores the source map in object storage, records an immutable version row and makes it the app's current version.
+4. **It then rolls the version out**: every install that tracks the latest version (the default for a new install) is upgraded and rebuilt. `--wait-fanout` waits for those builds; `sprigr app rollout <slug> <version>` reports progress later. Installs pinned to an older version stay put, and installs never move to a lower version automatically.
 
 ### Install
 - A user clicks Install in the portal → `POST /api/data/apps/:slug/install` → provisioning's `handleAppInstall` creates an `app_installations` row → `provisionMarketplaceInstall` creates a `websites` row (slug shape: `<appSlug>-<lastEightOfInstallId>`, e.g. `procore-5oema5wd`) → grants the installer access in `website_users` → enqueues a build job to `BUILD_JOBS_QUEUE`.
-- The build-runner container picks up the job, runs `npm install` + `npx opennext build` for Next.js (or framework-equivalent), then uploads the bundle to WFP as `sprigr-tenant-{prod|staging}-<websiteId>-production`.
+- The build-runner installs strictly from your lockfile (`pnpm install --frozen-lockfile`), runs the framework build (OpenNext for Next.js) and uploads the bundle to WFP as one script per deployment. A version is compiled once; every other install of that version reuses the compiled output with its own bindings.
 - Build-runner's `site-resources.ts` allocates the per-install D1 + KV if missing, then attaches all the bindings above.
 - After upload, `applyMigrationsForBuild` runs the manifest's `migrations[]` against the per-install D1.
 
 ### Upgrade
-- After publishing a new version: `POST /api/v1/data/apps/:slug/install/upgrade` (or portal "Upgrade" banner — added in #845).
-- Bumps `app_installations.pinned_version_id` to the latest approved version and re-enqueues the build with the same `websiteId`. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
+- Tracking installs upgrade automatically on publish (above). A pinned install moves with `sprigr app upgrade <slug>`, `POST /api/v1/data/apps/:slug/install/upgrade`, or the portal's Upgrade banner.
+- The upgrade moves the install's pinned version forward, then re-enqueues the build with the same `websiteId`. Until the new deployment is live, calls to a tool that is new in that version answer `upgrade_pending`. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
 
 ### Direct curl (for shakedown / scripting)
 ```bash

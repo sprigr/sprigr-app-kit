@@ -14,6 +14,7 @@
     "sync:vendor": "node tools/sync-vendor.mjs",
     "sync:vendor:check": "node tools/sync-vendor.mjs --check",
     "create:app": "node tools/create-app.mjs",
+    "lock:app": "node tools/lock-app.mjs",
     "bump": "node tools/bump-version.mjs",
     "verify:local": "pnpm sync:vendor:check && node tools/check-migrations-immutable.mjs && node tools/check-capability-coverage.mjs && node --test tools/check-version-order.test.mjs"
   },

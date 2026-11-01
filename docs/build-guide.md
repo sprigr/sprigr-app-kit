@@ -25,9 +25,9 @@ First time on Sprigr? [getting-started.md](getting-started.md) walks the full se
 
 1. **NEVER edit a migration file after a version that includes it has been published** (`apps/*/migrations/*.sql`), not even a comment. The platform records each migration's sha256 per install when it applies it; changing a byte blocks every existing install from upgrading, silently. Schema changes go in a NEW numbered file (`0002_*.sql`). While your app is unpublished, edit `0001_init.sql` freely. The guard: `pnpm verify:local` (also run it before every publish).
 2. **A publish ships nothing unless `metadata.version` moved.** `pnpm bump <slug> [patch|minor|major]` moves `sprigr-app.json` and `package.json` together.
-3. **Shared code arrives as exact-pinned npm deps, never `workspace:*`.** The marketplace build-runner installs your app's `package.json` with plain `npm` in a sandbox: no monorepo context, so `workspace:*` breaks at publish. Every kit package is published to npm; depend on `@sprigr/apps-<pkg>` at an **exact** version (the scaffolder does this for you). Pin exactly: the build-runner reinstalls on every install build, and a version range would roll new helper code into production without an app release. (Vendoring via `sprigrVendor` + `pnpm sync:vendor` remains as the fallback for a package that cannot be published; nothing in `packages/` needs it today.)
+3. **Shared code arrives as exact-pinned npm deps, never `workspace:*`.** The marketplace build-runner builds your app on its own, installing strictly from the `pnpm-lock.yaml` in the app dir: no monorepo context, so `workspace:*` breaks at publish. Write that lockfile with `pnpm lock:app apps/<slug>` and commit it; publish refuses an app that has dependencies and no lockfile (`lockfile_required`). Every kit package is published to npm; depend on `@sprigr/apps-<pkg>` at an **exact** version (the scaffolder does this for you). Pin exactly, so the lockfile you test is the one you meant: re-run `pnpm lock:app` after any dependency change. (Vendoring via `sprigrVendor` + `pnpm sync:vendor` remains as the fallback for a package that cannot be published; nothing in `packages/` needs it today.)
 4. **Pin `next` and `@opennextjs/cloudflare` as an exact pair and bump them together.** Floating either one breaks platform builds the day the other's peer-version floor moves (OpenNext raises its minimum `next` regularly; this took down a publisher's installs on 2026-07-27). The scaffolder emits a known-compatible exact pair; keep it exact.
-5. **Declare `wrangler` in devDependencies, majored-paired with `@cloudflare/workers-types`.** The build-runner's fresh no-lockfile `npm install` otherwise auto-installs wrangler as OpenNext's peer at a version filtered by the *builder's* node engines — on a node-20 builder that auto-pick was wrangler 4.86.0 (workers-types peer `^4`), which ERESOLVEs against the template's workers-types `^5` (this killed a publisher's per-install builds on 2026-07-27). Pairing rule: wrangler `<=4.107.1` peers workers-types `^4`; `>=4.108.0` peers `^5`. The scaffolder emits `workers-types ^5.20260722.1` + `wrangler ^4.110.0`; keep them paired when bumping either.
+5. **Declare `wrangler` in devDependencies, majored-paired with `@cloudflare/workers-types`.** Otherwise wrangler arrives as OpenNext's peer at whatever version resolves, which on 2026-07-27 was wrangler 4.86.0 (workers-types peer `^4`); it ERESOLVEd against the template's workers-types `^5` and broke a publisher's builds. Pairing rule: wrangler `<=4.107.1` peers workers-types `^4`; `>=4.108.0` peers `^5`. The scaffolder emits `workers-types ^5.20260722.1` + `wrangler ^4.110.0`; keep them paired when bumping either.
 6. **The full platform runtime only exists on the platform, but handlers + the OAuth callback run locally with `sprigr app dev`.** Local `pnpm dev` is for UI iteration and typecheck; `sprigr app dev --dir apps/<slug>` (step 8) additionally runs your tool handlers and the whole OAuth callback loop against a local per-install D1 before your first publish. What still needs the platform: `env.SPRIGR.*` callbacks, webhooks/schedules dispatch, and the build pipeline — the final shakedown loop is still publish, install, click through (step 9).
 
 ---
@@ -101,7 +101,7 @@ pnpm create:app <slug> --kind tool --no-oauth  # pure tool app, no OAuth
 pnpm install                                   # register the new workspace package
 ```
 
-The scaffolder generates the full skeleton: manifest, `package.json` with the kit packages exact-pinned, `migrations/0001_init.sql` (settings + secrets key-value tables), `src/lib/env.ts` (typed bindings with the required `CloudflareEnv` global augmentation), `src/lib/store.ts`, `src/lib/oauth.ts` stub, `src/lib/viewer.ts` (`requireConnectionAdmin`: only a company owner or admin may change the install-wide connection), `src/app/oauth/start/route.ts` (owner or admin gate, environment-aware bouncer URL, CSRF minting), `src/handlers/oauth-callback.ts` (csrf verification + token exchange), a tool handler stub, a settings page that shows Connect and Reconnect only to owners and admins, a smoke test, and `__tests__/connection-admin.test.ts` (drives the route and the page as member, admin and owner). It runs the vendor sync and prints a TODO checklist.
+The scaffolder generates the full skeleton: manifest, `package.json` with the kit packages exact-pinned, `migrations/0001_init.sql` (settings + secrets key-value tables), `src/lib/env.ts` (typed bindings with the required `CloudflareEnv` global augmentation), `src/lib/store.ts`, `src/lib/oauth.ts` stub, `src/lib/viewer.ts` (`requireConnectionAdmin`: only a company owner or admin may change the install-wide connection), `src/app/oauth/start/route.ts` (owner or admin gate, environment-aware bouncer URL, CSRF minting), `src/handlers/oauth-callback.ts` (csrf verification + token exchange), a tool handler stub, a settings page that shows Connect and Reconnect only to owners and admins, a smoke test, and `__tests__/connection-admin.test.ts` (drives the route and the page as member, admin and owner). It prints a TODO checklist.
 
 Don't hand-copy the harvest example into a new app; scaffold, then use harvest to see how each TODO was filled for a real provider.
 
@@ -112,19 +112,19 @@ Don't hand-copy the harvest example into a new app; scaffold, then use harvest t
 Open `apps/<slug>/sprigr-app.json`. Full schema: reference §2. Always touch:
 
 - `metadata`: description, category, tags. Agents and the marketplace listing read these. Add `metadata.agent_routing` when agents should reach for your tools over generic platform ones: one plain sentence, at most 300 characters, naming only your own tools (rules: [marketplace-app-development.md](marketplace-app-development.md#telling-agents-which-of-your-tools-to-use-metadataagent_routing)).
-- `permissions.network_domains`: every host you call, including the OAuth login host. Declarative (not a runtime firewall), but the platform's inbound-OAuth SSRF guard and agent sandbox read it.
-- `secrets[]`: `<PREFIX>_CLIENT_ID`, `<PREFIX>_CLIENT_SECRET`, plus an `INTERNAL_TRIGGER_SECRET` if you add internal trigger routes (the scaffolder does not generate either).
+- `permissions.network_domains`: every host you call, including the OAuth login host. Calls to undeclared hosts are logged today and will be refused once the platform's egress fence moves to enforce mode, so list every host now. The inbound-OAuth SSRF guard and browser sessions already read it.
+- `secrets[]`: the scaffolder generates `<PREFIX>_CLIENT_ID` and `<PREFIX>_CLIENT_SECRET` (marked `publisher_provides`, for one shared OAuth app) and `<PREFIX>_TOKEN_KEK` (`auto_generate`, the key that encrypts stored tokens). Drop `publisher_provides` if each tenant brings their own OAuth app. Add an `INTERNAL_TRIGGER_SECRET` yourself if you add internal trigger routes.
 - `tools[]`: one entry per agent-callable tool plus the `<slug>_oauth_callback` entry. Write real descriptions; agents pick tools by them. Keep the callback `"internal": true` with `state` in its `required` list, as generated: only the bouncer calls it, and its handler refuses a call without a matching state before any exchange (sprigr-apps#2442).
 - `schedules[]`: the scaffolder does NOT generate one; for refresh-token providers, declare a token-refresh cron yourself (snippet in step 6d). Non-expiring-token providers skip it.
-- `docs[]`: AI-facing doc JSON files (see [examples/harvest/docs/tools.json](../examples/harvest/docs/tools.json)); the platform ingests them into a per-app search index so agents learn your tools. Authoring rules and caps: reference §2b. Validation split: `sprigr app validate` checks the declaration shape and that each file exists and parses; the content caps (object count, content length, objectID casing) are enforced server-side at publish, so self-check them against §2b before your first publish.
+- `docs[]`: AI-facing doc JSON files (see [examples/harvest/docs/tools.json](../examples/harvest/docs/tools.json)); the platform ingests them into a per-app search index so agents learn your tools. Authoring rules and caps: reference §2b. Validation split: `sprigr app publish` checks that each file is in the bundle and parses (`validate` does not); the content caps (object count, content length, objectID casing) are enforced server-side at publish, so self-check them against §2b before your first publish.
 
 Validation gotchas that reject a publish (details: reference §2):
 
-- `secrets[].type` must be `"secret"`, never `"string"`.
-- `schedules[].name` must be snake_case, and keep `name` equal to `tool`.
-- `schedules[].scope` must be `"per_install"` or `"platform"`.
+- `secrets[].type` is `"secret"` or `"text"`; anything else (for example `"string"`) is rejected.
+- `schedules[].name` must be snake_case. It may differ from `tool`; the platform dispatches by `tool`.
+- `schedules[].scope` is `"per_install"` (default: one fire per install) or `"per_tenant"` (one fire per company, even if the app is installed more than once). Any other value fails publish.
 - `schedules[].tool` must reference a `tools[]` entry that has a `handler`.
-- `runtime.tier` is required (`"ssr"` for Next.js).
+- Set `runtime.tier: "ssr"` and `runtime.framework: "next"` for a Next.js app. `tier` defaults to `ssr`, but a missing `framework` builds the app as static, which fails at build time, not at publish.
 - `tools[].handler` paths are relative to the app dir.
 - A tool other apps may call via `env.SPRIGR.integrations.invoke` must ALSO be in `cross_tenant_tools[]`, or callers get `400 unknown_tool`.
 
@@ -281,11 +281,12 @@ Handlers re-bundle per request, so edit and re-curl without restarting. `env.SPR
 ## 9. Step 7: publish and shake down
 
 ```bash
-sprigr app validate --dir apps/<slug>    # manifest schema gate; works WITHOUT a login
-sprigr app publish --dir apps/<slug>     # stages the version server-side; requires `sprigr login`
+pnpm lock:app apps/<slug>                # per-app pnpm-lock.yaml; commit it
+sprigr app validate --dir apps/<slug>    # after `sprigr login`: the platform's own checks (offline it is only a partial check)
+sprigr app publish --dir apps/<slug> --wait-fanout
 ```
 
-Publish stages source; builds run per-install (install or upgrade triggers a build). Reference §5 has the pipeline and the direct curl commands for triggering upgrades and polling build status.
+A publish is a rollout. The server stores the version, then upgrades and rebuilds every install that tracks the latest version (the default for new installs); `--wait-fanout` waits for those builds, and `sprigr app rollout <slug> <version>` reports progress later. Installs pinned to an older version stay put. A first publish has no installs yet, so nothing builds until someone installs it. Reference §5 has the pipeline.
 
 First-time OAuth shakedown:
 
@@ -296,7 +297,7 @@ First-time OAuth shakedown:
 5. Confirm tokens landed: the settings page's connected state is the proxy for rows in `<slug>_secrets`.
 6. Exercise one tool end to end via an agent.
 
-Subsequent releases: `pnpm bump <slug> patch`, `pnpm verify:local`, publish, then upgrade installs (portal Upgrade banner or the upgrade endpoint).
+Subsequent releases: `pnpm bump <slug> patch`, `pnpm lock:app apps/<slug>` if dependencies changed, `pnpm verify:local`, then publish. Tracking installs upgrade automatically; pinned ones need `sprigr app upgrade <slug>`.
 
 ---
 
@@ -306,9 +307,9 @@ Subsequent releases: `pnpm bump <slug> patch`, `pnpm verify:local`, publish, the
 |---|---|---|
 | Tool returns `no_handler` | Install serves an old bundle; often an upgrade blocked by an edited shipped migration | Restore the migration byte-exact; bump + republish |
 | Cross-app call returns `400 unknown_tool` | Tool not in `cross_tenant_tools[]` | Add it there too |
-| Published but installs unchanged | Version not bumped | `pnpm bump <slug>`, republish, upgrade |
-| Publish rejected: `Invalid secrets[].type` | Used `"string"` | Use `"secret"` |
-| Publish rejected on schedules | Kebab-case name, wrong scope value, or dangling `tool` reference | snake_case; `per_install`/`platform`; tool must exist with a handler |
+| Published but installs unchanged | Version not bumped, or the install is pinned | `pnpm bump <slug>` and republish; `sprigr app upgrade <slug>` for a pinned install |
+| Publish rejected: `secrets entry "X" has invalid type "string"` | Used `"string"` | Use `"secret"` (or `"text"` for a non-sensitive value) |
+| Publish rejected on schedules | Kebab-case name, wrong scope value, or dangling `tool` reference | snake_case; `per_install`/`per_tenant`; tool must exist with a handler |
 | `state.installId === 'unknown'` at the bouncer | Stale build without the INSTALL_ID binding | Upgrade the install to rebuild |
 | Provider: redirect URI mismatch | Bouncer URL not registered (staging and prod are DIFFERENT URLs), or a stale flow | Register both; restart the flow fresh |
 | Bouncer shows `expired_or_unknown_csrf` | Replayed/stale consent link, or two parallel starts | Restart from the settings page |

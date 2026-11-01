@@ -186,6 +186,7 @@ const defaultManifest = {
           label: `${NAME} OAuth client id`,
           type: "secret",
           required: true,
+          publisher_provides: true,
           description: `Publisher-provided OAuth client id for the ${NAME} developer app.`,
         },
         {
@@ -193,6 +194,7 @@ const defaultManifest = {
           label: `${NAME} OAuth client secret`,
           type: "secret",
           required: true,
+          publisher_provides: true,
           description: `Publisher-provided OAuth client secret for the ${NAME} developer app.`,
         },
       ]),
@@ -1458,7 +1460,8 @@ console.log(`[create-app] kit deps (exact-pinned): ${KIT_DEPS.map((p) => `@sprig
 
 if (IS_ADAPTER) {
   console.log(adapterNextSteps({ slug: SLUG, name: NAME, template: TEMPLATE }));
-  console.log(`Publish with:
+  console.log(`Publish with (log in first, so validate runs the platform's checks):
+  pnpm lock:app ${APP_LABEL}   # per-app pnpm-lock.yaml; publish refuses without it
   sprigr app validate --dir ${APP_LABEL}
   sprigr app publish  --dir ${APP_LABEL}
 The hub publishes the interface definitions, so an adapter's provides tags
@@ -1496,7 +1499,8 @@ console.log(`
   }
   Then: pnpm -F ${SLUG} typecheck && pnpm -F ${SLUG} test && pnpm -F ${SLUG} build
 
-Publish with:
+Publish with (log in first, so validate runs the platform's checks):
+  pnpm lock:app ${APP_LABEL}   # per-app pnpm-lock.yaml; publish refuses without it
   sprigr app validate --dir ${APP_LABEL}
   sprigr app publish  --dir ${APP_LABEL}
 Subsequent releases need a version bump first (pnpm bump ${SLUG});

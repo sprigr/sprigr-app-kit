@@ -53,7 +53,7 @@ Follow the [build-guide](build-guide.md) from step 1 (provider facts) through st
 ```bash
 pnpm -F <your-slug> typecheck && pnpm -F <your-slug> test && pnpm -F <your-slug> build
 pnpm verify:local
-sprigr app validate --dir apps/<your-slug>     # manifest gate; no login needed
+sprigr app validate --dir apps/<your-slug>     # after `sprigr login` this runs the platform's own checks; offline it is only a partial check
 ```
 
 ## 7. Test everything locally — before any publish
@@ -67,6 +67,7 @@ This runs your tool handlers and the **entire OAuth callback loop** (CSRF verify
 ## 8. Publish and connect for real
 
 ```bash
+pnpm lock:app apps/<your-slug>            # writes apps/<your-slug>/pnpm-lock.yaml; commit it
 sprigr app publish --dir apps/<your-slug>
 sprigr app bouncer-status <your-slug>     # exit 0 = OAuth routing live; prints the redirect URI to double-check with your provider
 sprigr app set-publisher-secrets <your-slug> --secrets '{"<PREFIX>_CLIENT_ID":"...","<PREFIX>_CLIENT_SECRET":"..."}'
@@ -76,15 +77,16 @@ Then in your portal (team.sprigr.com): install the app from the marketplace tab,
 
 ## 9. Shipping updates
 
-Every release needs a version bump first:
+Every release needs a version bump first, and a fresh lockfile if your dependencies changed:
 
 ```bash
 pnpm bump <your-slug> patch
+pnpm lock:app apps/<your-slug>            # only needed when dependencies changed
 pnpm verify:local
-sprigr app publish --dir apps/<your-slug>
+sprigr app publish --dir apps/<your-slug> --wait-fanout
 ```
 
-Existing installs pick the new version up via the portal's Upgrade banner or `sprigr app upgrade <your-slug>`.
+A publish is a rollout. Every install that tracks the latest version (the default for a new install) is upgraded and rebuilt automatically, so test before you publish. `--wait-fanout` waits until those builds finish; `sprigr app rollout <your-slug> <version>` shows progress later. An install pinned to an older version stays there until its owner upgrades it (`sprigr app upgrade <your-slug>`).
 
 ## Also on the CLI: website hosting
 

@@ -11,7 +11,6 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 - **[`examples/contact-mirror`](../examples/contact-mirror)** — a second PROVIDER of `showcase/contact_lookup`: one tagged cross-tenant tool, so the consumer can be shown bound to two implementers, one installed after it.
 - **[`examples/mock-warehouse`](../examples/mock-warehouse)** and **[`examples/mock-order-source`](../examples/mock-order-source)**: the two sides of the fulfilment hub's [interface contract](interfaces/fulfilment-hub-v1.md), a `fulfilment_provider` and an `order_source` implementer. Each claims every op of its interface with a `provides` tag and is deterministic enough to be a shakedown fixture, so they are the worked reference for an adapter that has to be interchangeable with another vendor's.
 - **[`examples/agent-template`](../examples/agent-template)** — the OTHER app shape: `kind: 'agent'`. Ships no Worker and no tools; installing it provisions a configured agent (persona, model tier, role, channel defaults, recommended apps, training index).
-- **[`examples/static-badge`](../examples/static-badge)** — the simplest valid app: `runtime.tier: 'static'`, no Worker, no build.
 - **[`examples/harvest`](../examples/harvest)** — the realistic single-integration starter (real OAuth, real provider API). The scaffolder (`pnpm create:app`) generates this shape.
 
 ## Local vs staging (the split every row keys off)
@@ -83,7 +82,7 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 | Agent training index | `training_index` | [`agent-template/sprigr-app.json`](../examples/agent-template/sprigr-app.json) | n/a (index provisioned at publish) | — (no app declares `training_index` yet) |
 | Job lifecycle (start/get/list/cancel/signal) | `jobs[]` + `jobs.*` | [`handlers/jobs.ts`](../examples/showcase/src/handlers/jobs.ts) | staging | — (no app declares `jobs[]` yet) |
 | Fulfillment service update / delete | `fulfillment_services[]` + `fulfillment_services.update/delete` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) | staging | — (no app declares `fulfillment_services` yet) |
-| Static tier (no Worker) | `runtime.tier: 'static'`, `framework: 'static'` | [`examples/static-badge`](../examples/static-badge) | n/a (served from R2) | — (no public static-tier app yet) |
+| Static tier (no Worker) | `runtime.tier: 'static'`, `framework: 'static'` | none | n/a | Not a marketplace app on its own: publish requires `tools:register` and at least one tool with a handler, and a static bundle has no Worker to run it. Host a plain static site with `sprigr site` ([website-hosting.md](website-hosting.md)). |
 
 ### Reading the exemplar column
 
