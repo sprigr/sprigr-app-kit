@@ -50,7 +50,9 @@ Install is the moment a company consents to your scopes.
 
 ### Scopes on upgrade
 
-A new version that declares a scope the install has not granted does **not** gain it silently.
+> **Not yet implemented.** This section describes decision 0328, which is in review. Today an upgrade grants every newly declared scope straight away, with no pending state and no approval. Design for the behaviour below, but do not rely on it as a safety net yet.
+
+Under decision 0328, a new version that declares a scope the install has not granted does **not** gain it silently.
 
 1. The upgrade itself runs as usual: the new code is built and deployed to every tracking install.
 2. Each newly declared scope is held as **pending** on the install. A declared scope the installer left out at install time is held the same way on the next upgrade.
