@@ -114,10 +114,10 @@ In a webhook or sync handler, after your own write:
 
 ```ts
 await env.SPRIGR.home.invalidate({ provider: 'my_day' });                       // every viewer's copy
-await env.SPRIGR.home.invalidate({ provider: 'my_day', owner: platformUserId }); // one person's copy
+await env.SPRIGR.home.invalidate({ provider: 'my_day', owner: { platformUserId } }); // one person's copy
 ```
 
-It carries no records, never throws, and is debounced by the platform. From an inline route, where `env.SPRIGR` is absent, post the same body (`homeInvalidateBodyFor`) to `/internal/wfp/home/invalidate` with the install token.
+It carries no records and is debounced by the platform. It throws on a malformed argument (for example `owner` as a bare string) or a missing binding; a platform-side failure does not reject. From an inline route, where `env.SPRIGR` is absent, post the same body (`homeInvalidateBodyFor`) to `/internal/wfp/home/invalidate` with the install token.
 
 ## 5. Fixtures
 

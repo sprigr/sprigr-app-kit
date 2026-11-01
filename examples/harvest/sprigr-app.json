@@ -49,6 +49,7 @@
       "label": "Harvest OAuth client id",
       "type": "secret",
       "required": true,
+      "publisher_provides": true,
       "description": "Publisher-provided OAuth client id for the Harvest developer app (id.getharvest.com)."
     },
     {
@@ -56,6 +57,7 @@
       "label": "Harvest OAuth client secret",
       "type": "secret",
       "required": true,
+      "publisher_provides": true,
       "description": "Publisher-provided OAuth client secret for the Harvest developer app (id.getharvest.com)."
     }
   ],
