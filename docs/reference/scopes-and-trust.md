@@ -33,8 +33,6 @@ There are nine scopes:
 
 **How enforcement works.** Each platform API listed above reads the install's granted scopes on every call. A call without the scope gets HTTP 403 with `error: "scope_not_granted"` and the install's `granted_scopes`. Because the check is per call, a scope the company removes stops working on the next call, with no rebuild. Write your code so a 403 `scope_not_granted` degrades the one feature that needs the scope instead of failing everything.
 
-**A company can remove any granted scope.** This is not limited to scopes a new version added. The installed app's page lists every granted scope with a **Remove** action for owners and admins, and it is live now, ahead of the upgrade enforcement below. A removed scope stays removed: a later upgrade, even one that still declares it, does not grant it again. It comes back only when an owner or admin asks for it again and then approves it. So any scope your app has today can start answering 403 `scope_not_granted` on the next call, and must be handled that way.
-
 **Unknown scopes are refused.** Publish rejects any scope not in the table with `permissions.scopes: "<scope>" is not a platform scope`, followed by the list of known scopes.
 
 **Legacy inert scopes.** `sprigr.data:read`, `sprigr.data:write` and `sprigr.knowledge:write` appear in older manifests. They grant nothing. Publish still accepts them with an `inert_scope` warning, and a later release will refuse them. Remove them.
@@ -61,7 +59,7 @@ Under decision 0328, a new version that declares a scope the install has not gra
 3. Until the scope is approved, every call that needs it answers 403 `scope_not_granted`, exactly as for an install that never had it. Everything the install already granted keeps working.
 4. The company's owner or an admin sees a **New permissions requested** card on the installed app's page in the portal, with one plain sentence per scope saying what it allows and the version that asked for it. Installs with pending scopes are also counted on the dashboard's approvals page.
 5. **Approve** grants the scope; the next call that needs it succeeds. **Deny** records a refusal, and later upgrades do not ask again. A denied scope can be restored to pending from the same page.
-6. The page also lists every granted scope with a **Remove** action, so a company can withdraw a scope at any time.
+6. The page also lists every granted scope with a **Remove** action, so a company can withdraw any scope at any time, not only one a new version added. A removed scope stays removed: a later upgrade, even one that still declares it, does not grant it again. It comes back only when an owner or admin asks for it again and then approves it.
 
 A scope that a later version stops declaring is dropped from pending. Each held scope and each decision is recorded in the install's Recent issues feed.
 

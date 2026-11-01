@@ -710,7 +710,7 @@ What happens server-side:
 - Publishing a new version upgrades every install that tracks the latest version automatically. A pinned install moves only when its owner runs `sprigr app upgrade <slug>` or uses the portal's Upgrade banner. Installs never move to a lower version automatically.
 - The install is re-pinned to the latest approved version and the build is re-enqueued with the same website id. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
 - Once `on_install` has succeeded, every successful build fires the app's `on_upgrade` hook, if it declares one (see below).
-- An upgrade never restores a scope the company removed, and a company can remove any granted scope at any time. Handle 403 `scope_not_granted` per feature for every scope you use, not only new ones. See [scopes and trust](reference/scopes-and-trust.md#scopes-on-upgrade).
+- Under decision 0328 (not yet live), a company can remove any granted scope at any time, and a later upgrade does not grant it again. Handle 403 `scope_not_granted` per feature for every scope you use, not only new ones. See [scopes and trust](reference/scopes-and-trust.md#scopes-on-upgrade).
 
 ### Lifecycle hooks: `on_install`, `on_upgrade`, `on_uninstall`
 
