@@ -50,7 +50,7 @@ Install is the moment a company consents to your scopes.
 
 ### Scopes on upgrade
 
-> **Enforcement is not implemented yet.** This section describes decision 0328. Today an upgrade still grants every newly declared scope straight away, and your app can use it at once. The platform is rolling out the review side first, so an owner may see a new scope listed for review and turn it off, but the scope is not held back while it waits. Design for the behaviour below, but do not rely on it as a safety net yet.
+> **Not yet implemented.** This section describes decision 0328, which is in review. Today an upgrade grants every newly declared scope straight away, with no pending state and no approval. Design for the behaviour below, but do not rely on it as a safety net yet.
 
 Under decision 0328, a new version that declares a scope the install has not granted does **not** gain it silently.
 
