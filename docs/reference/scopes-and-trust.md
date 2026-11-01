@@ -59,7 +59,7 @@ Under decision 0328, a new version that declares a scope the install has not gra
 3. Until the scope is approved, every call that needs it answers 403 `scope_not_granted`, exactly as for an install that never had it. Everything the install already granted keeps working.
 4. The company's owner or an admin sees a **New permissions requested** card on the installed app's page in the portal, with one plain sentence per scope saying what it allows and the version that asked for it. Installs with pending scopes are also counted on the dashboard's approvals page.
 5. **Approve** grants the scope; the next call that needs it succeeds. **Deny** records a refusal, and later upgrades do not ask again. A denied scope can be restored to pending from the same page.
-6. The page also lists every granted scope with a **Remove** action, so a company can withdraw a scope at any time.
+6. The page also lists every granted scope with a **Remove** action, so a company can withdraw any scope at any time, not only one a new version added. A removed scope stays removed: a later upgrade, even one that still declares it, does not grant it again. It comes back only when an owner or admin asks for it again and then approves it.
 
 A scope that a later version stops declaring is dropped from pending. Each held scope and each decision is recorded in the install's Recent issues feed.
 
