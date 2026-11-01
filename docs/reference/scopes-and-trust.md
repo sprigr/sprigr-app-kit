@@ -33,6 +33,8 @@ There are nine scopes:
 
 **How enforcement works.** Each platform API listed above reads the install's granted scopes on every call. A call without the scope gets HTTP 403 with `error: "scope_not_granted"` and the install's `granted_scopes`. Because the check is per call, a scope the company removes stops working on the next call, with no rebuild. Write your code so a 403 `scope_not_granted` degrades the one feature that needs the scope instead of failing everything.
 
+**A company can remove any granted scope.** This is not limited to scopes a new version added. The installed app's page lists every granted scope with a **Remove** action for owners and admins, and it is live now, ahead of the upgrade enforcement below. A removed scope stays removed: a later upgrade, even one that still declares it, does not grant it again. It comes back only when an owner or admin asks for it again and then approves it. So any scope your app has today can start answering 403 `scope_not_granted` on the next call, and must be handled that way.
+
 **Unknown scopes are refused.** Publish rejects any scope not in the table with `permissions.scopes: "<scope>" is not a platform scope`, followed by the list of known scopes.
 
 **Legacy inert scopes.** `sprigr.data:read`, `sprigr.data:write` and `sprigr.knowledge:write` appear in older manifests. They grant nothing. Publish still accepts them with an `inert_scope` warning, and a later release will refuse them. Remove them.
