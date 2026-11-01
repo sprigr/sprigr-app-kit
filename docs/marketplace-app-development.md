@@ -119,7 +119,7 @@ Single source of truth. Validated server-side at publish.
     {
       "key": "PROVIDER_CLIENT_ID",
       "label": "Provider OAuth client_id",
-      "type": "secret",                      // ALWAYS "secret", never "string" (validation rejects)
+      "type": "secret",                      // "secret" (masked) or "text"; anything else fails validation
       "required": true,
       "description": "..."
     }
@@ -315,7 +315,7 @@ Doc-object shape (one concept per object, recipe-first; the platform injects `ap
 ]
 ```
 
-**Caps + validation** (publish is rejected on violation): ≤ 20 doc files, ≤ 100 objects total, ≤ 4000 chars per `content`; `objectID` must be lowercase kebab/snake and unique across all your docs files; each file must be a JSON array. The CLI checks the declaration shape + that each file exists and parses; the server re-validates the content.
+**Caps + validation** (publish is rejected on violation): ≤ 20 doc files, ≤ 100 objects total, ≤ 4000 chars per `content`; `objectID` must be lowercase kebab/snake and unique across all your docs files; each file must be a JSON array. `sprigr app validate` checks only the declaration shape; publish checks that each file is in the upload and parses, and validates the content.
 
 **Lifecycle:** every publish **replaces** your app's docs (upsert new, prune removed), so deleting an object from the file removes it from the index on the next publish. Deleting the app prunes all its docs. Ingestion is best-effort - a search hiccup logs but never fails your publish.
 
