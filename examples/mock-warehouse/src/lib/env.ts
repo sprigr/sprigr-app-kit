@@ -11,7 +11,8 @@ import type { D1Like } from '@sprigr/apps-app-sdk';
 
 export interface MockWarehouseHost {
   emit(event: string, payload: Record<string, unknown>): Promise<unknown>;
-  log?(entry: { level: string; message: string; context?: Record<string, unknown> }): Promise<unknown>;
+  // The platform requires category and summary and refuses an entry without them.
+  log?(entry: { level: 'debug' | 'info' | 'warn' | 'error'; category: string; summary: string; metadata?: Record<string, unknown> }): Promise<unknown>;
 }
 
 export interface MockWarehouseEnv {
@@ -65,7 +66,7 @@ export async function report(
   context: Record<string, unknown>,
 ): Promise<void> {
   try {
-    await env.SPRIGR?.log?.({ level: 'info', message, context });
+    await env.SPRIGR?.log?.({ level: 'info', category: message.replace(/[^A-Za-z0-9._:-]/g, '-'), summary: message, metadata: context });
   } catch {
     console.warn(`[mock-warehouse] ${message}`, context);
   }
