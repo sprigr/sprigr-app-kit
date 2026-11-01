@@ -1022,3 +1022,40 @@ export type { PruneAuditTableOpts, PruneAuditTableResult } from './audit-retenti
 // Durable jobs (env.SPRIGR.jobs) types and liveness helper (#176).
 export { jobIsLive, listedJobs, LIVE_JOB_STATUSES } from './jobs';
 export type { JobDirective, JobStepArgs, SprigrJobsApi, SprigrJobsListResult, SprigrJobRecord, SprigrJobStatus } from './jobs';
+
+// env.SPRIGR namespaces the platform wrapper serves (#247).
+export type {
+  SprigrAclApi,
+  SprigrAclOwner,
+  SprigrBrowserApi,
+  SprigrBrowserFetchOpts,
+  SprigrBrowserSessionApi,
+  SprigrCollectionDefineInput,
+  SprigrCollectionField,
+  SprigrCollectionIngestFromTableInput,
+  SprigrCollectionIngestInput,
+  SprigrCollectionNormalizeOp,
+  SprigrCollectionQueryInput,
+  SprigrCollectionReconcileInput,
+  SprigrCollectionSource,
+  SprigrCollectionsApi,
+  SprigrConnectApi,
+  SprigrConnectCheckAgentBindOpts,
+  SprigrConnectCompleteInput,
+  SprigrConnectDisconnectInput,
+  SprigrFtpApi,
+  SprigrFtpUploadInput,
+  SprigrFulfillmentServicesApi,
+  SprigrHostApis,
+  SprigrIntegrationsApi,
+  SprigrIntegrationsInvokeInput,
+  SprigrPlatformBody,
+  SprigrRunWorkflow,
+  SprigrRunWorkflowOpts,
+  SprigrScheduleCreateInput,
+  SprigrSchedulesApi,
+  SprigrStoreApi,
+  SprigrStoreScope,
+  SprigrUsageApi,
+  SprigrUsageReportInput,
+} from './sprigr-host';
