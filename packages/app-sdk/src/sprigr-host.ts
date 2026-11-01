@@ -23,6 +23,9 @@ export interface SprigrUsageReportInput {
   kind?: string;
   model?: string;
   meta?: Record<string, unknown>;
+  /** Idempotency key, 1-512 chars: a retry with the same id is billed once and
+   *  answers `deduped: true`. Anything else, `null` included, is refused 400. */
+  dedupId?: string;
 }
 
 export interface SprigrUsageApi {

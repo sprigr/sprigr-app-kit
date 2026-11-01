@@ -35,6 +35,12 @@ describe('SprigrHostApis', () => {
     sprigr.schedules.create({ name: 'n', cron: '0 * * * *', taskType: 'pipe' });
   });
 
+  it('usage.report takes a string dedupId only', () => {
+    sprigr.usage.report({ billedTokens: 10, dedupId: 'render_1' });
+    // @ts-expect-error null is refused by the route
+    sprigr.usage.report({ billedTokens: 10, dedupId: null });
+  });
+
   it('store values are strings and get resolves null for a miss', () => {
     expectTypeOf(sprigr.store.get('k')).resolves.toEqualTypeOf<string | null>();
     expectTypeOf(sprigr.store.list()).resolves.toEqualTypeOf<string[]>();
