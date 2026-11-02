@@ -4,6 +4,11 @@ node_modules/
 .turbo/
 *.tsbuildinfo
 dist/
+# faceted-search's embed bundle is a committed artifact (verify.yml checks it is
+# fresh); everything else tsup writes into that dist/ stays ignored.
+!packages/faceted-search/dist/
+packages/faceted-search/dist/*
+!packages/faceted-search/dist/facet-browse.js
 # scratch dirs the conformance package's scaffold test generates into (it has to
 # stay under the workspace root for vitest to transform the generated handlers)
 packages/fulfilment-conformance/.scaffold-*/
