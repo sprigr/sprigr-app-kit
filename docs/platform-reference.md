@@ -745,7 +745,7 @@ What happens server-side:
 
 ### Install
 - A user clicks Install in the portal → `POST /api/data/apps/:slug/install` → provisioning's `handleAppInstall` creates an `app_installations` row → `provisionMarketplaceInstall` creates a `websites` row (slug shape: `<appSlug>-<lastEightOfInstallId>`, e.g. `procore-5oema5wd`) → grants the installer access in `website_users` → enqueues a build job to `BUILD_JOBS_QUEUE`.
-- The build-runner installs strictly from your lockfile (`pnpm install --frozen-lockfile`), runs the framework build (OpenNext for Next.js) and uploads the bundle to WFP as one script per deployment. A version is compiled once; every other install of that version reuses the compiled output with its own bindings.
+- The build-runner installs strictly from your lockfile (`pnpm install --frozen-lockfile`), runs the framework build (OpenNext for Next.js, at a version the platform picks from your `next` version, not your `@opennextjs/cloudflare` pin; see build-guide ground rule 4) and uploads the bundle to WFP as one script per deployment. A version is compiled once; every other install of that version reuses the compiled output with its own bindings.
 - Build-runner's `site-resources.ts` allocates the per-install D1 + KV if missing, then attaches all the bindings above.
 - After upload, `applyMigrationsForBuild` runs the manifest's `migrations[]` against the per-install D1.
 
