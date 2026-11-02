@@ -30,6 +30,11 @@ function countingDb(db: D1Like): { db: D1Like; writes: () => number } {
   };
 }
 
+/** The stored row, read through the store (not the mock's internal keys). */
+function stored(db: D1Like, resource: string, scope?: string) {
+  return makeSyncState({ db, table: 'sync_state' }).read(resource, scope);
+}
+
 /** D1's datetime('now') shape, `YYYY-MM-DD HH:MM:SS` in UTC. */
 function d1Time(ms: number): string {
   return new Date(ms).toISOString().slice(0, 19).replace('T', ' ');
@@ -67,7 +72,7 @@ describe('runResumablePage: an unchanged cursor (#255)', () => {
     const results = await walkStable(c.db, 10, { refreshUnchangedAfterMs: 6 * HOUR });
     expect(c.writes()).toBe(0);
     expect(results.every((r) => r.done && r.nextCursor === null)).toBe(true);
-    expect(mock.state.rows.get('invoices tenant-1:inc')!.cursor).toBeNull();
+    expect((await stored(mock.db, 'invoices', 'tenant-1:inc'))!.cursor).toBeNull();
   });
 
   it('still writes the first bookkeeping row when none exists, then skips', async () => {
@@ -75,7 +80,7 @@ describe('runResumablePage: an unchanged cursor (#255)', () => {
     const c = countingDb(mock.db);
     await walkStable(c.db, 10, { refreshUnchangedAfterMs: 6 * HOUR });
     expect(c.writes()).toBe(1);
-    expect(mock.state.rows.has('invoices tenant-1:inc')).toBe(true);
+    expect(await stored(mock.db, 'invoices', 'tenant-1:inc')).not.toBeNull();
   });
 
   it('refreshes last_run_at once the row is older than the interval, then skips', async () => {
@@ -105,7 +110,7 @@ describe('runResumablePage: an unchanged cursor (#255)', () => {
       expect(r.done).toBe(true);
     }
     expect(c.writes()).toBe(0);
-    expect(mock.state.rows.get('invoices tenant-1:inc')!.cursor).toBe('pos-42');
+    expect((await stored(mock.db, 'invoices', 'tenant-1:inc'))!.cursor).toBe('pos-42');
   });
 
   it('a cursor that moves is written on every page, option or not', async () => {
@@ -120,6 +125,6 @@ describe('runResumablePage: an unchanged cursor (#255)', () => {
       });
     }
     expect(c.writes()).toBe(4);
-    expect(mock.state.rows.get('invoices ')!.cursor).toBe('4');
+    expect((await stored(mock.db, 'invoices'))!.cursor).toBe('4');
   });
 });
