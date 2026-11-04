@@ -119,6 +119,10 @@ export async function registerLocation(
 }
 
 export async function getOrder(deps: OrderSourceDeps, args: { source_ref: string }) {
+  // An armed read THROWS rather than answering: that is what an overloaded
+  // store does, and what the hub must wait out instead of sending a line it
+  // could not bind (sprigr-apps#4633).
+  if (await deps.store.takeFault('get_order')) throw new Error(`${FAULT_REASON}: get_order threw`);
   const row = await deps.store.getOrder(args?.source_ref ?? '');
   if (!row) return { found: false };
   const lines = await deps.store.listLines(row.source_ref);
@@ -341,13 +345,18 @@ export async function addNote(
 // The shakedown lever
 // ---------------------------------------------------------------------------
 
-/** The ops `fail_next` can arm: the write ops whose resend the hub logs. */
-export const FAULT_OPS = ['add_note', 'mark_shipped'] as const;
+/**
+ * The ops `fail_next` can arm: the write ops whose resend the hub logs
+ * (answer the retryable `error` ack), and `get_order` (throws, for the hub's
+ * wait on a failed re-read).
+ */
+export const FAULT_OPS = ['add_note', 'mark_shipped', 'get_order'] as const;
 const FAULT_REASON = 'injected fault (mock_order_source_fail_next)';
 
 /**
- * Arm `op` to answer `error` (the retryable ack) on its next `count` calls,
- * so a shakedown can watch the hub resend a write. `count` 0 disarms it.
+ * Arm `op` to fail its next `count` calls: a write op answers `error` (the
+ * retryable ack), so a shakedown can watch the hub resend it, and `get_order`
+ * throws. `count` 0 disarms it.
  */
 export async function failNext(
   deps: OrderSourceDeps,
@@ -374,6 +383,12 @@ export interface PlaceOrderArgs {
   customer_email?: string;
   source_location_ref?: string;
   country?: string;
+  /**
+   * A second SKU the request names that `source.order.created` leaves out:
+   * an order edit the hub never heard about. The line is in the store, so
+   * `get_order` returns it, and the hub has to re-read to bind it.
+   */
+  extra_request_sku?: string;
 }
 
 export interface PlaceOrderResult {
@@ -403,6 +418,10 @@ export async function placeOrder(
   if (await deps.store.getOrder(sourceRef)) {
     return { ok: false, reason: `order ${sourceRef} already exists (source_number must be unique)` };
   }
+  const extraSku = args?.extra_request_sku ?? '';
+  if (extraSku && extraSku === (args?.sku || 'CONF-SKU-1')) {
+    return { ok: false, reason: 'extra_request_sku must differ from sku, or the hub binds it from order.created' };
+  }
 
   const quantity = Number.isInteger(args?.quantity) ? (args!.quantity as number) : 1;
   const unitPriceMinor = Number.isInteger(args?.unit_price_minor) ? (args!.unit_price_minor as number) : 1500;
@@ -416,7 +435,7 @@ export async function placeOrder(
     status: 'received',
     placed_at: now,
     currency,
-    total_minor: quantity * unitPriceMinor,
+    total_minor: (extraSku ? 2 : 1) * quantity * unitPriceMinor,
     customer_email: args?.customer_email || 'buyer@example.test',
     ship_to_json: JSON.stringify({
       name: 'Mock Buyer',
@@ -442,11 +461,24 @@ export async function placeOrder(
     currency,
     requires_shipping: true,
   };
+  const extra: LineRecord | null = extraSku
+    ? {
+        ...line,
+        source_line_ref: `${sourceRef}_l2`,
+        line_id: `${sourceRef}_l2`,
+        sku: extraSku,
+        title: `Mock ${extraSku}`,
+      }
+    : null;
   const requestRef = `${sourceRef}_r1`;
-  const requestLines = [{ source_line_ref: line.source_line_ref, sku: line.sku, quantity }];
+  const requestLines = [line, ...(extra ? [extra] : [])].map((l) => ({
+    source_line_ref: l.source_line_ref,
+    sku: l.sku,
+    quantity: l.quantity,
+  }));
 
   await deps.store.putOrder(order);
-  await deps.store.putLines([line]);
+  await deps.store.putLines(extra ? [line, extra] : [line]);
   await deps.store.putRequest({
     source_request_ref: requestRef,
     source_ref: sourceRef,
