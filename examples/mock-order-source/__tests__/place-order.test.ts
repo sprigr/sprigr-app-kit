@@ -71,6 +71,40 @@ describe('place_order', () => {
     });
   });
 
+  it('extra_request_sku: the request names a line order.created left out, and get_order has it', async () => {
+    // An order edit the hub never heard about (sprigr-apps#4633): the request
+    // carries a line the hub's stored order does not, until it re-reads.
+    const env = fakeEnv();
+    const deps = freshDeps(at);
+    const result = await placeOrder(env, deps, {
+      source_number: 'MOS-2010',
+      sku: 'CONF-SKU-1',
+      extra_request_sku: 'CONF-SKU-EDIT',
+      unit_price_minor: 1500,
+    });
+    expect(result.ok).toBe(true);
+
+    const created = env.recorded[0]!.payload.lines as Array<Record<string, unknown>>;
+    expect(created.map((l) => l.sku)).toEqual(['CONF-SKU-1']);
+    expect(env.recorded[1]!.payload.lines).toEqual([
+      { source_line_ref: 'mos_mos_2010_l1', sku: 'CONF-SKU-1', quantity: 1 },
+      { source_line_ref: 'mos_mos_2010_l2', sku: 'CONF-SKU-EDIT', quantity: 1 },
+    ]);
+
+    const read = (await getOrder(deps, { source_ref: 'mos_mos_2010' })) as { found: boolean; lines: Array<Record<string, unknown>> };
+    expect(read.found).toBe(true);
+    expect(read.lines.map((l) => l.sku)).toEqual(['CONF-SKU-1', 'CONF-SKU-EDIT']);
+    expect(read.lines[1]).toMatchObject({ line_id: 'mos_mos_2010_l2', title: 'Mock CONF-SKU-EDIT', unit_price_minor: 1500 });
+  });
+
+  it('extra_request_sku must differ from sku, or the hub would bind it', async () => {
+    const env = fakeEnv();
+    const res = await placeOrder(env, freshDeps(at), { source_number: 'MOS-2011', sku: 'A', extra_request_sku: 'A' });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toContain('extra_request_sku');
+    expect(env.recorded).toHaveLength(0);
+  });
+
   it('refuses a duplicate source_number rather than overwriting the order', async () => {
     const env = fakeEnv();
     const deps = freshDeps(at);
