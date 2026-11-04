@@ -70,6 +70,13 @@ export const IDLE_CONTENT_FILL_BUDGET_MS = 45_000;
  *  about 12 calls in flight at most; a 429 stops new rows on its key. */
 export const CONTENT_FILL_CONCURRENCY = 4;
 
+/** sprigr-team#13478: binaries an idle drain may extract in one pass, in
+ *  place of MAX_EXTRACTIONS_PER_RUN. A binary row cost about 6.7 s on LSR's
+ *  Dropbox (2026-11-04: re-read 0.5 s, download 0.7 s, stage 1.6 s, extract
+ *  3.8 s), so 16 at 4 in flight is about 27 s of the 45 s idle slice, and
+ *  about 40 s at the slowest calls measured. The slice still stops new rows. */
+export const IDLE_CONTENT_FILL_MAX_BINARIES = 16;
+
 /** Rows one pass's drain reads (and at most fills). 100 before 0.1.3. */
 export const MAX_CONTENT_FILLS_PER_PASS = 200;
 
@@ -197,6 +204,9 @@ export interface ContentFillOptions {
   /** Throttle keys that answered 429 this pass; they are not asked again. */
   throttled?: Set<string>;
   label?: string;
+  /** Binaries this drain may extract, counted on `budget` with the walk's
+   *  (default MAX_EXTRACTIONS_PER_RUN). */
+  maxBinaries?: number;
   /** 0.1.4 (sprigr-team#10300): a binary row is not STARTED with less than
    *  this left before the pass `deadline`; it stays waiting (no attempt is
    *  spent) for a pass with room. */
@@ -268,6 +278,7 @@ export async function drainContentFills<TEntry>(
   const minItemMs = Math.max(1, opts.minItemMs ?? MIN_ITEM_BUDGET_MS);
   const concurrency = Math.max(1, Math.floor(opts.concurrency ?? CONTENT_FILL_CONCURRENCY) || 1);
   const budget = opts.budget ?? { extracted: 0, deferred: 0 };
+  const maxBinaries = opts.maxBinaries ?? MAX_EXTRACTIONS_PER_RUN;
   const throttled = opts.throttled ?? new Set<string>();
   const token = contentFillToken(ctx.walkKey);
 
@@ -320,6 +331,13 @@ export async function drainContentFills<TEntry>(
       return null;
     }
     let mime = row.format;
+    // sprigr-team#13478: a binary the cap cannot take waits before its
+    // re-read and permission read, not after; it spends no attempt.
+    if (budget.extracted >= maxBinaries && contentKindFor(adapter, ctx, object, mime)?.kind === 'binary') {
+      budget.deferred++;
+      out.waiting++;
+      return null;
+    }
     if (adapter.refetchEntry) {
       let entry: TEntry | null;
       try {
@@ -372,7 +390,7 @@ export async function drainContentFills<TEntry>(
         out.waiting++;
         return null;
       }
-      if (budget.extracted >= MAX_EXTRACTIONS_PER_RUN) {
+      if (budget.extracted >= maxBinaries) {
         budget.deferred++;
         out.waiting++;
         return null;
