@@ -686,8 +686,10 @@ function providerFiles({ slug, slugU, name, pascal }) {
 --
 -- The one table that matters is the push_order idempotency record. The hub's
 -- outbox is at-least-once, so without a record keyed on fulfilment_request_id
--- a redelivery ships the order twice. The row is written on a MISS: a repeat
--- push reads it and returns the stored provider_ref without writing again.
+-- a redelivery ships the order twice. push_order writes the row BEFORE it
+-- calls the warehouse (stage 'pushing', provider_ref empty), and only the
+-- delivery whose INSERT wrote it makes the call; a repeat's INSERT changes
+-- nothing, and it answers from the row without calling the warehouse.
 --
 -- Do NOT add a per-event audit table here. D1 charges per row written; use
 -- env.SPRIGR.log() for telemetry and keep D1 for state.
@@ -722,7 +724,7 @@ CREATE TABLE ${slugU}_requests (
 
 import type { D1Like } from '@sprigr/apps-app-sdk';
 
-export type RequestStage = 'pushed' | 'accepted' | 'rejected' | 'shipped' | 'cancelled';
+export type RequestStage = 'pushing' | 'pushed' | 'accepted' | 'rejected' | 'shipped' | 'cancelled';
 
 export interface RequestRecord {
   fulfilment_request_id: string;
@@ -737,8 +739,17 @@ export interface RequestRecord {
 
 export interface RequestStore {
   get(fulfilmentRequestId: string): Promise<RequestRecord | null>;
-  /** Insert only. The caller reads first, so this never fires on a repeat push. */
-  insert(record: RequestRecord): Promise<void>;
+  /**
+   * The push_order latch. Writes the record BEFORE the warehouse call (stage
+   * 'pushing', no provider_ref yet) and answers whether THIS call wrote it.
+   * The primary key decides between two deliveries of one request, so only
+   * the winner calls the warehouse.
+   */
+  claim(record: RequestRecord): Promise<boolean>;
+  /** The winner's warehouse call returned: record its id and move off 'pushing'. */
+  setPushed(fulfilmentRequestId: string, providerRef: string, updatedAt: string): Promise<void>;
+  /** Drop a claim the warehouse refused, so the next push of the id is a real one. Only a row still 'pushing'. */
+  release(fulfilmentRequestId: string): Promise<void>;
   setStage(fulfilmentRequestId: string, stage: RequestStage, updatedAt: string): Promise<void>;
 }
 
@@ -754,8 +765,8 @@ export function d1Store(db: D1Like): RequestStore {
         .bind(id)
         .first<RequestRecord>();
     },
-    async insert(record) {
-      await db
+    async claim(record) {
+      const result = await db
         .prepare(
           \`INSERT INTO ${slugU}_requests
              (fulfilment_request_id, provider_ref, order_id, warehouse_key,
@@ -774,6 +785,28 @@ export function d1Store(db: D1Like): RequestStore {
           record.updated_at,
         )
         .run();
+      const changes = (result as { meta?: { changes?: unknown } } | null)?.meta?.changes;
+      // Refuse to guess: false here would leave every order unpushed, and true
+      // would let a repeat through to the warehouse.
+      if (typeof changes !== 'number') {
+        throw new Error('D1 run() reported no meta.changes, so the push_order claim cannot tell whether it won');
+      }
+      return changes === 1;
+    },
+    async setPushed(id, providerRef, updatedAt) {
+      await db
+        .prepare(
+          \`UPDATE ${slugU}_requests SET provider_ref = ?, stage = 'pushed', updated_at = ?
+            WHERE fulfilment_request_id = ? AND stage = 'pushing'\`,
+        )
+        .bind(providerRef, updatedAt, id)
+        .run();
+    },
+    async release(id) {
+      await db
+        .prepare(\`DELETE FROM ${slugU}_requests WHERE fulfilment_request_id = ? AND stage = 'pushing'\`)
+        .bind(id)
+        .run();
     },
     async setStage(id, stage, updatedAt) {
       await db
@@ -790,8 +823,17 @@ export function memoryStore(): RequestStore {
     async get(id) {
       return rows.get(id) ?? null;
     },
-    async insert(record) {
-      if (!rows.has(record.fulfilment_request_id)) rows.set(record.fulfilment_request_id, { ...record });
+    async claim(record) {
+      if (rows.has(record.fulfilment_request_id)) return false;
+      rows.set(record.fulfilment_request_id, { ...record });
+      return true;
+    },
+    async setPushed(id, providerRef, updatedAt) {
+      const row = rows.get(id);
+      if (row?.stage === 'pushing') rows.set(id, { ...row, provider_ref: providerRef, stage: 'pushed', updated_at: updatedAt });
+    },
+    async release(id) {
+      if (rows.get(id)?.stage === 'pushing') rows.delete(id);
     },
     async setStage(id, stage, updatedAt) {
       const row = rows.get(id);
@@ -812,7 +854,32 @@ export function memoryStore(): RequestStore {
  * Whatever you put here must stay inside the dispatch budget. If the vendor
  * is slow, enqueue the work and return \`queued\` rather than waiting: the
  * outcome belongs in a provider.* event, not in the op's response.
+ *
+ * Send \`fulfilment_request_id\` as the warehouse's idempotency key (or its
+ * external order reference) where it has one: push_order calls createOrder
+ * once per id, and the key covers the one case it cannot, a call that failed
+ * without saying whether the order landed.
  */
+
+/**
+ * Throw this from \`createOrder\` when the warehouse ANSWERED and created
+ * nothing: a validation error, or a 429 or 503 that says the request was not
+ * processed. push_order then frees the request id, so the next push of it is
+ * a real one. \`retryable: false\` becomes a \`rejected\` ack; \`true\` is
+ * rethrown for the hub's outbox to retry.
+ *
+ * Throw anything else (or let a timeout or dropped connection propagate) when
+ * it is unknown whether the order landed. push_order keeps its claim then, so
+ * no retry can send the order a second time; see getOrderStatus.
+ */
+export class VendorRefusedError extends Error {
+  readonly retryable: boolean;
+  constructor(message: string, retryable: boolean) {
+    super(message);
+    this.name = 'VendorRefusedError';
+    this.retryable = retryable;
+  }
+}
 
 export interface VendorCreateOrderInput {
   fulfilment_request_id: string;
@@ -897,15 +964,18 @@ export function freshDeps(now: () => string = () => new Date().toISOString()): $
  * The three rules that are easy to lose:
  *   1. Every write op ACKNOWLEDGES inside the dispatch budget with
  *      accepted | queued | rejected. The real outcome arrives as an event.
- *   2. push_order is IDEMPOTENT on fulfilment_request_id. Read the record
- *      first; a repeat call returns the same provider_ref and never reaches
- *      the warehouse.
+ *   2. push_order is IDEMPOTENT on fulfilment_request_id. Claim the record
+ *      BEFORE the warehouse call and push only from the delivery that wrote
+ *      it; a repeat call returns the same provider_ref and never reaches the
+ *      warehouse.
  *   3. Money is integer minor units, quantities are integers, timestamps are
  *      ISO 8601 UTC. Convert at the edge, inside this adapter.
  */
 
 import { depsFor, type ${pascal}Deps } from '../lib/deps';
 import type { ${pascal}Env } from '../lib/env';
+import type { RequestRecord } from '../lib/store';
+import { VendorRefusedError } from '../lib/vendor';
 
 export const ADAPTER_SLUG = '${slug}';
 export const INTERFACE_VERSION = '1.0.0';
@@ -961,32 +1031,61 @@ export async function pushOrder(deps: ${pascal}Deps, args: PushOrderArgs): Promi
     return rejected('unknown warehouse_key "' + args.warehouse_key + '"');
   }
 
-  // Idempotency, first: the hub's outbox is at-least-once.
-  const existing = await deps.store.get(args.fulfilment_request_id);
-  if (existing) return { status: 'queued', provider_ref: existing.provider_ref };
-
+  // Idempotency, first: the hub's outbox is at-least-once. Claim the request
+  // id BEFORE the warehouse call. Reading "not pushed yet" first leaves a
+  // window in which two deliveries both push, and a push whose record write
+  // fails after the warehouse took the order is pushed again by the retry:
+  // two orders, two parcels (sprigr-app-kit#78).
   const lines = args.lines ?? [];
-  const created = await deps.vendor.createOrder({
+  const claimedAt = deps.now();
+  const won = await deps.store.claim({
     fulfilment_request_id: args.fulfilment_request_id,
-    warehouse_key: args.warehouse_key,
-    order_id: args.order_id ?? '',
-    lines,
-  });
-  const now = deps.now();
-  await deps.store.insert({
-    fulfilment_request_id: args.fulfilment_request_id,
-    provider_ref: created.provider_ref,
+    provider_ref: '',
     order_id: args.order_id ?? '',
     warehouse_key: args.warehouse_key,
     lines_json: JSON.stringify(lines),
-    stage: 'pushed',
-    created_at: now,
-    updated_at: now,
+    stage: 'pushing',
+    created_at: claimedAt,
+    updated_at: claimedAt,
   });
+  if (!won) return ackForRepeat(await deps.store.get(args.fulfilment_request_id));
+
+  let created: { provider_ref: string };
+  try {
+    created = await deps.vendor.createOrder({
+      fulfilment_request_id: args.fulfilment_request_id,
+      warehouse_key: args.warehouse_key,
+      order_id: args.order_id ?? '',
+      lines,
+    });
+  } catch (err) {
+    if (err instanceof VendorRefusedError) {
+      // The warehouse answered and holds no order, so free the id: the next
+      // push of it (the hub's retry, or an operator's) is a real one.
+      await deps.store.release(args.fulfilment_request_id);
+      if (!err.retryable) return rejected(err.message);
+    }
+    // A retryable refusal goes back to the hub's outbox to retry. Any other
+    // failure leaves it unknown whether the order landed, so the claim stays
+    // and every later delivery answers queued without pushing it again.
+    throw err;
+  }
+  // If this write fails, the warehouse has the order and the row is still
+  // 'pushing': exactly what the claim is for. The retry answers queued.
+  await deps.store.setPushed(args.fulfilment_request_id, created.provider_ref, deps.now());
   // TODO: if the vendor confirms synchronously you may return 'accepted'
   // here, but the hub still waits for provider.order.accepted, so emit it
   // from wherever the confirmation actually lands (a webhook, a poll).
   return { status: 'queued', provider_ref: created.provider_ref };
+}
+
+/**
+ * What a delivery that lost the claim answers. It never calls the warehouse:
+ * the winner is still there, or got there and could not record the answer.
+ */
+function ackForRepeat(row: RequestRecord | null): Ack {
+  if (!row || row.stage === 'pushing' || !row.provider_ref) return { status: 'queued' };
+  return { status: 'queued', provider_ref: row.provider_ref };
 }
 
 export async function cancelOrder(
@@ -995,6 +1094,9 @@ export async function cancelOrder(
 ): Promise<Ack> {
   const row = await deps.store.get(args?.fulfilment_request_id ?? '');
   if (!row) return rejected('no request ' + args?.fulfilment_request_id);
+  if (row.stage === 'pushing') {
+    return rejected('the warehouse has not confirmed ' + row.fulfilment_request_id + ' yet, so there is nothing to cancel there; retry once push_order has answered');
+  }
   if (row.stage === 'shipped') return rejected('already shipped');
   const outcome = await deps.vendor.cancelOrder({
     provider_ref: row.provider_ref,
@@ -1007,6 +1109,7 @@ export async function cancelOrder(
 }
 
 const STAGE_TO_STATUS: Record<string, string> = {
+  pushing: 'pending',
   pushed: 'pending',
   accepted: 'accepted',
   rejected: 'rejected',
@@ -1022,6 +1125,14 @@ export async function getOrderStatus(
   if (!row) return { status: 'unknown', provider_status_raw: 'NOT_FOUND' };
   // TODO: read the live status from the vendor and map it onto the hub's
   // vocabulary here. Do not pass the vendor's own word through as \`status\`.
+  //
+  // A row still 'pushing' is a push that never recorded the warehouse's
+  // answer: the call failed without saying whether the order landed, or the
+  // write after it failed. This is where that gets resolved. Look the order
+  // up at the warehouse by fulfilment_request_id: if it is there, setPushed
+  // with its id; if it is not AND the claim's updated_at is older than the
+  // 25 s dispatch budget (so no attempt can still be running), release the
+  // claim so the hub's next push is a real one.
   return { status: STAGE_TO_STATUS[row.stage] ?? 'unknown', provider_status_raw: row.stage.toUpperCase() };
 }
 

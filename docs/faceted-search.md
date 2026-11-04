@@ -39,7 +39,7 @@ export default function Page() {
 }
 ```
 
-The gateway source resolves the install from the `#install_id=` URL hash (the iframe embed contract) and auto-detects staging vs prod hosts.
+The gateway source resolves the install from the `#install_id=` URL hash (the iframe embed contract) and auto-detects staging vs prod hosts. Only a well-formed install id (`inst_` plus 20 lowercase letters or digits) is accepted, from the hash or from `installId`. Anything else counts as no install: the search shows its "open from the Apps page" notice and sends no request (sprigr-apps#3590).
 
 ## Recipe 2: static site over a public index
 

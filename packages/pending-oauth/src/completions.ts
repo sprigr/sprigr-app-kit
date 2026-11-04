@@ -57,6 +57,7 @@
 
 import type { D1Like } from './types';
 import { assertIdent } from './store';
+import { hashCsrf } from './hash';
 
 /**
  * How recently a flow must have completed for a replay to be reported as
@@ -162,9 +163,4 @@ export function makeOAuthCompletions(opts: MakeOAuthCompletionsOpts): OAuthCompl
       }
     },
   };
-}
-
-async function hashCsrf(csrf: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(csrf));
-  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }

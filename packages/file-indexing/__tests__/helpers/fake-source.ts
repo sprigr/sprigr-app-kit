@@ -48,6 +48,10 @@ export class FakeSource {
   /** Dropbox: the next continue answers 409 reset. */
   resetNext = false;
   binary = new Map<string, Uint8Array>();
+  /** dropbox confirmEmpty (sprigr-apps#2690): undefined = answer from the
+   *  files actually held; a boolean forces the answer; 'throw' fails it. */
+  confirmEmptyAnswer: boolean | 'throw' | undefined = undefined;
+  confirmEmptyCalls = 0;
 
   put(f: FakeFile): void {
     const now = '2026-10-01T00:00:00Z';
@@ -288,6 +292,12 @@ export function dropboxAdapter(src: FakeSource): FileSourceAdapter<FakeFile> {
     },
     objectIdOf: (f, ctx) => oid(ctx, f.id),
     toObject: (f, principals, ctx) => baseObject(f, oid(ctx, f.id), principals, 'dropbox', { fileId: f.id }),
+    // A fresh non-recursive root list_folder: true only on entries [] and has_more false.
+    async confirmEmpty() {
+      src.confirmEmptyCalls++;
+      if (src.confirmEmptyAnswer === 'throw') throw new Error('503 list_folder failed');
+      return src.confirmEmptyAnswer ?? src.files.size === 0;
+    },
     ...content(src),
   };
 }

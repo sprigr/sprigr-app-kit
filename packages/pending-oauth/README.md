@@ -24,7 +24,7 @@ CREATE TABLE <app>_pending_oauth (
 Depend on the published package at an exact version:
 
 ```json
-{ "dependencies": { "@sprigr/apps-pending-oauth": "0.1.0" } }
+{ "dependencies": { "@sprigr/apps-pending-oauth": "0.2.0" } }
 ```
 
 Then wire it up in `src/lib/pending-oauth.ts`, which pins the table name
@@ -109,6 +109,49 @@ and the pending row's lifetime is untouched. Every operation is
 best-effort and never throws. The answer window is 1 hour
 (`COMPLETION_WINDOW_MS`) and markers are swept after 24 hours
 (`COMPLETION_TRIM_MS`). The full reasoning is in `src/completions.ts`.
+
+## Refusal markers (third table)
+
+A callback that refuses AFTER `consume` (an agent bind of someone's own
+account, an ineligible installation, a failed code exchange) has burned the
+pending row, so a reload of it used to read as `invalid_oauth_state` and the
+refusal's hint was lost. `makeOAuthRefusals` keeps the refusal result, keyed
+by `sha-256(csrf)`, so the reload repeats it.
+
+```sql
+CREATE TABLE IF NOT EXISTS myapp_oauth_refusals (
+  csrf_hash  TEXT PRIMARY KEY,
+  reason     TEXT NOT NULL,
+  refused_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_myapp_oauth_refusals_at
+  ON myapp_oauth_refusals(refused_at);
+```
+
+Start the callback with `consumeOAuthCallback`, which consumes the row or
+says why it is missing, in this order: completed, refused, unknown.
+
+```ts
+const outcome = await consumeOAuthCallback({
+  csrf,
+  consume: (c) => consumePendingOAuth(env.DB, c),
+  completions: makeOAuthCompletions({ db: env.DB, table: 'myapp_oauth_completions' }),
+  refusals: makeOAuthRefusals<CallbackRefusal>({ db: env.DB, table: 'myapp_oauth_refusals' }),
+});
+if (outcome.kind === 'already_connected') return { ok: false, reason: 'already_connected' };
+if (outcome.kind === 'refused') return outcome.refusal;
+if (outcome.kind === 'unknown') return { ok: false, reason: 'invalid_oauth_state' };
+const { pending, refuse } = outcome;
+// every later refusal, including the catch-all:
+return refuse({ ok: false, reason: 'agent_bind_refused: ...' });
+```
+
+`refuse` exists only once the row was consumed, so a csrf the install never
+minted cannot write a marker. The whole result object is stored as JSON, so
+any refusal shape replays exactly. Refusals before the consume need no
+marker: a reload gets the same answer anyway. Trim with
+`makeOAuthRefusals(...).trimExpired()` alongside `trimExpiredPending`. Same
+window and sweep as completions.
 
 ## Two things not to "tidy"
 

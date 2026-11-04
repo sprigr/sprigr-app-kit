@@ -1,0 +1,4 @@
+{
+  "verbs": ["delete", "remove", "destroy", "cancel", "void", "refund", "unship", "rotate", "offboard", "purge", "wipe", "drop", "terminate", "clear", "reset", "revoke", "unregister", "force", "deactivate", "suspend"],
+  "compounds": ["capture_payment", "complete_draft"]
+}

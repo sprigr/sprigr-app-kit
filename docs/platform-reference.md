@@ -130,7 +130,7 @@ Single source of truth. Validated server-side at publish.
     "framework": "next"                      // 'next' | 'astro' | 'remix' | 'static'
   },
   "permissions": {
-    "scopes": ["tools:register", "sprigr.data:write", "sprigr.knowledge:write"],
+    "scopes": ["tools:register"],          // platform scopes only; env.SPRIGR.data needs none
     "network_domains": [                     // DECLARATIVE allowlist — NOT a WFP outbound firewall (see §2 gotchas)
       "api.procore.com", "sandbox.procore.com", "login.procore.com",
       "login-sandbox.procore.com"
@@ -161,7 +161,7 @@ Single source of truth. Validated server-side at publish.
       "name": "hourly_token_refresh",        // free identifier, snake_case; may differ from tool (see gotcha below)
       "cron": "*/45 * * * *",
       "tool": "refresh_procore_tokens",      // must name a tools[] entry that declares a handler
-      "scope": "per_install"                 // 'per_install' or 'platform' — "install" alone is rejected
+      "scope": "per_install"                 // 'per_install' (default) or 'per_tenant'; anything else is rejected
     }
   ],
   "tools": [
@@ -193,7 +193,7 @@ Single source of truth. Validated server-side at publish.
 
 The dedup key is `(turnId, round, toolName, canonical input)` **without** the tool_use id, so two distinct tool_use blocks with identical input merge — but distinct params/seeds (different input) and a genuine later-turn repeat (different turn) never do. The duplicate returns the first call's result. Opt in only where an identical repeat in one round is never intended; never for a counter/increment-style tool.
 
-**`tools[].effects` (optional): force the write dispatch tier.** The platform classifies a tool call as a read or a write from the tool's NAME (a recognised read verb prefix such as `list_` / `get_` / `find_` is a read, everything else is a write), and a read is blind-retried when the dispatch times out or the app's Durable Object disconnects. Set `"effects": "write"` on any tool that mutates but is not named like it (`*_or_create_*`, `sync_*`, `reconcile_*`, `list_and_stage_batch`) and the write tier is forced regardless of the name: shorter budget, no automatic retry, idempotency token forwarded. Omitting it leaves the name heuristic in charge, unchanged. `"read"` is not accepted (it would buy the blind retry, so it is not app-declarable), and any unrecognised value is ignored with a server-side publish warning rather than a rejection. Full guidance: [marketplace-app-development.md](marketplace-app-development.md#declaring-a-tools-side-effects-toolseffects).
+**`tools[].effects` (optional): declare a tool a write or a read.** The platform classifies a tool call as a read or a write from the tool's NAME (a recognised read verb prefix such as `list_` / `get_` / `find_` is a read, everything else is a write), and a read is blind-retried when the dispatch times out or the app's Durable Object disconnects. Set `"effects": "write"` on any tool that mutates but is not named like it (`*_or_create_*`, `sync_*`, `reconcile_*`, `list_and_stage_batch`) and the write tier is forced regardless of the name: shorter budget, no automatic retry, idempotency token forwarded. Omitting it leaves the name heuristic in charge, unchanged. `"effects": "read"` on a read-only tool whose name is not a read verb (`preview_*`, `query_*`) makes it a read for the dispatch budget and timeout wording, for Plan Mode, and for the chat-turn approval card (decision 0294). It does NOT buy the blind retry: that still goes by the name, so a read tool should still carry a read-verb name where it can. Declare `"read"` only on a tool that never writes, because the platform takes the declaration as stated. Any other value is ignored with a server-side publish warning rather than a rejection. Full guidance: [marketplace-app-development.md](marketplace-app-development.md#declaring-a-tools-side-effects-toolseffects).
 
 **`metadata.agent_routing` (optional): one routing sentence agents see.** One plain sentence (at most 300 characters after trimming) naming which of your own tools answer which requests. It renders under your app's namespace in the code_mode tool catalog of every agent in every company that installs the app, as `Routing (from the app): <text>`. Publish refuses a non-string, a line break or invisible character, a backtick, `<`, `>`, `{`, `}`, call syntax like `x.y(`, a URL, domain, IP or email address, and any snake_case name that is not a tool in this manifest's `tools[]`. Rules and the Dropbox example: [marketplace-app-development.md](marketplace-app-development.md#telling-agents-which-of-your-tools-to-use-metadataagent_routing).
 
@@ -201,9 +201,9 @@ The dedup key is `(turnId, round, toolName, canonical input)` **without** the to
 - `secrets[].type` must be `"secret"`. We initially used `"string"` — rejected with `Invalid secrets[].type`.
 - `schedules[].name` must be snake_case. `refresh-tokens` was rejected; `refresh_tokens` works.
 - `schedules[].name` is a free identifier (snake_case) and may differ from `schedules[].tool`. The platform dispatcher resolves the handler by the TOOL name (it POSTs `/__sprigr/schedule/<tool_name>`); the schedule name only labels the fire (it travels in the dispatch body, the `x-sprigr-schedule-name` header, and audit rows as `action=schedule:<schedule_name>`). Publish now validates that `schedules[].tool` references a `tools[]` entry that declares a `handler`; a dangling tool reference, or a tool without a handler, rejects the publish. Failed fires (HTTP 4xx/5xx from the handler) audit as `schedule:<name>:handler_error` and land in the platform's `system_logs`, instead of counting as fired. Rollout note: this behaviour shipped in sprigr-team PR #3093 (platform staging, 2026-07-08). Before that, dispatch went by schedule name and a name/tool mismatch silently 404d every fire (found via the shopify hourly backstop). Until the fix reaches platform prod with the next release, keep `name` equal to `tool` for apps published to prod; matching names work correctly on every dispatcher version.
-- `schedules[].scope` must be `"per_install"` or `"platform"`. `"install"` was rejected.
-- `runtime.tier` is required for non-agent apps (`"ssr"` for Next.js/Astro/Remix, `"static"` for plain HTML).
-- `permissions.network_domains` is a **declarative** allowlist, **not** a runtime outbound firewall. Your per-install WFP script can `fetch()` any host regardless of what you declare — there is **no WFP network enforcement** and no "network error" for undeclared hosts (provisioning only length-checks each entry; the build-runner attaches no outbound/WFP network config). Do **not** treat it as an SSRF sandbox. What it IS used for: (1) the inbound-OAuth SSRF guard validates a *templated* OAuth host (e.g. `https://{shop}/…`) against this list before dispatching the install callback (`workers/provisioning/.../inbound-oauth/schemes.ts`); (2) the agent code-mode sandbox uses it to route an agent's blocked `http.request` to an installed app's namespace instead of prompting for raw outbound access; (3) it documents intent for reviewers. Still declare every host you call (OAuth login hosts included) so those paths and reviewers are correct — just don't rely on it to *block* anything at runtime.
+- `schedules[].scope` is `"per_install"` (default: one fire per install) or `"per_tenant"` (one fire per company, even if the app is installed more than once). Any other value fails publish.
+- `runtime.tier` defaults to `"ssr"` (`"static"` for plain HTML). Always set `runtime.framework` (`next`, `astro`, `remix` or `static`): an `ssr` app without it is built as static and fails at build time, not at publish.
+- `permissions.network_domains` lists every host your app calls, OAuth login hosts included. The platform's egress fence (sprigr-team decision 0130) compares each outbound `fetch()` against it. Today it runs in report mode: an undeclared host is logged, not blocked. Once it moves to enforce mode an undeclared host will be refused, so declare every host now. The list is already enforced in two places: browser sessions in tenant mode may navigate only to declared hosts, and the inbound-OAuth SSRF guard checks a templated OAuth host (e.g. `https://{shop}/...`) against it. Do not treat it as your only SSRF defence.
 - `tools[].handler` paths are **relative to the app dir**, not the bundle root. The build-runner adapter resolves them when generating `__sprigr_handlers.js`.
 
 ## 2b. Shipping AI-facing docs (`docs[]`)
@@ -296,9 +296,9 @@ After [sprigr-team #836] + [#851], every per-install WFP script gets these bindi
 | `COMPANY_ID` | plain_text | `app_installations.company_id` | Stamp on outbound requests |
 | `APP_SLUG` | plain_text | `marketplace_apps.slug` | Self-identification in logs |
 | `COMPANY_TIMEZONE` | plain_text | `companies.timezone`, only when it is a valid IANA zone (sprigr-team #11038) | The tenant's "today" or a local cut-off. Read it with `getCompanyTimezone(env)` (app-sdk 0.24.0), which returns `undefined` rather than a default when the company has no zone. Fixed at upload: a zone change reaches the install on its next build |
-| `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for `env.SPRIGR.emit()` calls back to platform |
-| `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | `https://api.team.sprigr.com` (prod) or `https://staging-api-team.sprigr.com` |
-| Plus every manifest `secrets[]` entry | secret_text | the install's `SECRETS_KV` row | Per-install OAuth keys, webhook signing keys, etc. |
+| `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for every `env.SPRIGR.*` call back to the platform |
+| `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | The platform host `env.SPRIGR` calls: `https://webhooks.sprigr.com` (prod) or `https://staging-webhooks.sprigr.com` (staging). Read it from env; never hard-code it. It is not the API gateway, which does not serve `/internal/*` |
+| Plus every manifest `secrets[]` entry | secret_text | the install's encrypted secret store | Per-install OAuth keys, webhook signing keys, etc. Bound at runtime only, never at build time |
 
 Declare them in your env type so `getCloudflareContext({ async: true }).env` is typed:
 
@@ -432,7 +432,7 @@ Tool / event / webhook handlers also get an injected `env.SPRIGR` host object. E
 |---|---|
 | `emit(name, payload, opts?)` | Emit a marketplace event (subscribers / cross-tenant fan-out) |
 | `collections.{define,ingest,ingestFromTable,query,reconcile,describe,history}` | Typed + faceted data store (see below) |
-| `data.{import,partialUpdate,search,get,delete,listIds}` | Raw private discovery index (`<companyId>-app-<slug>`) for search-then-fetch-live; `partialUpdate` merges fields without a read; `delete`/`listIds` maintain a mirror (see below) |
+| `data.{import,partialUpdate,search,get,delete,listIds,exists}` | Raw private discovery index (`<companyId>-app-<slug>`) for search-then-fetch-live; `partialUpdate` merges fields without a read; `delete`/`listIds`/`exists` maintain a mirror (see below) |
 | `schedules.create(args)` | Self-provision an agent-side scheduled task |
 | `integrations.invoke(req)` / `invoke(tool, args)` | Call a built-in integration / cross-tenant tool |
 | `run_workflow(id, opts)` | Synchronously run a tenant workflow (Decision Points) |
@@ -503,7 +503,7 @@ Map keys are LOGICAL names (`[a-z][a-z0-9_]{0,31}`, no `acl` prefix). Every `dat
 - **Every physical index is registered with the company at creation** (mandatorily — a failed registration fails the import), so agents can discover and search it via `sprigr_list_my_indexes`. Uninstall sweeps the whole `<companyId>-app-<slug>-*` family.
 - `withAcl` cannot be combined with `index`: the ACL file surface stays bound to the legacy single-index layout.
 
-**Mirror maintenance (`data.delete` + `data.listIds`).** An app that mirrors an external store into its index (e.g. OneDrive or Dropbox file indexing) needs more than upserts. `data.delete(objectIDs, opts?)` removes rows whose source items were deleted (idempotent; unknown IDs are a no-op). `data.listIds(prefix, { withAcl?, index? })` returns `{ ok, objectIDs, total, truncated, index }`: the objectIDs the index currently holds that start with `prefix`. The prefix is required and non-empty. Diff it against a full re-walk of the source and delete what the walk did not see; that is the only way to heal rows whose one-shot deletion signal (a delta `@removed` entry) was consumed before the app could act on it. It also counts what is indexed and finds one connection's rows to purge on disconnect. Both take `{ withAcl: true }` to target the ACL index (`<companyId>-app-<slug>-acl-files`); unlike `search`/`get` they are permitted there, because a delete only reduces what the index holds and an IDs-only listing carries no row content or principals. `withAcl` cannot be combined with `index`, the same as every other `data.*` call.
+**Mirror maintenance (`data.delete` + `data.listIds`).** An app that mirrors an external store into its index (e.g. OneDrive or Dropbox file indexing) needs more than upserts. `data.delete(objectIDs, opts?)` removes rows whose source items were deleted (idempotent; unknown IDs are a no-op). `data.listIds(prefix, { withAcl?, index?, after? })` returns `{ ok, objectIDs, total, truncated, index }`: the objectIDs the index currently holds that start with `prefix`. The prefix is required and non-empty. One listing stops at 50,000 ids with `truncated: true`. To reach the rest, page: pass `after` (`''` starts at the beginning), and the ids come in objectID order with `next_after` to send as the next call's `after`, `null` on the last page (sprigr-team#11515). List every page first, then delete, so no page is read again before the index reflects your deletes. Diff it against a full re-walk of the source and delete what the walk did not see; that is the only way to heal rows whose one-shot deletion signal (a delta `@removed` entry) was consumed before the app could act on it. It also counts what is indexed and finds one connection's rows to purge on disconnect. Both take `{ withAcl: true }` to target the ACL index (`<companyId>-app-<slug>-acl-files`); unlike `search`/`get` they are permitted there, because a delete only reduces what the index holds and an IDs-only listing carries no row content or principals. `withAcl` cannot be combined with `index`, the same as every other `data.*` call.
 
 Rules for deleting from a listing:
 
@@ -511,9 +511,9 @@ Rules for deleting from a listing:
 - **`truncated: false` is not proof of completeness either.** The listing pages through the index internally and returns what it has if a page fails, so delete only ids that ARE listed and that a complete walk did not see. A stale row the listing missed waits for the next walk.
 - **Delete only after a walk that finished**: final page reached, no error, no time cut. A walk cut short has not seen everything, and its unseen ids are not stale.
 
-Both are `?`-optional: feature-detect them and degrade (skip the reconcile; never delete on uncertainty). Wrapper builds before 2026-10-04 bridged `delete` but not `listIds` (sprigr-team#10075), so code that feature-detected `listIds` silently skipped reconcile, count and purge on deployed installs. The bridge is stamped into each app's bundle at build time, so an app gets `listIds` on its first build after its platform carries that fix (publishing a new version gives it one). `SprigrDataApi` declares `listIds` from `@sprigr/apps-app-sdk` 0.22.0; on an older SDK, declare it on your own env type. Reference implementation: `reconcileWalk` in [`@sprigr/apps-file-indexing`](../packages/file-indexing/README.md) (`packages/file-indexing/src/indexer.ts`), which the microsoft-365, google-workspace and dropbox apps use; prefer the package to a hand-written reconcile.
+Both are `?`-optional: feature-detect them and degrade (skip the reconcile; never delete on uncertainty). Wrapper builds before 2026-10-04 bridged `delete` but not `listIds` (sprigr-team#10075), so code that feature-detected `listIds` silently skipped reconcile, count and purge on deployed installs. The bridge is stamped into each app's bundle at build time, so an app gets `listIds` on its first build after its platform carries that fix (publishing a new version gives it one). `SprigrDataApi` declares `listIds` from `@sprigr/apps-app-sdk` 0.22.0, and its full answer (`ok`, `index`, the `after` cursor and `next_after`) plus `exists(objectIDs, { withAcl?, index? })` (up to 100 ids, answers `{ ok, existing, index }`) from 0.52.0; `SprigrWebhookTenantApi` types `registerWebhookTenant` from 0.52.0. On an older SDK, declare them on your own env type. Reference implementation: `reconcileWalk` in [`@sprigr/apps-file-indexing`](../packages/file-indexing/README.md) (`packages/file-indexing/src/indexer.ts`), which the microsoft-365, google-workspace and dropbox apps use; prefer the package to a hand-written reconcile.
 
-**Purging a previous account's rows (`purgeIndexByPrefix`, `snapshotIndexIds`, SDK 0.22.0+).** When an install switches to a different account or disconnects, the rows the old account's access produced must go, or the next user searches them (sprigr-apps#2900). Do not hand-roll the list-and-delete loop. For a switch, take the snapshot BEFORE storing the new credential, then delete exactly it, so the new account's first writes survive: `const before = await snapshotIndexIds(env, [{ prefix: 'trello:card:', index: 'cards' }]);` ... store the new tokens ... `const res = await deleteSnapshotIds(env, before);`. For a disconnect, `await purgeIndexByPrefix(env, ['https://', 'urn:'])` lists and deletes in one call. Each prefix is a bare string (default index) or `{ prefix, index?, withAcl? }`. Both run on a dispatched handler (`env.SPRIGR.data`) and on an inline route (the install-token routes), chunk deletes at 1000, and never throw: the result `{ deleted, listed, truncated, via, error? }` says how far the purge got, so write it to your audit row. `truncated: true` means a listing hit the 50000 cap and rows remain. With no data path at all (`via: 'none'`), the app cannot have written rows and nothing happens. `makeDataClient(env)` is the same two-transport client with `import`, `search`, `get`, `partialUpdate`, `delete` and `listIds` all present, for an inline route that needs more than a purge.
+**Purging a previous account's rows (`purgeIndexByPrefix`, `snapshotIndexIds`, SDK 0.22.0+).** When an install switches to a different account or disconnects, the rows the old account's access produced must go, or the next user searches them (sprigr-apps#2900). Do not hand-roll the list-and-delete loop. For a switch, take the snapshot BEFORE storing the new credential, then delete exactly it, so the new account's first writes survive: `const before = await snapshotIndexIds(env, [{ prefix: 'trello:card:', index: 'cards' }]);` ... store the new tokens ... `const res = await deleteSnapshotIds(env, before);`. For a disconnect, `await purgeIndexByPrefix(env, ['https://', 'urn:'])` lists and deletes in one call. Each prefix is a bare string (default index) or `{ prefix, index?, withAcl? }`. Both run on a dispatched handler (`env.SPRIGR.data`) and on an inline route (the install-token routes), chunk deletes at 1000, and never throw: the result `{ deleted, listed, truncated, via, error? }` says how far the purge got, so write it to your audit row. From SDK 0.50.0 each prefix is paged to the end through the list-ids cursor before anything is deleted, so a prefix past 50,000 ids is purged in full. `truncated: true` then means a page ceiling (`MAX_LIST_PAGES`, 100 pages) was hit, a cursor failed to advance, or the platform or the app's wrapper build predates the cursor and answered one 50,000-id listing; rows remain in each case. With no data path at all (`via: 'none'`), the app cannot have written rows and nothing happens. `makeDataClient(env)` is the same two-transport client with `import`, `search`, `get`, `partialUpdate`, `delete` and `listIds` all present, for an inline route that needs more than a purge.
 
 **Shared file indexing (`@sprigr/apps-file-indexing`).** Do not hand-write a file-indexing loop. The mirror-maintenance, identity-link and re-stamp surfaces in this section are composed once in [`packages/file-indexing`](../packages/file-indexing/README.md): an app implements a `FileSourceAdapter` (list changes, walk the tree, resolve permissions to principals, download bytes) and builds a `FileIndexingStore` over its D1 tables (`createD1FileIndexingStore`, table and column names as config; a new app uses `DEFAULT_FILE_INDEXING_SCHEMA_SQL`), then calls `indexActorFiles(adapter, store, env, scope, { deadline })` per enabled row. The package owns the principal grammar (fixture-pinned to the platform's), fail-closed stamping, content extraction under the existing caps, the validated `withAcl` import, the full-walk reconcile above, file events with no per-run cap, `purgeActor` for disconnects and `refreshAclPrincipals` for sources whose delta omits sharing-only changes. Why one package: sprigr-team decision 0151.
 
@@ -543,7 +543,9 @@ The member is `?`-optional on wrapper builds older than the platform route. The 
 
 ```ts
 // 1. Define once (idempotent). ALWAYS returns the full index name in
-//    .collection; capture it for ingest/query. Best called from on_install.
+//    .collection; capture it for ingest/query. Best called from on_install
+//    (the tool must be named exactly `on_install`; see "Lifecycle hooks"
+//    in marketplace-app-development.md).
 const { collection } = await env.SPRIGR.collections.define({
   scope: 'company',
   name_suffix: 'oms-orders',
@@ -580,11 +582,11 @@ interface SprigrEnv {
   collections: {
     define(args: Record<string, unknown>): Promise<{ collection: string; created: boolean }>;
     ingest(args: { collection: string; records: Record<string, unknown>[]; merge_policy?: string }): Promise<{ ok: boolean; ingested: number }>;
-    ingestFromTable(args: Record<string, unknown>): Promise<{ ok: boolean; ingested: number }>;
+    ingestFromTable(args: { collection: string; rows: Record<string, unknown>[]; mapping: Record<string, string | { field: string; from_unit?: string; to_unit?: string }>; constant_fields?: Record<string, unknown> }): Promise<{ ok: boolean; ingested: number }>;
     query(args: { collection: string; query?: string; filters?: string; facets?: string[]; sort_by?: string; page?: number; hits_per_page?: number }): Promise<{ hits: Record<string, unknown>[]; nbHits: number; facetCounts: Record<string, Record<string, number>> | null }>;
     describe(args: { collection: string }): Promise<Record<string, unknown>>;
     history(args: { collection: string; object_id?: string; field?: string; limit?: number }): Promise<Record<string, unknown>>;
-    reconcile(args: Record<string, unknown>): Promise<Record<string, unknown>>;
+    reconcile(args: { collection: string; against: { records: Record<string, unknown>[] } | { collection: string }; match: { key: string[] }; fields_to_compare?: string[] }): Promise<Record<string, unknown>>;
   };
 }
 // add `SPRIGR?: SprigrEnv;` to your env interface.
@@ -613,7 +615,7 @@ Two channels reach the app, and `resolveViewerContext` prefers the stronger one:
 - **`X-Sprigr-Viewer`** — a signed token (`svc1.<base64url claims>.<hmac>`) carrying `install_id`, `company_id`, `user_id`, `platform_user_id`, `role`, `display_name` and `email`, valid for 120 seconds. It is signed with a **per-install** key the platform derives and binds as `SPRIGR_VIEWER_SECRET`, so a token minted for another install cannot verify on yours, and no app ever holds a credential that could forge one for someone else. Every field is inside the HMAC, so this is the only channel that carries a display name, and the only one where `platform_user_id` is cryptographically attested. Resolves as `trust: 'verified'`.
 - **`x-sprigr-platform-user-id`** (legacy) — the OIDC sub as a plain header. Unsigned; it rests on transport integrity (your Worker is reachable only through WFP dispatch, and the platform overwrites the header on every forward). Used **only** when you pass `allowTransportFallback: true`, and then reports `trust: 'transport'`.
 
-The fallback is opt-in per call site so the weaker path is visible in review rather than being the silent default. Keep it while your install predates its `SPRIGR_VIEWER_SECRET` binding (the platform binds it on the install's next build or rebind); drop it once the install has been rebound. `resolveViewerUserId(headers, env)` is the narrow `string | null` shape the old per-app `src/lib/viewer.ts` copies exposed, with the fallback on by default, for a one-import migration.
+The fallback is opt-in per call site so the weaker path is visible in review rather than being the silent default. Keep it while your install predates its `SPRIGR_VIEWER_SECRET` binding (the platform binds it on the install's next build or rebind); drop it once the install has been rebound. `resolveViewerUserId(headers, env, options?)` is the narrow `string | null` shape the old per-app `src/lib/viewer.ts` copies exposed. Since app-sdk 0.53.0 it follows the same rule: the unsigned header is read only when you pass `allowTransportFallback: true`. When you bump past 0.52.0, check each `resolveViewerUserId` call with no options: it now returns `null` for a request that carries only the unsigned header, so a route that reached the app some other way than the portal iframe or app URL (which carry the signed header) must pass the flag or stop relying on the viewer.
 
 `displayName` and `email` are DISPLAY fields. Authorise on `platformUserId` (or `userId`), and only from a context whose `trust` is `'verified'`. Platform side: sprigr-team decision `0048-signed-viewer-context-for-marketplace-app-iframes`.
 
@@ -691,6 +693,15 @@ Make `category` a stable outcome name (`webhook.ok`, `webhook.duplicate`, `sync.
 
 Inline route handlers do not get `env.SPRIGR`, so use the SDK there: `logToPlatform(env, entry, { waitUntil: ctx.waitUntil.bind(ctx) })` picks the injected member when present and otherwise POSTs `{ entries }` to `${SPRIGR_PLATFORM_BASE}/internal/wfp/log` with the `SPRIGR_INSTALL_TOKEN` bearer (5s timeout, never throws after validation); `withSprigrLogFallback(env, { waitUntil })` installs `env.SPRIGR.log` once for many call sites, composable with `withSprigrEmitFallback`. Declare the member on your env type as `log?: SprigrLogFn` (optional: wrapper builds older than sprigr-team#7214 do not carry it; the SDK helpers degrade to the HTTP path). `validateLogEntries` is exported on its own for tests and for hand-rolled transports.
 
+### Feeding the Sprigr Home: the `home` block and `env.SPRIGR.home.invalidate`
+
+An app puts its data on each person's Home through five platform-owned contracts (`sprigr/home_schedule`, `home_queue`, `home_metrics`, `home_subject_facts`, `home_identity`). It declares them in a manifest `home` block and answers them from one read-only, `internal: true` tool named `get_<slug>_home`.
+- The platform calls that tool with `{ provider }`; the wrapper adds the request as `args._home` and the viewer as `args.actor`, on a genuine Home dispatch only.
+- On a Home dispatch, `env.SPRIGR` is read-only: a write rejects with `home_read_only`.
+- When a webhook or sync learns that the data behind a provider changed, call `env.SPRIGR.home.invalidate({ provider, owner? })`. It carries no records and never throws. From an inline route, post the same body to `/internal/wfp/home/invalidate` with the install token.
+
+Build the tool with `homeTool` from `@sprigr/apps-home`, test it with `@sprigr/apps-home/testing` and `@sprigr/apps-home-conformance`, and read [`docs/home-contracts.md`](home-contracts.md) (the guide) and [`docs/interfaces/sprigr-home-v1.md`](interfaces/sprigr-home-v1.md) (the rules).
+
 ## 4b. Platform-routed AI (billed per tenant)
 
 Your app (or an external service it provisions, like the intabot orchestrator on its own Linux box) can call OpenAI through the platform instead of carrying its own key. The platform injects its OpenAI key and bills the token usage to the install's company in `usage_daily` — the same ledger the quota enforcer and cost dashboard read.
@@ -722,24 +733,25 @@ Use this instead of a BYO key whenever you want the customer's AI spend on their
 
 ### Publish
 ```bash
-# from the app's directory
-sprigr app publish --dir .
+pnpm lock:app apps/<slug>                         # per-app pnpm-lock.yaml; commit it
+sprigr app publish --dir apps/<slug> --wait-fanout
 ```
 
 What happens server-side:
-1. CLI POSTs `{ manifest, files: {path: content, ...} }` to `https://staging-api-team.sprigr.com/api/v1/data/marketplace/apps/publish`.
-2. Provisioning's `handleMarketplaceAppPublish` validates the manifest, upserts a `marketplace_apps` row, creates a new `marketplace_app_versions` row with `source_files` JSON-stringified onto the row.
-3. **No build yet** — publish only stages the source. Builds run per-install.
+1. The CLI POSTs `{ manifest, files: {path: content, ...} }` to `<endpoint>/api/v1/data/marketplace/apps/publish`, where `<endpoint>` is the one in your CLI credentials.
+2. The platform validates the manifest and refuses an app that has dependencies but no lockfile in its directory (`lockfile_required`).
+3. It stores the source map in object storage, records an immutable version row and makes it the app's current version.
+4. **It then rolls the version out**: every install that tracks the latest version (the default for a new install) is upgraded and rebuilt. `--wait-fanout` waits for those builds; `sprigr app rollout <slug> <version>` reports progress later. Installs pinned to an older version stay put, and installs never move to a lower version automatically.
 
 ### Install
 - A user clicks Install in the portal → `POST /api/data/apps/:slug/install` → provisioning's `handleAppInstall` creates an `app_installations` row → `provisionMarketplaceInstall` creates a `websites` row (slug shape: `<appSlug>-<lastEightOfInstallId>`, e.g. `procore-5oema5wd`) → grants the installer access in `website_users` → enqueues a build job to `BUILD_JOBS_QUEUE`.
-- The build-runner container picks up the job, runs `npm install` + `npx opennext build` for Next.js (or framework-equivalent), then uploads the bundle to WFP as `sprigr-tenant-{prod|staging}-<websiteId>-production`.
+- The build-runner installs strictly from your lockfile (`pnpm install --frozen-lockfile`), runs the framework build (OpenNext for Next.js) and uploads the bundle to WFP as one script per deployment. A version is compiled once; every other install of that version reuses the compiled output with its own bindings.
 - Build-runner's `site-resources.ts` allocates the per-install D1 + KV if missing, then attaches all the bindings above.
 - After upload, `applyMigrationsForBuild` runs the manifest's `migrations[]` against the per-install D1.
 
 ### Upgrade
-- After publishing a new version: `POST /api/v1/data/apps/:slug/install/upgrade` (or portal "Upgrade" banner — added in #845).
-- Bumps `app_installations.pinned_version_id` to the latest approved version and re-enqueues the build with the same `websiteId`. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
+- Tracking installs upgrade automatically on publish (above). A pinned install moves with `sprigr app upgrade <slug>`, `POST /api/v1/data/apps/:slug/install/upgrade`, or the portal's Upgrade banner.
+- The upgrade moves the install's pinned version forward, then re-enqueues the build with the same `websiteId`. Until the new deployment is live, calls to a tool that is new in that version answer `upgrade_pending`. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
 
 ### Direct curl (for shakedown / scripting)
 ```bash

@@ -380,6 +380,20 @@ export interface FileSourceAdapter<TEntry = unknown, TEnv extends FileIndexingEn
   /** Prefixes a disconnect purges. Default `[objectIdPrefix(ctx)]`. */
   purgePrefixes?(ctx: FileIndexingContext<TEnv>): Promise<string[]>;
 
+  /** 0.2.5 (sprigr-apps#2690): an INDEPENDENT check, made at reconcile time,
+   *  that the account really holds nothing, asked only after a completed full
+   *  walk saw zero entries while the index still holds rows under the prefix.
+   *  Resolve true only on positive proof (dropbox: a fresh non-recursive
+   *  `files/list_folder` of the root answering `entries: []` with
+   *  `has_more: false`); resolve false when the source shows anything; throw
+   *  when the check itself failed. The deadline is on `ctx.deadline`.
+   *
+   *  Optional. Every empty walk needs two consecutive completed full walks
+   *  before rows go; with this hook each of those walks must ALSO be
+   *  confirmed, so a broken empty listing cannot wipe an account on its own
+   *  (see the README's "Empty walks"). */
+  confirmEmpty?(ctx: FileIndexingContext<TEnv>): Promise<boolean>;
+
   /** sprigr-apps#2211: an IDs-and-parents enumeration of the whole source on
    *  its OWN continuation, for the permission re-stamp pass. Opt-in: an adapter
    *  whose change feed already reports sharing changes leaves it out. */
@@ -405,6 +419,9 @@ export interface FileIndexingRow {
   /** Baseline captured when the full walk began (stores with resume columns). */
   walk_start_token: string | null;
   identity_link_refused_at: number | null;
+  /** When the platform last accepted the owner identity link for
+   *  connected_email. Null without the store's identityLinkedColumn. */
+  identity_linked_at?: number | null;
   unresolved_held_since: number | null;
   acl_refresh_link: string | null;
   acl_refresh_completed_at: number | null;
@@ -452,6 +469,9 @@ export interface FileIndexingStore {
   recordError(scope: FileIndexingScope, error: string): Promise<void>;
   resetCursor(scope: FileIndexingScope): Promise<void>;
   setIdentityLinkRefused(scope: FileIndexingScope, refusedAt: number | null): Promise<void>;
+  /** Record (or clear, with null) a successful owner identity link. Optional:
+   *  a store without it links on every pass, as before 0.2.3. */
+  setIdentityLinked?(scope: FileIndexingScope, linkedAt: number | null): Promise<void>;
   setConnectedEmail(scope: FileIndexingScope, email: string): Promise<void>;
   setFullWalkActive(scope: FileIndexingScope, active: boolean): Promise<void>;
   setUnresolvedHeldSince(scope: FileIndexingScope, since: number | null): Promise<void>;
@@ -462,9 +482,10 @@ export interface FileIndexingStore {
   clearWalkSeen(walkKey: string): Promise<void>;
 
   upsertPendingExtraction(row: { objectId: string; jobToken: string; recordJson: string; format: string }): Promise<void>;
-  /** Oldest first. Content-fill rows (`CONTENT_FILL_TOKEN_PREFIX`) are not
-   *  extraction jobs: createD1FileIndexingStore leaves them out, and
-   *  drainPendingExtractions skips any a custom store returns. */
+  /** Oldest first. Content-fill rows (`CONTENT_FILL_TOKEN_PREFIX`) and pending
+   *  purges (`PURGE_PENDING_TOKEN`) are not extraction jobs:
+   *  createD1FileIndexingStore leaves them out, and drainPendingExtractions
+   *  skips any a custom store returns. */
   listPendingExtractions(limit: number): Promise<PendingExtractionRow[]>;
   /** `job_token` is returned by createD1FileIndexingStore since 0.1.2; a store
    *  that leaves it out still works (an unknown token is treated as a job,

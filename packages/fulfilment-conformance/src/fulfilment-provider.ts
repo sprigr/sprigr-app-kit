@@ -11,8 +11,9 @@
  * push that reaches the warehouse ships the order twice.
  */
 
-import { FULFILMENT_PROVIDER_OPS } from './contract';
+import { FULFILMENT_PROVIDER_ACK_STATUSES, FULFILMENT_PROVIDER_OPS, toolNameFor } from './contract';
 import { driveOp, opByName, type DriveContext } from './drive';
+import { invokeOp } from './invoke';
 import { CheckCollector, type ConformanceReport } from './report';
 import { isPlainObject } from './shape';
 import type { AdapterHandlers, ConformanceOptions } from './types';
@@ -177,6 +178,53 @@ export async function runFulfilmentProviderConformance(
       cost > 0
         ? `${secondId} made ${cost} vendor call(s)`
         : `${secondId} made no vendor call: the idempotency record is keyed on something coarser than fulfilment_request_id`,
+    );
+  }
+
+  // Two deliveries of ONE request at the same time. The outbox can hand a row
+  // out again while the first attempt is still running (a claim reclaimed
+  // after its TTL, a platform redelivery), and the sequential repeat above
+  // cannot see a read-then-push window: both deliveries read "not pushed" and
+  // the warehouse gets the order twice. The request id has to be claimed
+  // before the warehouse call (sprigr/sprigr-app-kit#78). Invoked directly
+  // rather than through driveOp: the delivery that loses may answer `queued`
+  // with no provider_ref while the winner is still at the warehouse.
+  const racedId = 'fr_conformance_c';
+  const racedArgs = { ...pushArgs(racedId, 'ord_conformance_c', warehouseKey), ...(ctx.fixtures.push_order ?? {}) };
+  const beforeRace = vendorCalls ? vendorCalls() : 0;
+  const raced = await Promise.all(
+    [0, 1].map(() => invokeOp(handlers, toolNameFor(opts.slug, 'push_order'), racedArgs, ctx.env, ctx.budgetMs)),
+  );
+  const afterRace = vendorCalls ? vendorCalls() : 0;
+  const racedAcks = raced.map((call) => (isPlainObject(call.value) ? call.value : undefined));
+  const unanswered = raced.flatMap((call, i) =>
+    call.timedOut || call.error !== undefined || !(FULFILMENT_PROVIDER_ACK_STATUSES as readonly unknown[]).includes(racedAcks[i]?.status)
+      ? [`delivery ${i + 1}: ${call.timedOut ? 'timed out' : call.error ?? `answered ${JSON.stringify(racedAcks[i]?.status)}`}`]
+      : [],
+  );
+  checks.add(
+    'push_order.concurrent_repeat_acknowledged',
+    unanswered.length === 0,
+    unanswered.length === 0
+      ? `both simultaneous pushes of ${racedId} acknowledged (${racedAcks.map((a) => String(a?.status)).join(', ')})`
+      : `both simultaneous pushes of ${racedId} must acknowledge with ${FULFILMENT_PROVIDER_ACK_STATUSES.join(' | ')}; ${unanswered.join('; ')}`,
+  );
+  const racedRefs = [...new Set(racedAcks.map((a) => a?.provider_ref).filter((r): r is string => typeof r === 'string' && r !== ''))];
+  checks.add(
+    'push_order.concurrent_repeat_one_provider_ref',
+    racedRefs.length === 1,
+    racedRefs.length === 1
+      ? `the simultaneous pushes of ${racedId} answered one provider_ref (${racedRefs[0]})`
+      : `the simultaneous pushes of ${racedId} must answer ONE provider_ref between them (the loser may answer queued with none); got ${JSON.stringify(racedRefs)}`,
+  );
+  if (vendorCalls) {
+    const raceCost = afterRace - beforeRace;
+    checks.add(
+      'push_order.concurrent_repeat_reaches_vendor_once',
+      raceCost === 1,
+      raceCost === 1
+        ? `two simultaneous pushes of ${racedId} made one vendor call`
+        : `two simultaneous pushes of ${racedId} made ${raceCost} vendor calls; exactly one may reach the warehouse. Read-then-push lets both deliveries through: write the request record FIRST (an INSERT the primary key decides) and call the warehouse only from the delivery that wrote it.`,
     );
   }
 

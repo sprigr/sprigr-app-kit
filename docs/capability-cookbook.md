@@ -11,7 +11,6 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 - **[`examples/contact-mirror`](../examples/contact-mirror)** — a second PROVIDER of `showcase/contact_lookup`: one tagged cross-tenant tool, so the consumer can be shown bound to two implementers, one installed after it.
 - **[`examples/mock-warehouse`](../examples/mock-warehouse)** and **[`examples/mock-order-source`](../examples/mock-order-source)**: the two sides of the fulfilment hub's [interface contract](interfaces/fulfilment-hub-v1.md), a `fulfilment_provider` and an `order_source` implementer. Each claims every op of its interface with a `provides` tag and is deterministic enough to be a shakedown fixture, so they are the worked reference for an adapter that has to be interchangeable with another vendor's.
 - **[`examples/agent-template`](../examples/agent-template)** — the OTHER app shape: `kind: 'agent'`. Ships no Worker and no tools; installing it provisions a configured agent (persona, model tier, role, channel defaults, recommended apps, training index).
-- **[`examples/static-badge`](../examples/static-badge)** — the simplest valid app: `runtime.tier: 'static'`, no Worker, no build.
 - **[`examples/harvest`](../examples/harvest)** — the realistic single-integration starter (real OAuth, real provider API). The scaffolder (`pnpm create:app`) generates this shape.
 
 ## Local vs staging (the split every row keys off)
@@ -67,7 +66,7 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 | Decision point | `decision_points[]` + `run_workflow` | [`handlers/platform.ts`](../examples/showcase/src/handlers/platform.ts) `routeDecision` | local (fallback) + staging (run_workflow) | — (no app declares `decision_points` yet) |
 | Data index (per-company) | `data_index` + `data.import/search/get` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) | staging | `linkedin`, `intabot` |
 | Doc-ACL file index (mirror a cloud drive into `-acl-files`) | `data_index` + `data.import/delete/listIds/partialUpdate` with `withAcl` | [`packages/file-indexing`](../packages/file-indexing) (`@sprigr/apps-file-indexing`): implement a `FileSourceAdapter`, call `indexActorFiles`; worked Dropbox adapter in its [README](../packages/file-indexing/README.md) | **local** (fake adapters + a real SQLite D1 + a fake platform in its tests) + staging (the real `-acl-files` index) | `microsoft-365`, `google-workspace` (moving onto the package: sprigr-apps#2607, #2608) |
-| Collections | (scope `sprigr.collections`) + `collections.*` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) | staging | — (no public exemplar) |
+| Collections | `collections.*` (no manifest scope: the install token keeps calls in the install's company) | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) | staging | — (no public exemplar) |
 | Company / publisher store | scope `sprigr.jobs` / `sprigr.jobs:publisher` + `store.*` | [`handlers/store.ts`](../examples/showcase/src/handlers/store.ts) | staging | — (no app uses `env.SPRIGR.store` yet) |
 | Browser fetch / screenshot | scope `sprigr.browser:fetch` + `browser.fetch/screenshot` | [`handlers/browser.ts`](../examples/showcase/src/handlers/browser.ts) | staging | — (no app uses `env.SPRIGR.browser` yet) |
 | Browser session (stateful) | scope `sprigr.browser:session` (+ `sprigr.jobs:publisher`) | [`handlers/browser.ts`](../examples/showcase/src/handlers/browser.ts) `driveLoginPortal` | staging, **publisher-owner only** | — (publisher-owner only; no public exemplar) |
@@ -83,7 +82,7 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 | Agent training index | `training_index` | [`agent-template/sprigr-app.json`](../examples/agent-template/sprigr-app.json) | n/a (index provisioned at publish) | — (no app declares `training_index` yet) |
 | Job lifecycle (start/get/list/cancel/signal) | `jobs[]` + `jobs.*` | [`handlers/jobs.ts`](../examples/showcase/src/handlers/jobs.ts) | staging | — (no app declares `jobs[]` yet) |
 | Fulfillment service update / delete | `fulfillment_services[]` + `fulfillment_services.update/delete` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) | staging | — (no app declares `fulfillment_services` yet) |
-| Static tier (no Worker) | `runtime.tier: 'static'`, `framework: 'static'` | [`examples/static-badge`](../examples/static-badge) | n/a (served from R2) | — (no public static-tier app yet) |
+| Static tier (no Worker) | `runtime.tier: 'static'`, `framework: 'static'` | none | n/a | Not a marketplace app on its own: publish requires `tools:register` and at least one tool with a handler, and a static bundle has no Worker to run it. Host a plain static site with `sprigr site` ([website-hosting.md](website-hosting.md)). |
 
 ### Reading the exemplar column
 

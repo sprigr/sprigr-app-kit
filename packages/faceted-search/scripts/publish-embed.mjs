@@ -85,7 +85,7 @@ function resolveCreds() {
 }
 
 // ── 1. Freshness gate ────────────────────────────────────────────────
-// Never publish a stale bundle: delegate to the same check CI runs.
+// Never publish a stale bundle: delegate to the same check verify.yml runs on every PR.
 console.log('[publish-embed] verifying dist/facet-browse.js is fresh ...');
 const check = spawnSync(process.execPath, [join(PKG_ROOT, 'scripts', 'build-embed.mjs'), '--check'], {
   stdio: 'inherit',

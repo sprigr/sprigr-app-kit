@@ -7,10 +7,12 @@
  * to preact/compat so the whole UI plus renderer fits in one small file. CSS is
  * inlined by the component (a <style> tag), so there is no separate stylesheet.
  *
- * The bundle is a COMMITTED artifact, published to the Sprigr-hosted embeds
- * site by scripts/publish-embed.mjs (this repo is private, so agents fetch
+ * The bundle is a COMMITTED artifact (the one file .gitignore lets through in
+ * dist/), published to the Sprigr-hosted embeds site by
+ * scripts/publish-embed.mjs (this repo is private, so agents fetch
  * https://sprigr-hq-embeds.sites.sprigr.com/facet-browse/v1/facet-browse.js
- * rather than a raw GitHub URL). To keep the committed copy honest:
+ * rather than a raw GitHub URL). verify.yml runs the check on every PR, and
+ * publish-embed.mjs runs it again before uploading:
  *
  *   node scripts/build-embed.mjs           # rebuild dist/facet-browse.js
  *   node scripts/build-embed.mjs --check   # rebuild to a temp buffer and diff;

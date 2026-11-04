@@ -7,11 +7,13 @@
  * deterministic key, so the SDK retries it instead.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { putAppFileStream } from '../src/app-files';
+import { getAppFile, putAppFile, putAppFileStream } from '../src/app-files';
 
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+const ENV = { SPRIGR_INSTALL_TOKEN: 'tok', SPRIGR_PLATFORM_BASE: 'https://platform.test' };
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status });
@@ -33,7 +35,7 @@ describe('putAppFileStream retry (gh#9386)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await putAppFileStream(
-      { SPRIGR_INSTALL_TOKEN: 'tok' },
+      ENV,
       { key: 'maximo-files/W1/a.jpg', body: new Uint8Array([1, 2, 3]), contentType: 'image/jpeg' },
     );
 
@@ -49,7 +51,7 @@ describe('putAppFileStream retry (gh#9386)', () => {
 
     await expect(
       putAppFileStream(
-        { SPRIGR_INSTALL_TOKEN: 'tok' },
+        ENV,
         { key: 'maximo-files/W1/a.jpg', body: new Uint8Array([1]) },
       ),
     ).rejects.toMatchObject({ status: 502 });
@@ -70,7 +72,7 @@ describe('putAppFileStream retry (gh#9386)', () => {
     });
 
     await expect(
-      putAppFileStream({ SPRIGR_INSTALL_TOKEN: 'tok' }, { key: 'maximo-files/W1/a.jpg', body: stream }),
+      putAppFileStream(ENV, { key: 'maximo-files/W1/a.jpg', body: stream }),
     ).rejects.toMatchObject({ status: 502 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -80,7 +82,7 @@ describe('putAppFileStream retry (gh#9386)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(
-      putAppFileStream({ SPRIGR_INSTALL_TOKEN: 'tok' }, { key: '../escape', body: new Uint8Array([1]) }),
+      putAppFileStream(ENV, { key: '../escape', body: new Uint8Array([1]) }),
     ).rejects.toMatchObject({ status: 400 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -90,7 +92,7 @@ describe('putAppFileStream retry (gh#9386)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(
-      putAppFileStream({ SPRIGR_INSTALL_TOKEN: 'tok' }, { key: 'maximo-files/W1/a.jpg', body: new Uint8Array([1]) }),
+      putAppFileStream(ENV, { key: 'maximo-files/W1/a.jpg', body: new Uint8Array([1]) }),
     ).rejects.toMatchObject({ status: 413 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -105,7 +107,7 @@ describe('putAppFileStream retry (gh#9386)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const result = await putAppFileStream(
-      { SPRIGR_INSTALL_TOKEN: 'tok' },
+      ENV,
       { key: 'maximo-files/W1/a.jpg', body: new Uint8Array([1]) },
     );
     expect(result).toMatchObject({ ok: true });
@@ -117,8 +119,43 @@ describe('putAppFileStream retry (gh#9386)', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(
-      putAppFileStream({ SPRIGR_INSTALL_TOKEN: 'tok' }, { key: 'maximo-files/W1/a.jpg', body: new Uint8Array([1]) }),
+      putAppFileStream(ENV, { key: 'maximo-files/W1/a.jpg', body: new Uint8Array([1]) }),
     ).rejects.toMatchObject({ status: 502 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('app file transport (sprigr-app-kit#85)', () => {
+  it('fails closed, naming the missing binding, instead of defaulting to the prod base', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getAppFile({ SPRIGR_INSTALL_TOKEN: 'tok' }, 'a.jpg')).rejects.toMatchObject({
+      name: 'AppFilesError',
+      status: 500,
+      message: expect.stringContaining('SPRIGR_PLATFORM_BASE=unset'),
+    });
+    await expect(putAppFileStream({ SPRIGR_INSTALL_TOKEN: 'tok' }, { key: 'a.jpg', body: new Uint8Array([1]) }))
+      .rejects.toMatchObject({ status: 500 });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('posts to the bound base with the install token and keeps the error shape', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init: RequestInit) => jsonResponse(404, { error: 'not_found', detail: 'no such key' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(getAppFile(ENV, 'a.jpg')).rejects.toMatchObject({
+      name: 'AppFilesError',
+      status: 404,
+      message: 'app file get failed (404): no such key',
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://platform.test/internal/wfp/file/get');
+    expect((init.headers as Record<string, string>).authorization).toBe('Bearer tok');
+  });
+
+  it('aborts a hung request after timeoutMs', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_, reject) => {
+      init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    })));
+    await expect(putAppFile(ENV, { key: 'a.jpg', base64: 'AQ==' }, { timeoutMs: 20 })).rejects.toMatchObject({ name: 'AbortError' });
   });
 });

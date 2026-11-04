@@ -8,6 +8,7 @@
 import type { Deadline } from '@sprigr/apps-fetch-budget';
 import { capText } from './content';
 import { isContentFillToken } from './content-fill';
+import { isPurgePendingToken } from './purge-pending';
 import { importFileObjects, partitionValidObjects } from './import';
 import { EXTRACTION_DRAIN_BUDGET_MS, MIN_ITEM_BUDGET_MS, remainingBudgetMs } from './tick-budget';
 import type { FileIndexingEnv, FileIndexingStore, IndexedFileObject } from './types';
@@ -110,7 +111,8 @@ export async function drainPendingExtractions(
   // A content-fill row (sprigr-apps#2702) is not a platform job: polling its
   // token would answer not_found and drop it. createD1FileIndexingStore never
   // lists them here; this guards a store with its own listing SQL.
-  pending = pending.filter((row) => !isContentFillToken(row.job_token));
+  // Nor is a pending purge (sprigr-app-kit#96).
+  pending = pending.filter((row) => !isContentFillToken(row.job_token) && !isPurgePendingToken(row.job_token));
   let backfilled = 0;
   let deferred = 0;
   for (const [i, row] of pending.entries()) {
@@ -146,6 +148,12 @@ export async function drainPendingExtractions(
           console.warn(`${label} pending-extraction drain: stored record for ${row.object_id} fails principal validation; dropping`);
           await store.deletePendingExtraction(row.object_id);
           continue;
+        }
+        // A slow poll can end past the deadline: leave the row queued rather
+        // than start an index write the dispatch may cut.
+        if (remainingBudgetMs(deadline, now) < 0) {
+          deferred = pending.length - i;
+          break;
         }
         record.content = capText(text, { label, what: row.object_id, alreadyTruncated: result?.truncated === true });
         await importFileObjects(env, [record], { label });

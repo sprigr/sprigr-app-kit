@@ -94,6 +94,13 @@ describe('emitMarketplaceEvent — inline route (no env.SPRIGR)', () => {
     });
   });
 
+  it('passes a deduped answer through on the HTTP path', async () => {
+    reply = { status: 200, body: { eventId: 'evt_first', queued: true, settled: 'deduped' } };
+    const r = await emitMarketplaceEvent(inlineEnv(), 'a.b.c', {}, { dedupId: 'wh_1' });
+    expect(r).toEqual({ emitted: true, via: 'http', eventId: 'evt_first', settled: 'deduped' });
+    expect((calls[0]!.body as { dedupId?: string }).dedupId).toBe('wh_1');
+  });
+
   it('treats a 200 {queued:false} as NOT emitted', async () => {
     reply = { status: 200, body: { ok: true, queued: false, error: 'queue_send_failed' } };
     const r = await emitMarketplaceEvent(inlineEnv(), 'a.b.c', {});
@@ -177,6 +184,12 @@ describe('emitMarketplaceEvent — dispatch path (env.SPRIGR present)', () => {
     const emit = vi.fn(async () => ({ ok: true, queued: false, error: 'queue_send_failed' }));
     const r = await emitMarketplaceEvent(inlineEnv({ SPRIGR: { emit } }), 'a.b.c', {});
     expect(r).toMatchObject({ emitted: false, via: 'binding', error: 'queue_send_failed' });
+  });
+
+  it('passes a deduped answer through as emitted, naming the first event', async () => {
+    const emit = vi.fn(async () => ({ ok: true, queued: true, settled: 'deduped' as const, eventId: 'evt_first' }));
+    const r = await emitMarketplaceEvent(inlineEnv({ SPRIGR: { emit } }), 'a.b.c', {}, { dedupId: 'wh_1' });
+    expect(r).toEqual({ emitted: true, via: 'binding', eventId: 'evt_first', settled: 'deduped' });
   });
 
   it('ignores a SPRIGR that has no callable emit', async () => {

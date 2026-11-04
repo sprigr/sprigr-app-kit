@@ -6,7 +6,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore plain mjs, no types
-import { applyAllowlist, isDestructiveName, run, scanAttended, scanManifest } from '../../bin/check-write-protection.mjs';
+import { applyAllowlist, isDestructiveName, isGatedRule, run, scanAttended, scanManifest } from '../../bin/check-write-protection.mjs';
+import { checkConfirmationPolicy } from '../../src/write-protection/confirmation-policy';
 
 const tool = (name: string, extra: Record<string, unknown> = {}) => ({ name, description: '', handler: 'x', input_schema: { type: 'object', properties: {} }, ...extra });
 
@@ -43,6 +44,32 @@ describe('scanManifest', () => {
       tool('cw', { dispatch: { actionField: 'op' }, input_schema: { properties: { op: { enum: ['delete'] } } }, confirmation: { always: true, describe: 'all' } }),
     ] };
     expect(scanManifest(m)).toEqual(['xero:void_invoice', 'gorgias:<unenumerated>']);
+  });
+});
+
+describe('one destructive verb list (sprigr-app-kit#85)', () => {
+  it('a destroy/wipe/drop/terminate tool the lint flags is also a write to checkConfirmationPolicy', () => {
+    for (const name of ['destroy_widget', 'wipe_cache', 'drop_table', 'terminate_contract']) {
+      expect(isDestructiveName(name)).toBe(true);
+      expect(checkConfirmationPolicy({ registry: [name], policy: {} }), name)
+        .toEqual([`unclassified write: "${name}" is neither gated nor listed as deliberately ungated`]);
+    }
+  });
+});
+
+describe('isGatedRule', () => {
+  it('needs always, or a non-empty when whose every threshold is at least 1', () => {
+    expect(isGatedRule({ always: true })).toBe(true);
+    expect(isGatedRule({ when: { count: 'ids', atLeast: 2 } })).toBe(true);
+    expect(isGatedRule({ when: [{ count: 'ids', atLeast: 1 }, { count: 'lines', atLeast: 5 }] })).toBe(true);
+    expect(isGatedRule({ when: [] })).toBe(false);
+    expect(isGatedRule({ when: { count: 'ids', atLeast: 0 } })).toBe(false);
+    expect(isGatedRule({ when: [{ count: 'ids', atLeast: 2 }, { count: 'ids' }] })).toBe(false);
+  });
+
+  it('so scanManifest flags a destructive tool whose threshold gates nothing', () => {
+    const m = { tools: [tool('acme_delete_rows', { confirmation: { when: { count: 'ids', atLeast: 0 }, describe: 'x' } })] };
+    expect(scanManifest(m)).toEqual(['acme_delete_rows']);
   });
 });
 

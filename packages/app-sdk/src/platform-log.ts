@@ -368,6 +368,39 @@ export function logToPlatform(
 }
 
 /**
+ * `logToPlatform` for a routine log line that must never fail the webhook,
+ * tool call or tick it describes. Never throws and never rejects: a cap or
+ * shape violation resolves `{ ok: false, error: 'invalid_entry' }`, and that
+ * or any other failed result is reported with one `console.warn` naming the
+ * category. Use `logToPlatform` when you want a bad entry to throw.
+ *
+ *   await logQuietly(env, { level: 'info', category: 'sync.ok', summary }, { label: 'catalog-sync' });
+ */
+export async function logQuietly(
+  env: WfpBridgeEnv,
+  input: SprigrLogEntry | SprigrLogEntry[],
+  opts?: LogToPlatformOptions & { label?: string },
+): Promise<SprigrLogResult> {
+  let result: SprigrLogResult;
+  try {
+    result = await logToPlatform(env, input, opts);
+  } catch (err) {
+    result = { ok: false, error: 'invalid_entry', detail: err instanceof Error ? err.message : String(err) };
+  }
+  if (!result.ok) {
+    const scope = opts?.label ? ` ${opts.label}` : '';
+    console.warn(`[sprigr-log]${scope} ${categoriesOf(input)} not logged: ${result.error}${result.detail ? ` (${result.detail})` : ''}`);
+  }
+  return result;
+}
+
+function categoriesOf(input: unknown): string {
+  const list = Array.isArray(input) ? input : [input];
+  const names = list.map((e) => (e && typeof (e as { category?: unknown }).category === 'string' ? (e as { category: string }).category : '?'));
+  return [...new Set(names)].join(',');
+}
+
+/**
  * Return an env whose `SPRIGR.log` works even on an inline route, leaving
  * existing `env.SPRIGR.log(...)` call sites untouched. Same shape as
  * `withSprigrEmitFallback`, and composable with it:

@@ -58,6 +58,22 @@ in an app with live installs only once every one of them holds the key
 `required_secrets_missing` for it), or each one without it will throw at
 construction.
 
+### Sealing rows nobody reads
+
+`get` re-seals a legacy cleartext row only when it reads it, so a credential an
+install never reads (a client secret, a refresh token for a provider that is
+never called) would stay cleartext. In `encrypt` mode, sweep them from a cron:
+
+```ts
+const { sealed, remaining } = await store.sealLegacyRows({ limit: 50 });
+```
+
+It seals at most `limit` rows per call with the same compare-and-set as the
+read path, so a `put` that lands in between wins. It returns counts only, never
+values, and throws in `decrypt-only` and `cleartext` modes. Call it again on
+the next tick while `remaining` is true. Once it is false the table holds no
+cleartext and later calls seal nothing.
+
 ## Sealing a value outside the token store
 
 `makeD1TokenStore` only covers a `(key, value, updated_at)` table. Credential

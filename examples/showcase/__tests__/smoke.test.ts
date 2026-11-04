@@ -28,7 +28,12 @@ import {
   cacheContacts,
   searchContacts,
   defineDealsCollection,
+  ingestDeals,
+  ingestDealsFromTable,
+  queryDeals,
   reconcileDeals,
+  describeDeals,
+  dealHistory,
   registerWarehouse,
   renameWarehouse,
   deregisterWarehouse,
@@ -306,17 +311,63 @@ describe('env.SPRIGR reference modules (call-shape assertions)', () => {
   });
 
   it('data + collections + fulfillment call shapes', async () => {
-    const { host, calls } = fakeSprigr();
+    const { host, calls } = fakeSprigr({ 'collections.define': { collection: 'cmp_x__acme-deals', created: true } });
     const env = makeEnv({ SPRIGR: host });
     await cacheContacts(env, [{ id: 'c1', name: 'n', email: 'e', company: 'co', stage: 's', owner: 'o', source: 'src' }]);
     await searchContacts(env, 'q', 'won');
     await defineDealsCollection(env);
-    await reconcileDeals(env, ['d1', 'd2']);
+    await reconcileDeals(env, [{ deal_id: 'd1', stage: 'won', amount: 10 }]);
     await registerWarehouse(env, 'int_1', { key: 'wh-a', name: 'Warehouse A' });
     const methods = calls.map((c) => c.method);
     expect(methods).toEqual(['data.import', 'data.search', 'collections.define', 'collections.reconcile', 'fulfillment_services.register']);
     expect((calls[0]!.args[0] as Array<{ objectID: string }>)[0]!.objectID).toBe('c1');
     expect((calls[4]!.args[0] as { serviceKey: string }).serviceKey).toBe('wh-a');
+  });
+
+  // sprigr-app-kit#63: the sample used to send { scope, name_suffix, rows } to
+  // every op and still passed, because only method names were checked. Each
+  // op except define takes the full name define returned, in the platform
+  // handler's field names (sprigr-team sprigr-collections-routes.ts).
+  it('collections ops send the platform request shapes, keyed by the name define returned', async () => {
+    const collection = 'cmp_x__acme-deals';
+    const { host, calls } = fakeSprigr({ 'collections.define': { collection, created: true } });
+    const env = makeEnv({ SPRIGR: host });
+    const deal = { deal_id: 'd1', stage: 'won', amount: 10 };
+    await ingestDeals(env, [deal]);
+    await ingestDealsFromTable(env, [{ 'Deal ID': 'd2', Stage: 'open', Amount: '5' }]);
+    await queryDeals(env, 'won');
+    await reconcileDeals(env, [deal]);
+    await describeDeals(env);
+    await dealHistory(env, 'a1b2c3d4e5f60718');
+
+    // define runs once: its name is cached in showcase_settings.
+    expect(calls.map((c) => c.method)).toEqual([
+      'collections.define',
+      'collections.ingest',
+      'collections.ingestFromTable',
+      'collections.query',
+      'collections.reconcile',
+      'collections.describe',
+      'collections.history',
+    ]);
+    const [define, ...ops] = calls.map((c) => c.args[0] as Record<string, unknown>);
+    expect(define).toMatchObject({ scope: 'company', name_suffix: 'acme-deals', key: { strategy: 'natural', fields: ['deal_id'] } });
+    expect(typeof define!.description).toBe('string');
+    for (const args of ops) {
+      expect(args.collection).toBe(collection);
+      expect(args).not.toHaveProperty('scope');
+      expect(args).not.toHaveProperty('name_suffix');
+    }
+    expect(ops[0]).toEqual({ collection, records: [deal] });
+    expect(ops[1]).toEqual({
+      collection,
+      rows: [{ 'Deal ID': 'd2', Stage: 'open', Amount: '5' }],
+      mapping: { 'Deal ID': 'deal_id', Stage: 'stage', Amount: 'amount' },
+    });
+    expect(ops[2]).toEqual({ collection, filters: 'stage:won', facets: ['stage'], hits_per_page: 50 });
+    expect(ops[3]).toEqual({ collection, against: { records: [deal] }, match: { key: ['deal_id'] } });
+    expect(ops[4]).toEqual({ collection });
+    expect(ops[5]).toEqual({ collection, object_id: 'a1b2c3d4e5f60718', limit: 50 });
   });
 
   it('files.putStream/url call shapes', async () => {

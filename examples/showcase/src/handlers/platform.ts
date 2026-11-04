@@ -10,7 +10,7 @@
  *                           calls env.SPRIGR.run_workflow; falls back to
  *                           round-robin when unconfigured or on error.
  *
- * Schedule dispatch lands ScheduleArgs { name, scheduled_at? } as args.
+ * Schedule dispatch lands ScheduleArgs { schedule, scheduled_at?, fire_id?, deadline_at?, ... } as args.
  */
 
 import { getInstallConfig } from '../lib/store';

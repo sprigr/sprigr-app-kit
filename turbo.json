@@ -12,12 +12,8 @@
     "test": {
       "dependsOn": ["^build"]
     },
-    "lint": {},
     "typecheck": {
       "dependsOn": ["^build"]
-    },
-    "clean": {
-      "cache": false
     }
   }
 }

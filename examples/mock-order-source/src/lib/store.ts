@@ -31,6 +31,9 @@ export interface OrderSourceStore {
   putLocation(location: LocationRecord): Promise<void>;
   putStock(level: StockRecord): Promise<void>;
   getStock(sourceLocationRef: string, sku: string): Promise<StockRecord | null>;
+  armFault(op: string, count: number): Promise<void>;
+  /** True when `op` had an armed fault, which this call used up. */
+  takeFault(op: string): Promise<boolean>;
 }
 
 const boolIn = (v: boolean) => (v ? 1 : 0);
@@ -191,6 +194,25 @@ export function d1Store(db: D1Like): OrderSourceStore {
         .first<StockRecord>();
       return row ?? null;
     },
+    async armFault(op, count) {
+      await db
+        .prepare(
+          `INSERT INTO mock_order_source_faults (op, remaining) VALUES (?, ?)
+           ON CONFLICT(op) DO UPDATE SET remaining = excluded.remaining`,
+        )
+        .bind(op, count)
+        .run();
+    },
+    async takeFault(op) {
+      const row = await db
+        .prepare(
+          `UPDATE mock_order_source_faults SET remaining = remaining - 1
+            WHERE op = ? AND remaining > 0 RETURNING remaining`,
+        )
+        .bind(op)
+        .first<{ remaining: number }>();
+      return row != null;
+    },
   };
 }
 
@@ -203,6 +225,7 @@ export function memoryStore(): OrderSourceStore {
     SEED_LOCATIONS.map((l) => [l.source_location_ref, { ...l }]),
   );
   const stock = new Map<string, StockRecord>();
+  const faults = new Map<string, number>();
 
   return {
     async getOrder(sourceRef) {
@@ -239,6 +262,15 @@ export function memoryStore(): OrderSourceStore {
     },
     async getStock(ref, sku) {
       return stock.get(`${ref}::${sku}`) ?? null;
+    },
+    async armFault(op, count) {
+      faults.set(op, count);
+    },
+    async takeFault(op) {
+      const left = faults.get(op) ?? 0;
+      if (left <= 0) return false;
+      faults.set(op, left - 1);
+      return true;
     },
   };
 }

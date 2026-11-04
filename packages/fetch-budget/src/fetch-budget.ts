@@ -100,6 +100,8 @@ export class FetchBudgetTimeoutError extends Error {
     public readonly phase: FetchBudgetPhase,
   ) {
     super(`fetch_budget_timeout: ${phase} cap of ${timeoutMs}ms elapsed for ${withoutQuery(url)}`);
+    // A query string can carry a token; the field is what callers log.
+    this.url = withoutQuery(url);
     this.name = 'FetchBudgetTimeoutError';
   }
 }
@@ -184,6 +186,17 @@ export interface FetchWithBudgetOptions {
    * tests, and for a caller that wraps fetch (tracing, a mock provider).
    */
   fetchImpl?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  /**
+   * Opt-in stall bound for the response body, in ms. When set, the body is
+   * read through a stream that errors with `FetchBudgetTimeoutError` (phase
+   * `'attempt'`) and aborts the request once no bytes have arrived for this
+   * long. The clock runs only while a read waits on the network, so a body
+   * that keeps sending is never cut however long it takes, and a slow
+   * consumer is not a stall. Unset, the body read is unbounded as before:
+   * the guarded body is a new `Response` (`url` and `redirected` copied
+   * across), and existing callers stream bodies this cap was never sized for.
+   */
+  bodyStallMs?: number;
 }
 
 /**
@@ -203,6 +216,9 @@ export interface FetchWithBudgetOptions {
  * as well as aborting the request. A `fetch` that honours the signal is
  * cancelled properly; one that ignores it still cannot outlive the
  * budget.
+ *
+ * Both clocks stop at the headers. A body that stalls after them is bounded
+ * only by `opts.bodyStallMs`, which measures silence, not duration.
  */
 export async function fetchWithBudget(
   input: RequestInfo | URL,
@@ -238,8 +254,9 @@ export async function fetchWithBudget(
     }, timeoutMs);
   });
 
+  let response: Response;
   try {
-    return await Promise.race([doFetch(input, { ...init, signal }), budgetCut]);
+    response = await Promise.race([doFetch(input, { ...init, signal }), budgetCut]);
   } catch (err) {
     if (isFetchBudgetTimeout(err)) throw err;
     // The caller's own cancellation is theirs to interpret.
@@ -249,6 +266,56 @@ export async function fetchWithBudget(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+
+  if (opts.bodyStallMs === undefined || response.body === null) return response;
+  return withBodyStallBound(response, response.body, url, opts.bodyStallMs, controller);
+}
+
+/** `response` with its body read through a stall timer (see `bodyStallMs`). */
+function withBodyStallBound(
+  response: Response,
+  source: ReadableStream<Uint8Array>,
+  url: string,
+  stallMs: number,
+  controller: AbortController,
+): Response {
+  const reader = source.getReader();
+  const body = new ReadableStream<Uint8Array>(
+    {
+      // pull runs only when the consumer wants bytes, so the timer measures
+      // the network's silence and never the consumer's pace.
+      async pull(out) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const stalled = new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            const err = new FetchBudgetTimeoutError(url, stallMs, 'attempt');
+            controller.abort(err);
+            reader.cancel(err).catch(() => {});
+            reject(err);
+          }, stallMs);
+        });
+        try {
+          const chunk = await Promise.race([reader.read(), stalled]);
+          if (chunk.done) out.close();
+          else out.enqueue(chunk.value);
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+      cancel(reason) {
+        return reader.cancel(reason);
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const guarded = new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+  Object.defineProperty(guarded, 'url', { value: response.url });
+  Object.defineProperty(guarded, 'redirected', { value: response.redirected });
+  return guarded;
 }
 
 /**

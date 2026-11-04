@@ -2,14 +2,21 @@
  * fetchWithRetry — rate-limit-header-aware retry wrapper around fetch.
  *
  * Retries on:
- *   - 429 Too Many Requests — honors `Retry-After` (seconds) and
+ *   - 429 Too Many Requests, for every method, since the server did not
+ *     process the request. Honors `Retry-After` (seconds) and
  *     `X-RateLimit-Reset` (epoch seconds) when present, else
  *     exponential-backoff with jitter.
- *   - 5xx — exponential backoff.
- *   - Network errors (TypeError thrown by fetch) — exponential backoff.
+ *   - 5xx and errors thrown by fetch, only for an idempotent request
+ *     (see `idempotent` below). Either can follow a write the server
+ *     already committed, so a POST answered 502 is returned, not sent
+ *     again (sprigr-app-kit#83). Exponential backoff.
  *
  * Does NOT retry: 4xx other than 429 (caller's bug), redirects, 401
- * (auth — caller decides whether to refresh + retry).
+ * (auth — caller decides whether to refresh + retry), or an abort or
+ * timeout from the caller's signal. A signal that fires during a backoff
+ * ends the call with its reason; no further attempt is made.
+ *
+ * A response dropped for a retry has its body cancelled.
  */
 
 export interface FetchWithRetryOptions {
@@ -18,6 +25,17 @@ export interface FetchWithRetryOptions {
   baseBackoffMs?: number;
   /** Hard cap on total wait across all retries (ms). */
   maxTotalWaitMs?: number;
+  /**
+   * Whether the request is safe to send again after a 5xx or a thrown
+   * network error. Default: true for GET, HEAD, OPTIONS, PUT and DELETE
+   * (idempotent by RFC 9110), and for any request carrying a non-empty
+   * `Idempotency-Key` or `Idempotency-Token` header; false for POST and
+   * PATCH otherwise. Pass true for a read sent as POST (GraphQL, search);
+   * pass false for a PUT or DELETE the provider does not treat as
+   * idempotent, or to keep any request to one attempt. A 429 is retried
+   * either way.
+   */
+  idempotent?: boolean;
   /** Called with each attempt's failure metadata; useful for logging. */
   onRetry?: (info: { attempt: number; status: number | null; waitMs: number; reason: string }) => void;
 }
@@ -34,35 +52,65 @@ export async function fetchWithRetry(
   opts: FetchWithRetryOptions = {},
 ): Promise<Response> {
   const cfg = { ...DEFAULT_OPTS, ...opts };
+  const request = typeof Request !== 'undefined' && input instanceof Request ? input : null;
+  const signal = init?.signal ?? request?.signal ?? null;
+  const idempotent = opts.idempotent ?? isIdempotentRequest(init, request);
   let totalWait = 0;
   let lastError: unknown = null;
 
   for (let attempt = 1; attempt <= cfg.maxAttempts; attempt++) {
+    let resp: Response;
     try {
-      const resp = await fetch(input, init);
-      if (resp.status === 429 || resp.status >= 500) {
-        if (attempt === cfg.maxAttempts) return resp;
-        const wait = waitForResponse(resp, attempt, cfg);
-        if (totalWait + wait > cfg.maxTotalWaitMs) return resp;
-        opts.onRetry?.({ attempt, status: resp.status, waitMs: wait, reason: resp.status === 429 ? 'rate_limited' : 'server_error' });
-        await sleep(wait);
-        totalWait += wait;
-        continue;
-      }
-      return resp;
+      resp = await fetch(input, init);
     } catch (err) {
       lastError = err;
-      if (attempt === cfg.maxAttempts) throw err;
+      // Thrown after the request may have been sent: only an idempotent
+      // request goes again, and never one the caller's signal stopped.
+      if (!idempotent || isAbort(err, signal) || attempt === cfg.maxAttempts) throw err;
       const wait = expBackoff(attempt, cfg.baseBackoffMs);
       if (totalWait + wait > cfg.maxTotalWaitMs) throw err;
       opts.onRetry?.({ attempt, status: null, waitMs: wait, reason: 'network_error' });
-      await sleep(wait);
+      await sleep(wait, signal);
       totalWait += wait;
+      continue;
     }
+    const retryable = resp.status === 429 || (resp.status >= 500 && idempotent);
+    if (!retryable || attempt === cfg.maxAttempts) return resp;
+    const wait = waitForResponse(resp, attempt, cfg);
+    if (totalWait + wait > cfg.maxTotalWaitMs) return resp;
+    opts.onRetry?.({ attempt, status: resp.status, waitMs: wait, reason: resp.status === 429 ? 'rate_limited' : 'server_error' });
+    await discardBody(resp);
+    await sleep(wait, signal);
+    totalWait += wait;
   }
 
   // Should not reach here, but type narrowing.
   throw lastError ?? new Error('fetchWithRetry exhausted');
+}
+
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
+const IDEMPOTENCY_HEADERS = ['idempotency-key', 'idempotency-token'];
+
+function isIdempotentRequest(init: RequestInit | undefined, request: Request | null): boolean {
+  const method = (init?.method ?? request?.method ?? 'GET').toUpperCase();
+  if (IDEMPOTENT_METHODS.has(method)) return true;
+  const headers = new Headers(init?.headers ?? request?.headers);
+  return IDEMPOTENCY_HEADERS.some((name) => (headers.get(name) ?? '').trim() !== '');
+}
+
+function isAbort(err: unknown, signal: AbortSignal | null): boolean {
+  if (signal?.aborted) return true;
+  const name = (err as { name?: unknown } | null)?.name;
+  return name === 'AbortError' || name === 'TimeoutError';
+}
+
+/** Free the connection a dropped response holds. A body already locked or errored has nothing to free. */
+async function discardBody(resp: Response): Promise<void> {
+  try {
+    await resp.body?.cancel();
+  } catch {
+    // nothing to free
+  }
 }
 
 function waitForResponse(resp: Response, attempt: number, cfg: { baseBackoffMs: number }): number {
@@ -89,6 +137,19 @@ function expBackoff(attempt: number, base: number): number {
   return Math.floor(expo * jitter);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+/** Wait `ms`, or reject with the signal's reason as soon as it fires. */
+function sleep(ms: number, signal: AbortSignal | null): Promise<void> {
+  if (!signal) return new Promise((r) => setTimeout(r, ms));
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }

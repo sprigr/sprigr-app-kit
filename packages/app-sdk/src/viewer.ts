@@ -303,20 +303,16 @@ export async function resolveViewerContext(
 /**
  * The viewer's platform user id, or null.
  *
- * The narrow shape the twelve hand-rolled `viewer.ts` copies exposed, so an
- * app can migrate onto the SDK in one import change and adopt the richer
- * context later. `allowTransportFallback` defaults to TRUE here and only
- * here, because that is exactly what those copies did — an app that wants
- * the stronger guarantee should call `resolveViewerContext` directly.
+ * The narrow shape the hand-rolled per-app `viewer.ts` copies exposed. Like
+ * `resolveViewerContext` it trusts only the signed token unless the call site
+ * passes `allowTransportFallback: true`. Any install that runs this version
+ * was rebuilt when it upgraded, and a rebuild binds `SPRIGR_VIEWER_SECRET`.
  */
 export async function resolveViewerUserId(
   headers: Headers,
   env: ViewerEnv,
   options: ResolveViewerOptions = {},
 ): Promise<string | null> {
-  const viewer = await resolveViewerContext(headers, env, {
-    allowTransportFallback: true,
-    ...options,
-  });
+  const viewer = await resolveViewerContext(headers, env, options);
   return viewer?.platformUserId ?? null;
 }

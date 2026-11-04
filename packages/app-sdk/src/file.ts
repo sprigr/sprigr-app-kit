@@ -51,6 +51,9 @@ export function base64ToBytes(b64: string): Uint8Array {
  */
 export const DEFAULT_MAX_FILE_BYTES = 20 * 1024 * 1024;
 
+/** Redirects `fetchFileBytes` follows before it refuses with `too_many_redirects`. */
+export const MAX_FILE_REDIRECTS = 5;
+
 /** Hosts the platform serves signed file links from (the file proxy, prod and staging). */
 export const SPRIGR_FILE_HOSTS: ReadonlySet<string> = new Set(['files.sprigr.com', 'staging-files.sprigr.com']);
 
@@ -60,13 +63,14 @@ export const SPRIGR_FILE_HOSTS: ReadonlySet<string> = new Set(['files.sprigr.com
  * call it chose (sprigr/sprigr-app-kit#185). A list is the only hosts, over
  * https. `'any'` is for an app whose tool takes a public URL by design: http
  * or https to any host except a private, loopback or link-local IP literal,
- * `localhost` or `*.local`. It checks the URL as written: a hostname is not
- * resolved and a redirect is still followed, so it is defence in depth over
- * the Workers runtime, which cannot reach private networks anyway.
+ * `localhost` or `*.local`. A hostname is not resolved, so under `'any'` this
+ * is defence in depth over the Workers runtime, which cannot reach private
+ * networks anyway. Every redirect hop passes the same check
+ * (sprigr/sprigr-app-kit#188).
  */
 export type AllowedFileHosts = Iterable<string> | 'any';
 
-export type FileUrlRefusal = 'bad_url' | 'not_https' | 'host_not_allowed' | 'private_address';
+export type FileUrlRefusal = 'bad_url' | 'not_https' | 'host_not_allowed' | 'private_address' | 'too_many_redirects';
 
 /** The URL was refused before any request was made. The message is written for the agent. */
 export class FileUrlRefusedError extends Error {
@@ -175,6 +179,63 @@ export function assertFetchableFileUrl(url: string, allowedHosts: AllowedFileHos
   return u;
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/** Headers that carry the caller's credentials, dropped when a hop leaves the origin (as fetch itself drops Authorization). */
+const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie'];
+
+/**
+ * Fetch `first` (already checked), following redirects one hop at a time so
+ * each Location passes `assertFetchableFileUrl` under the same
+ * `allowedHosts` before it is requested (sprigr/sprigr-app-kit#188). The
+ * runtime's own follow would request a refused host unchecked. Mirrors
+ * fetch's follow otherwise: a relative Location resolves against the current
+ * URL, a 303 (or a 301/302 after a POST) continues as a body-less GET, and
+ * credentials are not sent to another origin. `redirect: 'manual'` is passed
+ * through untouched; `redirect: 'error'`, which Workers refuses outright,
+ * means no hop at all, so any redirect is refused.
+ */
+async function fetchCheckingRedirects(first: URL, allowedHosts: AllowedFileHosts | undefined, init: RequestInit = {}): Promise<Response> {
+  if (init.redirect === 'manual') return fetch(first.href, init);
+  const maxRedirects = init.redirect === 'error' ? 0 : MAX_FILE_REDIRECTS;
+  let url = first;
+  let method = (init.method ?? 'GET').toUpperCase();
+  let body = init.body;
+  const headers = new Headers(init.headers);
+  for (let hop = 0; ; hop++) {
+    const res = await fetch(url.href, { ...init, method, body, headers: new Headers(headers), redirect: 'manual' });
+    const location = res.headers.get('location');
+    if (!REDIRECT_STATUSES.has(res.status) || !location) return res;
+    await res.body?.cancel().catch(() => {});
+    if (hop >= maxRedirects) {
+      throw new FileUrlRefusedError(
+        'too_many_redirects',
+        maxRedirects === 0
+          ? `file URL ${url.host} redirected, and this fetch was made with redirect: 'error', so the redirect was not followed.`
+          : `file URL redirected more than ${MAX_FILE_REDIRECTS} times; nothing was fetched from the last hop.`,
+      );
+    }
+    let next: URL;
+    try {
+      next = assertFetchableFileUrl(new URL(location, url).href, allowedHosts);
+    } catch (err) {
+      const refused = err instanceof FileUrlRefusedError ? err : new FileUrlRefusedError('bad_url', 'unreadable Location');
+      throw new FileUrlRefusedError(
+        refused.code,
+        `file URL ${url.host} redirected to a URL this tool may not fetch, so nothing was fetched from it: ${refused.message}`,
+      );
+    }
+    if (res.status === 303 ? method !== 'GET' && method !== 'HEAD' : (res.status === 301 || res.status === 302) && method === 'POST') {
+      method = 'GET';
+      body = undefined;
+      headers.delete('content-type');
+      headers.delete('content-length');
+    }
+    if (next.origin !== url.origin) for (const h of CREDENTIAL_HEADERS) headers.delete(h);
+    url = next;
+  }
+}
+
 export interface FetchFileOptions {
   maxBytes?: number;
   init?: RequestInit;
@@ -197,15 +258,16 @@ export interface FetchFileResult {
  * Use this for any "the app fetches a caller-supplied URL" path — e.g. a
  * Sprigr file-proxy signed URL passed in lieu of inline base64. The URL is
  * checked against `allowedHosts` first (default SPRIGR_FILE_HOSTS, https);
- * a refused URL throws FileUrlRefusedError and nothing is fetched.
+ * a refused URL throws FileUrlRefusedError and nothing is fetched. Up to
+ * MAX_FILE_REDIRECTS redirects are followed, each hop checked the same way.
  */
 export async function fetchFileBytes(
   url: string,
   opts: FetchFileOptions = {},
 ): Promise<FetchFileResult> {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_FILE_BYTES;
-  assertFetchableFileUrl(url, opts.allowedHosts);
-  const res = await fetch(url, opts.init);
+  const first = assertFetchableFileUrl(url, opts.allowedHosts);
+  const res = await fetchCheckingRedirects(first, opts.allowedHosts, opts.init);
   if (!res.ok) {
     throw new Error(`fetchFileBytes: HTTP ${res.status} fetching file URL`);
   }

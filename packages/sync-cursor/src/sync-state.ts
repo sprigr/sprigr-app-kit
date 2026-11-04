@@ -24,7 +24,8 @@
  *
  * `cursor` semantics are app-defined: an ISO timestamp, an opaque
  * page-info token, a numeric offset, whatever the provider exposes.
- * Null means "not started yet" (or after clear()).
+ * Null means "not started yet": before the first page, after clear(), or
+ * after a completed walk (runResumablePage writes null on the last page).
  */
 
 import type { D1Like } from './types';

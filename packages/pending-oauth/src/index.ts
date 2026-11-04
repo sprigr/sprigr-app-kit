@@ -11,6 +11,11 @@
  *                             second table, so a replayed callback of a
  *                             connect that already worked can be told
  *                             apart from a bad state.
+ *   `makeOAuthRefusals`     - sha-256 refusal markers in a third table, so
+ *                             a reload of a refused callback repeats the
+ *                             refusal.
+ *   `consumeOAuthCallback`  - the callback entry point: consume, or say
+ *                             why the row is missing.
  *
  * Apps pick their own table names and own the migrations. An app wires it
  * up in `src/lib/pending-oauth.ts`, which pins the table literals and the
@@ -25,5 +30,13 @@ export type { PendingOAuthStore, MakePendingOAuthStoreOpts } from './store';
 
 export { makeOAuthCompletions, COMPLETION_WINDOW_MS, COMPLETION_TRIM_MS } from './completions';
 export type { OAuthCompletions, MakeOAuthCompletionsOpts } from './completions';
+
+export { makeOAuthRefusals, consumeOAuthCallback } from './refusals';
+export type {
+  OAuthRefusals,
+  MakeOAuthRefusalsOpts,
+  OAuthCallbackOutcome,
+  ConsumeOAuthCallbackOpts,
+} from './refusals';
 
 export type { D1Like, D1PreparedStatementLike, PendingStateBase } from './types';

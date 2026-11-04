@@ -186,6 +186,7 @@ const defaultManifest = {
           label: `${NAME} OAuth client id`,
           type: "secret",
           required: true,
+          publisher_provides: true,
           description: `Publisher-provided OAuth client id for the ${NAME} developer app.`,
         },
         {
@@ -193,6 +194,7 @@ const defaultManifest = {
           label: `${NAME} OAuth client secret`,
           type: "secret",
           required: true,
+          publisher_provides: true,
           description: `Publisher-provided OAuth client secret for the ${NAME} developer app.`,
         },
       ]),
@@ -278,7 +280,7 @@ const packageJson = {
   dependencies: {
     ...Object.fromEntries(KIT_DEPS.map((p) => [`@sprigr/apps-${p}`, KIT_DEP_VERSIONS[p]])),
     "@opennextjs/cloudflare": "1.20.2",
-    next: "15.5.22",
+    next: "15.5.28",
     react: "19.0.0",
     "react-dom": "19.0.0",
   },
@@ -295,8 +297,11 @@ const packageJson = {
     vitest: "^2.0.0",
     // The fulfilment-hub conformance harness: drives every op of the
     // interface against this app's handler map and manifest. Exact-pinned
-    // like every other kit package.
-    ...(IS_ADAPTER ? { "@sprigr/apps-fulfilment-conformance": "0.1.0" } : {}),
+    // like every other kit package. 0.5.0 is the first that drives two
+    // simultaneous push_order deliveries (sprigr-app-kit#78), the case the
+    // generated claim-first push_order exists for; on an older pin a
+    // generated adapter could drift back to read-then-push and still pass.
+    ...(IS_ADAPTER ? { "@sprigr/apps-fulfilment-conformance": "0.5.0" } : {}),
     // Declared explicitly so the marketplace build-runner's no-lockfile npm
     // install never has to auto-pick wrangler as OpenNext's peer: the
     // auto-pick is engine-filtered by the BUILDER's node version and has
@@ -1455,7 +1460,8 @@ console.log(`[create-app] kit deps (exact-pinned): ${KIT_DEPS.map((p) => `@sprig
 
 if (IS_ADAPTER) {
   console.log(adapterNextSteps({ slug: SLUG, name: NAME, template: TEMPLATE }));
-  console.log(`Publish with:
+  console.log(`Publish with (log in first, so validate runs the platform's checks):
+  pnpm lock:app ${APP_LABEL}   # per-app pnpm-lock.yaml; publish refuses without it
   sprigr app validate --dir ${APP_LABEL}
   sprigr app publish  --dir ${APP_LABEL}
 The hub publishes the interface definitions, so an adapter's provides tags
@@ -1493,7 +1499,8 @@ console.log(`
   }
   Then: pnpm -F ${SLUG} typecheck && pnpm -F ${SLUG} test && pnpm -F ${SLUG} build
 
-Publish with:
+Publish with (log in first, so validate runs the platform's checks):
+  pnpm lock:app ${APP_LABEL}   # per-app pnpm-lock.yaml; publish refuses without it
   sprigr app validate --dir ${APP_LABEL}
   sprigr app publish  --dir ${APP_LABEL}
 Subsequent releases need a version bump first (pnpm bump ${SLUG});

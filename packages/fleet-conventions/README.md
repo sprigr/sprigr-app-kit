@@ -46,6 +46,10 @@ The tech-lead-reviewer posts one machine-readable verdict per review round:
   Markdown emphasis (`**`, `_`), newlines and a leading heading are tolerated;
   free prose between the prefix and `VERDICT:` is not. `REQUEST CHANGES` with a
   space is folded to `REQUEST_CHANGES`.
+- An escalation may also be written without `VERDICT:`, as the prefix followed
+  directly by `ESCALATE TO A HUMAN` (the form the reviewer actually posts). It
+  parses as `ESCALATE`. The bare form is accepted for `ESCALATE` only: an
+  `APPROVE` or `REQUEST_CHANGES` still needs `VERDICT:`.
 - `APPROVE` and `REQUEST_CHANGES` are actionable by the merge gate. `ESCALATE`
   is a legitimate verdict for humans that the gate must fail closed on.
 
@@ -61,7 +65,7 @@ The tech-lead-reviewer posts one machine-readable verdict per review round:
 | `parseAnchoredVerdictRuling(body)` | `TechLeadRuling \| null` via the anchored form pattern, so a quoted verdict later in the body can never be read as the comment's own ruling. |
 | `normalizeVerdictRuling(raw)` | Folds a captured ruling to canonical spelling (`REQUEST CHANGES` becomes `REQUEST_CHANGES`). |
 | `isUnparsedVerdictShaped(body)` | COUNT-ONLY: looks like a verdict but did not parse. Never gate on it. |
-| `isUnactionableRuling(body)` | Machine-form ruling the merge gate cannot act on (ESCALATE). The only shape a gate may fail closed on. |
+| `isUnactionableRuling(body)` | The body's own anchored ruling is one the merge gate cannot act on (ESCALATE), so a quoted APPROVE further down cannot hide it. The only shape a gate may fail closed on. |
 | `isMalformedVerdictPost(body)` | POST-TIME ONLY: opens as a reviewer comment, states `VERDICT:` near the top, and fails the form pattern. Refuse the post so the author finds out now. |
 | `verdictNamedSha(body)` | The head SHA a verdict names (marker first, then the `on head \`<sha>\`` prose form), lowercased, or `undefined`. |
 | `TechLeadVerdict`, `TechLeadRuling` | The ruling union types. |

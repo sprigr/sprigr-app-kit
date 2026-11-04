@@ -37,9 +37,26 @@ jobs:
           git diff --exit-code pnpm-lock.yaml
       - name: Vendor drift + migration immutability
         run: pnpm verify:local
+      - name: Migration immutability (base ref's guard)
+        # Run the base branch's copy so a PR cannot weaken the guard and pass itself.
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git show "origin/$BASE_REF:tools/check-migrations-immutable.mjs" > /tmp/guard.mjs
+          node /tmp/guard.mjs "origin/$BASE_REF"
       - name: Package tests
         run: pnpm -r --filter './packages/*' test
+      - name: Embed bundle is fresh
+        # faceted-search's committed dist/facet-browse.js must match its source.
+        # Runs against the committed tree, before "Package builds" (tsup --clean
+        # empties dist/), and never runs build:embed first, which would mask the
+        # drift.
+        run: pnpm -F @sprigr/apps-faceted-search check:embed
       - name: Package builds
         run: pnpm -r --filter './packages/*' --if-present build
-      - name: Reference app
-        run: pnpm -F harvest typecheck && pnpm -F harvest test && pnpm -F harvest build
+      - name: Examples
+        run: |
+          pnpm -r --filter './examples/*' --if-present typecheck
+          pnpm -r --filter './examples/*' --if-present test
+          pnpm -F harvest build

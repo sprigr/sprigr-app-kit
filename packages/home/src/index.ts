@@ -5,8 +5,8 @@
  * `home` block and its validator, the fixture check, and the curated
  * `sprigr/` definitions seed.
  *
- * Published as `@sprigr/apps-home`. Every file except this index and
- * display.ts is a verbatim copy of sprigr-team
+ * Published as `@sprigr/apps-home`. Every file except this index,
+ * display.ts, sdk.ts and testing.ts is a verbatim copy of sprigr-team
  * `packages/shared/src/home-contracts/` (see the README for the source
  * commit), so the platform and the apps validate with the same code. The
  * schema builders (`req`, `opt`, `str`, ...) stay internal.
@@ -96,3 +96,22 @@ export {
 } from './invalidate';
 export type { HomeInvalidateBody, HomeInvalidateInput, HomeInvalidateResult } from './invalidate';
 export { homeDisplayText } from './display';
+export {
+  answerVersion,
+  home,
+  homeTool,
+  identity,
+  metrics,
+  queue,
+  schedule,
+  subjectFacts,
+} from './sdk';
+export type {
+  CompanyHomeHandler,
+  HomeErrorMapping,
+  HomeProvider,
+  HomeToolArgs,
+  HomeToolHandler,
+  HomeToolOptions,
+  PersonHomeHandler,
+} from './sdk';

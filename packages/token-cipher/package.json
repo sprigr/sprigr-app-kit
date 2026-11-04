@@ -1,0 +1,39 @@
+{
+  "name": "@sprigr/apps-token-cipher",
+  "version": "0.1.0",
+  "description": "Seal and open the OAuth tokens an app keeps in its own D1 columns, under the install's platform-minted KEK (the @sprigr/apps-d1-kv envelope), with a decrypt-only release mode as the rollback floor.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsup src/index.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@sprigr/apps-d1-kv": "0.2.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/token-cipher"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}

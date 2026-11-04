@@ -3,7 +3,7 @@
  * validated import. Same caps as both apps; the truncation marker is new.
  */
 import { createHmac } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CONTENT_TRUNCATION_MARKER,
   EXTRACT_STAGING_PREFIX,
@@ -12,13 +12,15 @@ import {
   MAX_EXTRACT_INLINE_BYTES,
   buildExtractJobToken,
   capText,
+  extractBinaryFileContent,
   extractFormatForMime,
   isTextLikeMimeType,
 } from '../src/content';
 import { importFileObjects, partitionValidObjects } from '../src/import';
 import { indexActorFiles } from '../src/indexer';
 import { drainPendingExtractions, refreshPendingExtractions } from '../src/pending';
-import { rig } from './helpers/setup';
+import type { FileIndexingContext, IndexedFileObject } from '../src/types';
+import { clock, rig } from './helpers/setup';
 
 const PDF = 'application/pdf';
 const PPTX = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
@@ -113,6 +115,127 @@ describe('enrichment inside a pass', () => {
     const adapter = { ...r.adapter, downloadText: async () => (asked++, { text: '', throttled: true }) };
     await indexActorFiles(adapter, r.store, r.fp.env, r.scope);
     expect(asked).toBe(1);
+  });
+});
+
+describe('staging put retry on a transient R2 fault (sprigr-team#13096)', () => {
+  // A streamed put is spent by its first attempt, so the bridge cannot retry
+  // it. extractBinaryFileContent re-downloads ONCE and puts the fresh stream.
+  const R2_10001 = 'put: We encountered an internal error. Please try again. (10001)';
+  const OBJ: IndexedFileObject = { objectID: 'gw:file:p', fileId: 'p', acl_principals: ['user:alice@corp.com'] };
+  afterEach(() => vi.restoreAllMocks());
+
+  async function setup(
+    opts: {
+      failures?: string[];
+      payload?: Uint8Array;
+      declareLength?: boolean;
+      redownloadStatus?: number;
+      deadlinePassed?: boolean;
+    } = {},
+  ) {
+    const r = await rig('drive');
+    const payload = opts.payload ?? bytes('pdf text');
+    const files = r.fp.env.SPRIGR!.files!;
+    const realPut = files.putStream!.bind(files);
+    const puts: Array<{ key: string; stream: boolean; length?: number }> = [];
+    const failures = [...(opts.failures ?? [])];
+    files.putStream = async (key, body, o) => {
+      puts.push({ key, stream: body instanceof ReadableStream, length: o?.length });
+      const failure = failures.shift();
+      if (failure) {
+        // Like the bridge: the body is consumed by the attempt that failed.
+        if (body instanceof ReadableStream) await new Response(body).arrayBuffer();
+        r.fp.staged.set(key, new Uint8Array());
+        throw new Error(failure);
+      }
+      return realPut(key, body, o);
+    };
+    let downloads = 0;
+    const adapter = {
+      ...r.adapter,
+      async downloadBinary() {
+        downloads++;
+        if (downloads > 1 && opts.redownloadStatus) return new Response('gone', { status: opts.redownloadStatus });
+        const headers: Record<string, string> =
+          opts.declareLength === false ? {} : { 'content-length': String(payload.byteLength) };
+        return new Response(payload as unknown as ArrayBuffer, { headers });
+      },
+    };
+    const c = clock();
+    const ctx = {
+      env: r.fp.env,
+      now: c.now,
+      ...(opts.deadlinePassed ? { deadline: { at: c.now() - 1 } } : {}),
+    } as unknown as FileIndexingContext;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const run = () => extractBinaryFileContent(adapter, ctx, OBJ, 'pdf');
+    return { r, puts, run, warn, downloads: () => downloads };
+  }
+  const warned = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.map((c) => c.join(' ')).join('\n');
+
+  it('re-downloads once on a (10001) streamed put and stages the fresh stream', async () => {
+    const t = await setup({ failures: [R2_10001] });
+    const got = await t.run();
+    expect(got.text).toBe('pdf text');
+    expect(t.downloads()).toBe(2);
+    expect(t.puts.map((p) => p.stream)).toEqual([true, true]);
+    expect(t.puts[0]!.key).toBe(t.puts[1]!.key);
+    expect(warned(t.warn)).toContain('stage=put branch=stream attempt=1 redownload=not-run');
+    expect(warned(t.warn)).toContain('succeeded after re-download [stage=put branch=stream attempt=2 redownload=ok]');
+    expect(t.r.fp.stagedDeletes).toEqual([t.puts[0]!.key]);
+    expect(t.r.fp.staged.size).toBe(0);
+  });
+
+  it('keeps a large binary streamed on both attempts, fails loudly when the retry fails too, and still deletes the staged copy', async () => {
+    const big = new Uint8Array(5 * 1024 * 1024).fill(65);
+    const t = await setup({ payload: big, failures: [R2_10001, R2_10001] });
+    const got = await t.run();
+    expect(got).toEqual({ text: '' });
+    expect(t.downloads()).toBe(2);
+    expect(t.puts).toEqual([
+      { key: t.puts[0]!.key, stream: true, length: big.byteLength },
+      { key: t.puts[0]!.key, stream: true, length: big.byteLength },
+    ]);
+    expect(t.r.fp.extractCalls).toEqual([]);
+    expect(warned(t.warn)).toMatch(
+      /extract failed for gw:file:p \(pdf\) \[stage=put branch=stream attempt=2 redownload=put-failed\]; leaving content empty: .*\(10001\)/,
+    );
+    expect(t.r.fp.stagedDeletes).toEqual([t.puts[0]!.key]);
+    expect(t.r.fp.staged.size).toBe(0);
+  });
+
+  it('does not re-download on a non-transient put error', async () => {
+    const t = await setup({ failures: ['put: payload_too_large (413)'] });
+    expect(await t.run()).toEqual({ text: '' });
+    expect(t.downloads()).toBe(1);
+    expect(t.puts).toHaveLength(1);
+    expect(warned(t.warn)).toContain('[stage=put branch=stream attempt=1 redownload=not-run]; leaving content empty');
+    expect(t.r.fp.stagedDeletes).toHaveLength(1);
+  });
+
+  it('leaves a buffered put to the bridge retry: no re-download', async () => {
+    const t = await setup({ declareLength: false, failures: [R2_10001] });
+    expect(await t.run()).toEqual({ text: '' });
+    expect(t.downloads()).toBe(1);
+    expect(t.puts.map((p) => p.stream)).toEqual([false]);
+    expect(warned(t.warn)).toContain('[stage=put branch=buffered attempt=1 redownload=not-run]');
+  });
+
+  it('does not re-download past the tick deadline', async () => {
+    const t = await setup({ failures: [R2_10001], deadlinePassed: true });
+    expect(await t.run()).toEqual({ text: '' });
+    expect(t.downloads()).toBe(1);
+    expect(warned(t.warn)).toContain('[stage=put branch=stream attempt=1 redownload=skipped-deadline]');
+  });
+
+  it('names a failed re-download and its status', async () => {
+    const t = await setup({ failures: [R2_10001], redownloadStatus: 404 });
+    expect(await t.run()).toEqual({ text: '' });
+    expect(t.downloads()).toBe(2);
+    expect(t.puts).toHaveLength(1);
+    expect(warned(t.warn)).toContain('[stage=download branch=stream attempt=1 redownload=download-failed redownload_status=404]');
+    expect(t.r.fp.stagedDeletes).toHaveLength(1);
   });
 });
 

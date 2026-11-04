@@ -101,6 +101,10 @@ jobs:
               echo "skip: $name@$version already published"
               continue
             fi
+            # Every publish takes the `latest` dist-tag, so a version below the
+            # current latest would move it backwards (#200). Fail the run.
+            latest=$(npm view "$name" dist-tags.latest 2>/dev/null || true)
+            node tools/check-version-order.mjs "$name" "$version" "$latest"
             echo "packing $name@$version"
             # Built here, with no token in the environment; the tarball is
             # what gets published, so prepublishOnly never has to run.

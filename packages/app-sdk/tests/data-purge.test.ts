@@ -4,7 +4,7 @@ import { deleteSnapshotIds, makeDataClient, purgeIndexByPrefix, snapshotIndexIds
 const BRIDGE_ENV = { SPRIGR_PLATFORM_BASE: 'https://staging-webhooks.sprigr.com/', SPRIGR_INSTALL_TOKEN: 'inst_1.sig' };
 
 /** An in-memory index per logical name, served over the install-token routes. */
-function stubPlatform(rows: Record<string, string[]>, opts: { truncateAt?: number; failDelete?: boolean } = {}) {
+function stubPlatform(rows: Record<string, string[]>, opts: { truncateAt?: number; failDelete?: boolean; cursor?: boolean } = {}) {
   const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
   vi.stubGlobal('fetch', async (url: string, init: RequestInit) => {
     const path = new URL(url).pathname;
@@ -15,6 +15,15 @@ function stubPlatform(rows: Record<string, string[]>, opts: { truncateAt?: numbe
     if (path === '/internal/wfp/data/list-ids') {
       const matched = ids.filter((id) => id.startsWith(String(body.prefix)));
       const cut = opts.truncateAt ?? Infinity;
+      // sprigr-team#11515: a platform with the cursor answers an `after` in
+      // objectID order with `next_after`; one without it ignores the field.
+      if (opts.cursor && typeof body.after === 'string') {
+        const after = body.after;
+        const past = [...new Set(matched)].sort().filter((id) => id > after);
+        const page = past.slice(0, cut);
+        const more = past.length > cut;
+        return Response.json({ ok: true, objectIDs: page, total: page.length, truncated: more, next_after: more ? page[page.length - 1] : null });
+      }
       return Response.json({ ok: true, objectIDs: matched.slice(0, cut), total: matched.length, truncated: matched.length > cut });
     }
     if (path === '/internal/wfp/data/delete') {
@@ -215,6 +224,45 @@ describe('snapshotIndexIds + deleteSnapshotIds', () => {
   it('with no data path at all, reports none and does nothing', async () => {
     const res = await purgeIndexByPrefix({}, ['u:']);
     expect(res).toEqual({ deleted: 0, listed: 0, truncated: false, via: 'none' });
+  });
+});
+
+describe('paging past the 50,000-id cap (sprigr-team#11515)', () => {
+  it('follows next_after to the end on a platform with the cursor, listing every page before deleting', async () => {
+    const rows = { default: ['u:5', 'u:1', 'x:9', 'u:4', 'u:2', 'u:3'] };
+    const calls = stubPlatform(rows, { truncateAt: 2, cursor: true });
+    const res = await purgeIndexByPrefix(BRIDGE_ENV, ['u:']);
+    expect(res).toEqual({ deleted: 5, listed: 5, truncated: false, via: 'http' });
+    expect(rows.default).toEqual(['x:9']);
+    const lists = calls.filter((c) => c.path.endsWith('/list-ids')).map((c) => c.body.after);
+    expect(lists).toEqual(['', 'u:2', 'u:4']);
+    // Every page is listed before the first delete.
+    const firstDelete = calls.findIndex((c) => c.path.endsWith('/delete'));
+    expect(calls.slice(firstDelete).some((c) => c.path.endsWith('/list-ids'))).toBe(false);
+  });
+
+  it('passes after through the binding and reads next_after back', async () => {
+    const listIds = vi.fn(async (_p: string, o?: { after?: string }) =>
+      o?.after === '' ? { objectIDs: ['a:1'], truncated: true, next_after: 'a:1' } : { objectIDs: ['a:2'], truncated: false, next_after: null },
+    );
+    const snap = await snapshotIndexIds({ SPRIGR: { data: { listIds, delete: vi.fn() } } }, ['a:']);
+    expect(snap).toMatchObject({ listed: 2, truncated: false, via: 'binding' });
+    expect(listIds.mock.calls.map((c) => (c[1] as { after?: string }).after)).toEqual(['', 'a:1']);
+  });
+
+  it('stops at the page ceiling, or at a cursor that does not advance, and reports truncated', async () => {
+    let n = 0;
+    const endless = vi.fn(async () => {
+      n += 1;
+      return { objectIDs: [`e:${String(n).padStart(4, '0')}`], truncated: true, next_after: `e:${String(n).padStart(4, '0')}` };
+    });
+    const capped = await snapshotIndexIds({ SPRIGR: { data: { listIds: endless, delete: vi.fn() } } }, ['e:']);
+    expect(capped.truncated).toBe(true);
+    expect(endless.mock.calls.length).toBe(100);
+    const stuck = vi.fn(async () => ({ objectIDs: ['s:1'], truncated: true, next_after: 's:1' }));
+    const looped = await snapshotIndexIds({ SPRIGR: { data: { listIds: stuck, delete: vi.fn() } } }, ['s:']);
+    expect(looped.truncated).toBe(true);
+    expect(stuck.mock.calls.length).toBe(2);
   });
 });
 

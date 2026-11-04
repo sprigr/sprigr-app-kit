@@ -54,12 +54,24 @@
  */
 
 import type { D1Like } from './types';
-import { decryptValue, encryptValue, isEncryptedValue } from './token-crypto';
+import { ENVELOPE_PREFIX, decryptValue, encryptValue, isEncryptedValue } from './token-crypto';
 
 export interface TokenStore {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
   delete?(key: string): Promise<void>;
+}
+
+/** What `makeD1TokenStore` returns: a `TokenStore` plus a legacy-row sweep. */
+export interface D1TokenStore extends TokenStore {
+  delete(key: string): Promise<void>;
+  /**
+   * Seal up to `limit` (default 50) legacy cleartext rows. `get` re-seals
+   * only a row it reads, so a credential that is never read would stay
+   * cleartext; call this from a cron until `remaining` is false. Counts
+   * only, never values. Throws unless the store is in `encrypt` mode.
+   */
+  sealLegacyRows(opts?: { limit?: number }): Promise<{ sealed: number; remaining: boolean }>;
 }
 
 /**
@@ -98,7 +110,7 @@ export interface MakeD1TokenStoreOpts {
   encryption: TokenStoreEncryption;
 }
 
-export function makeD1TokenStore(opts: MakeD1TokenStoreOpts): TokenStore {
+export function makeD1TokenStore(opts: MakeD1TokenStoreOpts): D1TokenStore {
   const { db, table, encryption } = opts;
   assertIdent(table);
   assertEncryption(table, encryption);
@@ -162,18 +174,48 @@ export function makeD1TokenStore(opts: MakeD1TokenStoreOpts): TokenStore {
     async delete(key) {
       await db.prepare(`DELETE FROM ${table} WHERE key = ?`).bind(key).run();
     },
+
+    async sealLegacyRows({ limit = 50 } = {}) {
+      if (!sealsWrites) {
+        throw new Error(`d1-kv: ${table} can seal legacy rows only in mode "encrypt", not "${encryption.mode}".`);
+      }
+      const n = Math.max(1, Math.floor(limit));
+      // One row past the limit tells the caller whether another call is needed.
+      const { results } = await db
+        .prepare(`SELECT key, value FROM ${table} WHERE value NOT LIKE ? LIMIT ?`)
+        .bind(`${ENVELOPE_PREFIX}%`, n + 1)
+        .all<{ key: string; value: string }>();
+      let sealed = 0;
+      for (const row of results.slice(0, n)) {
+        if (await sealIfUnchanged(row.key, row.value)) sealed++;
+      }
+      return { sealed, remaining: results.length > n };
+    },
   };
 
   /**
-   * Best-effort lazy migration of one legacy row.
-   *
-   * A compare-and-set, not an upsert: the row is sealed only if it still
-   * holds the cleartext value this read saw. A token refresh can rotate the
-   * row between the read and this write; an unconditional upsert would then
-   * write the stale token back over the rotated one, and for a provider with
+   * Seal one legacy row with a compare-and-set, not an upsert: the row is
+   * sealed only if it still holds the cleartext value read. A token refresh
+   * can rotate the row in between; an unconditional upsert would write the
+   * stale token back over the rotated one, and for a provider with
    * single-use refresh tokens that strands the install (sprigr/sprigr-apps#2613,
-   * S017-06). When the row has moved on, the UPDATE matches nothing and the
-   * newer value, which `put` already sealed, stands.
+   * S017-06). Answers whether this write sealed the row.
+   */
+  async function sealIfUnchanged(key: string, plaintext: string): Promise<boolean> {
+    const sealed = await encryptValue(kek, plaintext);
+    const res = await db
+      .prepare(
+        `UPDATE ${table} SET value = ?, updated_at = datetime('now') WHERE key = ? AND value = ?`,
+      )
+      .bind(sealed, key, plaintext)
+      .run();
+    // D1 reports meta.changes; a binding that does not is counted as sealed.
+    const changes = (res as { meta?: { changes?: number } } | null)?.meta?.changes;
+    return changes === undefined ? true : changes > 0;
+  }
+
+  /**
+   * Best-effort lazy migration of one legacy row, through `sealIfUnchanged`.
    *
    * Failure here must not fail the read: the caller already has a usable
    * token, and an install that cannot write (a read-replica hiccup, a
@@ -183,13 +225,7 @@ export function makeD1TokenStore(opts: MakeD1TokenStoreOpts): TokenStore {
    */
   async function reseal(key: string, plaintext: string): Promise<void> {
     try {
-      const sealed = await encryptValue(kek, plaintext);
-      await db
-        .prepare(
-          `UPDATE ${table} SET value = ?, updated_at = datetime('now') WHERE key = ? AND value = ?`,
-        )
-        .bind(sealed, key, plaintext)
-        .run();
+      await sealIfUnchanged(key, plaintext);
     } catch (err) {
       const detail = err instanceof Error ? err.message : 'unknown error';
       console.warn(`[d1-kv] could not re-encrypt ${table}.${key} in place: ${detail}`);

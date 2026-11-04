@@ -10,7 +10,7 @@ A deterministic implementer of **`fulfilment-hub/fulfilment_provider` v1.0.0** (
 - **`push_order` acknowledges, it does not fulfil.** It returns `{ status: 'queued', provider_ref }` and stops. The hub learns the outcome from `provider.order.accepted`, which arrives later. An adapter that waits for the warehouse inside the op blows the 25 s dispatch budget the first time the 3PL is slow, and fails the conformance harness.
 - **Idempotency is a read, not a lock.** `push_order` reads `mock_warehouse_requests` by `fulfilment_request_id` and returns the stored `provider_ref` on a hit, so neither the vendor nor D1 is touched twice. The hub's outbox is at-least-once; without this a redelivery ships the order again.
 - **`provider_ref` is `mw_<fulfilment_request_id>`.** Deterministic on purpose: a shakedown can predict every id it will see, and an assertion that reads `mw_fr_01J...` is stable across runs.
-- **One D1 table, written on a miss.** No per-event audit rows. Advancing a request rewrites the one row and reports through `env.SPRIGR.log()`.
+- **One D1 table, claimed before the vendor call.** `push_order` inserts the row first and only the delivery that wrote it calls the vendor, so two deliveries at once, or a retry after a failed write, never push twice (sprigr-app-kit#78). No per-event audit rows. Advancing a request rewrites the one row and reports through `env.SPRIGR.log()`.
 - **Every write op emits its outcome, and the ack is not the outcome.** The hub holds its request open until the event arrives, so an op that acknowledges and emits nothing strands it. `cancel_order` therefore emits `provider.order.cancelled` the moment it records the cancel, and `provider.order.cancel_refused` (with the reason) when the request has already shipped or been delivered - not only a `rejected` ack. The mock is deterministic and knows the answer inside the op; a real adapter emits when the warehouse confirms, which is why the outcome is an event at all. `push_order` is the exception that proves the rule: it cannot know, so its outcome waits for the advance lever.
 - **Every event payload carries `adapter_slug` and `interface_version`**, so the hub can attribute a row to a binding.
 
@@ -21,6 +21,10 @@ mock_warehouse_advance { fulfilment_request_id: 'fr_...' }                 -> ac
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'accept' }   -> provider.order.accepted only
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'ship',
                          carrier: 'DHL', tracking_number: 'D1' }           -> provider.shipment.created
+mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'ship',
+                         carrier: 'iMile', tracking_number: 'IM1',
+                         shipment_ref: 'mws_fr_..._2' }                    -> provider.shipment.created under a new
+                                                                             ref: a carrier hand-off
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'scan',
                          stage: 'first_scan', location: 'Sydney depot' }   -> one provider.shipment.event
 mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'deliver' }  -> four provider.shipment.event,

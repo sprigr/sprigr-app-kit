@@ -24,7 +24,7 @@ sprigr site create --name "My Docs"
 
 Creation deploys a starter page immediately, so the printed URL is live before your first deploy. The `site_...` id is what every other command takes; `sprigr site list` shows every site in the workspace with its id if you lose track of one. Note the starter page counts as deployment v1, so your first real deploy shows up as v2 in `site deployments`.
 
-Options: `--slug` (defaults to a slug of the name; the workspace prefix is stripped so URLs don't stutter), `--description`, `--type website|landing|docs` (dashboard categorization only), `--visibility public|private`, and `--agent <agentId>` to wire the starter page's chat widget to one of your Sprigr agents.
+Options: `--slug` (defaults to a slug of the name; the workspace prefix is stripped so URLs don't stutter), `--description`, `--type website|dashboard|portal|app|docs|store` (dashboard categorization only), `--visibility public|private`, and `--agent <agentId>` to wire the starter page's chat widget to one of your Sprigr agents.
 
 ## 2. Build locally, then deploy
 
@@ -32,10 +32,10 @@ Build the site however you like. For a static site, all you need is a directory 
 
 ```bash
 sprigr deploy site_abc123 --dir ./public                            # static
-sprigr deploy site_abc123 --dir ./.open-next --framework next       # Next.js via @opennextjs/cloudflare
+sprigr deploy site_abc123 --dir . --framework next                  # Next.js: upload the project source; the platform builds it
 ```
 
-Every deploy is the **complete site, not a diff**: include all files each time. Caps: 500 files, 5 MiB per file. `static` and `next` are the frameworks accepted today (`astro`/`remix` flags exist ahead of platform support). The CLI bundles, uploads, and polls the server-side build to a terminal status; exit code 0 means the build succeeded, the deployment pointer flipped, and the serve cache was refreshed: your first fetch after the CLI reports success serves the new content, including brand-new paths. Visitors in other regions may see the previous content for up to about 60 seconds while edge caches refresh, so a stale read from a different network is not a failed deploy.
+Every deploy is the **complete site, not a diff**: include all files each time. Caps: 500 files, 5 MiB per file. The frameworks are `static`, `next`, `astro` and `remix`. For `static` the directory IS the site and needs an `index.html` at its root; for the others, upload the source tree with its `package.json` (not a build output such as `.open-next`), and the platform runs the build. The CLI bundles, uploads, and polls the server-side build to a terminal status; exit code 0 means the build succeeded, the deployment pointer flipped, and the serve cache was refreshed: your first fetch after the CLI reports success serves the new content, including brand-new paths. Visitors in other regions may see the previous content for up to about 60 seconds while edge caches refresh, so a stale read from a different network is not a failed deploy.
 
 Follow-ups:
 

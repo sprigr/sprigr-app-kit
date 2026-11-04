@@ -18,6 +18,7 @@ import { runFulfilmentProviderConformance } from '../src/fulfilment-provider';
 import { runOrderSourceConformance } from '../src/order-source';
 import { formatReport } from '../src/report';
 import type { AdapterHandlers } from '../src/types';
+import { POST_VENDOR_WRITE_FAILURE, failFirstWriteAfterVendor } from './post-vendor-failure';
 
 const PKG_ROOT = join(__dirname, '..');
 const REPO_ROOT = join(PKG_ROOT, '..', '..');
@@ -67,6 +68,29 @@ describe('pnpm create:app --template fulfilment-provider', () => {
       fixtures: { push_order: { warehouse_key: 'main' }, get_stock: { skus: ['TODO-SKU-1'] } },
     });
     expect(failed(report), formatReport(report)).toEqual([]);
+  });
+
+  it('a retry after the warehouse took the order but the record write failed does not push it again (#78)', async () => {
+    type Deps = { store: object; vendor: { calls: number } };
+    const mod = (await import(join(dir, 'src', 'handlers', 'scaffold-wh-provider.ts'))) as {
+      pushOrder: (deps: Deps, args: Record<string, unknown>) => Promise<{ status: string; provider_ref?: string }>;
+    };
+    const { freshDeps } = (await import(join(dir, 'src', 'lib', 'deps.ts'))) as { freshDeps: () => Deps };
+    const deps = freshDeps();
+    const crashing = { ...deps, store: failFirstWriteAfterVendor(deps.store, () => deps.vendor.calls) };
+    const args = {
+      fulfilment_request_id: 'fr_crash',
+      order_id: 'ord_crash',
+      warehouse_key: 'main',
+      lines: [{ line_id: 'ln_1', sku: 'TODO-SKU-1', quantity: 1 }],
+    };
+
+    await expect(mod.pushOrder(crashing, args)).rejects.toThrow(POST_VENDOR_WRITE_FAILURE);
+    expect(deps.vendor.calls).toBe(1);
+
+    const retry = await mod.pushOrder(crashing, args);
+    expect(deps.vendor.calls, 'the retry pushed the order to the warehouse a second time').toBe(1);
+    expect(retry.status).toBe('queued');
   });
 });
 

@@ -69,3 +69,36 @@ scheduled refresh.
 const config: ProviderConfig = { ...baseConfig, timeoutMs: 10_000 };
 await refreshAndPersist(config, store, prefix, false);
 ```
+
+## Revoking the grant on uninstall: `revokeOnUninstall` (0.4.0)
+
+Deleting stored tokens does not end a grant: the provider honours it until it
+expires. Revoke it in your `on_uninstall` hook, which runs before the platform
+purges the install's secrets, so the tokens are still readable
+([decision 0001](../../docs/decisions/0001-revoke-provider-grants-on-uninstall.md)).
+
+```ts
+import { revokeOnUninstall, googleRevoker } from '@sprigr/apps-oauth-utils';
+
+const started = Date.now();
+const rows = await listActorTokens(env.DB); // your own table
+const { revoked, failed, notReached } = await revokeOnUninstall({
+  targets: rows.map((r) => ({ token: r.refreshToken, accountKey: r.email })),
+  revoker: googleRevoker,
+  deadlineAt: started + 12_000, // the hook gets 15 s; leave time to delete rows
+});
+// then delete the rows whatever the outcome, and record the counts
+```
+
+- **One revoke per account.** Rows with the same `accountKey` send one revoke;
+  the rest wait for its answer and send their own token only if it failed.
+- **Bounded.** At most `concurrency` (4) in flight, each cut at `timeoutMs`
+  (5000) with its `signal` aborted, and none started with less than `timeoutMs`
+  left before `deadlineAt`.
+- **Never throws, never returns a token.** A revoker that throws, times out
+  or answers false counts as `failed`.
+
+Revokers: `googleRevoker`, `asanaRevoker({ clientId, clientSecret })`, and
+`formPostRevoker(url, params)` for any endpoint that takes `token` as a form
+POST. A `ProviderRevoker` is `(token, { signal }) => Promise<boolean>`: true
+only when the provider confirmed it.

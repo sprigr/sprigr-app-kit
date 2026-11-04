@@ -19,8 +19,9 @@ export interface ConformanceOptions {
   env: () => unknown;
   /**
    * Number of calls the adapter has made to its fake vendor so far. The
-   * harness reads it before and after each `push_order` to prove the repeat
-   * call was served from the idempotency record rather than the warehouse.
+   * harness reads it before and after each `push_order`, and around two
+   * simultaneous pushes of one id, to prove a repeat was served from the
+   * idempotency record rather than the warehouse.
    * Required for the fulfilment_provider suite.
    */
   vendorCalls?: () => number;

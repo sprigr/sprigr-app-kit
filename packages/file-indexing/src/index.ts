@@ -58,6 +58,7 @@ export {
   CONTENT_FILL_TOKEN_PREFIX,
   CONTENT_FILL_BUDGET_MS,
   IDLE_CONTENT_FILL_BUDGET_MS,
+  IDLE_CONTENT_FILL_MAX_BINARIES,
   CONTENT_FILL_CONCURRENCY,
   CONTENT_FILL_IMPORT_CHUNK,
   MAX_CONTENT_FILLS_PER_PASS,
@@ -108,6 +109,8 @@ export {
   MAX_UNRESOLVED_HOLD_MS,
   PURGE_DELETE_CHUNK,
   MIN_PURGE_LEG_MS,
+  EMPTY_WALKS_BEFORE_PURGE,
+  emptyWalkMarkerKey,
   ACL_REFRESH_INTERVAL_MS,
   ACL_REFRESH_MAX_PAGES_PER_TICK,
   ACL_REFRESH_PAGE_HEADROOM_MS,
@@ -116,13 +119,16 @@ export {
   countIndexedItems,
   purgeIndexPrefix,
   purgeActor,
+  drainPendingPurges,
   aclRefreshDue,
   refreshAclPrincipals,
   actorOfFileRow,
   fileActorStillConnected,
   buildContext,
 } from './indexer';
-export type { IndexActorFilesBudget, FileIndexingOutcome, PurgeActorResult, PurgePrefixResult, AclRefreshOutcome } from './indexer';
+export type { IndexActorFilesBudget, FileIndexingOutcome, PurgeActorResult, PurgePrefixResult, AclRefreshOutcome, DrainPendingPurgesResult } from './indexer';
+export { PURGE_PENDING_TOKEN, MAX_PURGES_PER_DRAIN, isPurgePendingToken, storeSupportsPurgeQueue } from './purge-pending';
+export type { QueuedPurge } from './purge-pending';
 
 export {
   createD1FileIndexingStore,

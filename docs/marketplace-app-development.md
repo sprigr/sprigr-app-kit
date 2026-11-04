@@ -48,7 +48,7 @@ sprigr-app-kit/
 │   ├── d1-kv/                            # D1-backed token / settings stores
 │   └── ...                               # sync-cursor, dedup-latch, webhook-registry, faceted-search
 ├── tools/                                # scaffolder + sync-vendor + version/migration guards
-├── examples/                             # reference apps (harvest, showcase, static-badge, ...)
+├── examples/                             # reference apps (harvest, showcase, mock-warehouse, ...)
 ├── docs/                                 # this file + the rest of the kit docs
 ├── package.json
 ├── pnpm-workspace.yaml
@@ -66,7 +66,7 @@ import { encodeState } from '@sprigr/apps-app-sdk';   // via workspace:*
 
 There are two supported ways to get shared code into a published app:
 
-**1. Depend on the published npm packages (preferred, and what you want).** Every kit package publishes to npm as `@sprigr/apps-*`, so `npm install` in the build sandbox resolves them cleanly. The scaffolder wires these in for you. **Pin them exactly** (`"@sprigr/apps-oauth-utils": "0.1.0"`, no caret): the build-runner reinstalls on every install build, and a version range would roll new helper code into production installs with no app change and no review. Upgrading a helper is a deliberate app release: bump the pin, bump the app version, publish. See [publishing.md](publishing.md) for the full rationale.
+**1. Depend on the published npm packages (preferred, and what you want).** Every kit package publishes to npm as `@sprigr/apps-*`, so the build sandbox installs them from your app's lockfile like any other dependency. The scaffolder wires these in for you. **Pin them exactly** (`"@sprigr/apps-oauth-utils": "0.3.1"`, no caret), so the helper code you tested is the code you ship. Upgrading a helper is a deliberate app release: bump the pin, bump the app version, publish. See [publishing.md](publishing.md) for the full rationale.
 
 **2. Vendor the source (fallback, for a package that is not on npm).** No package in `packages/` is in that position today, so you should not need this. It stays documented because a future package might not be publishable, and because apps that predate a package's first publish still carry a mirror. The mechanism: declare which packages you want in your app's `package.json`, then run the sync script to copy their source into `src/lib/vendor/`.
 
@@ -110,8 +110,8 @@ Single source of truth. Validated server-side at publish.
     "framework": "next"                      // 'next' | 'astro' | 'remix' | 'static'
   },
   "permissions": {
-    "scopes": ["tools:register", "sprigr.data:write", "sprigr.knowledge:write"],
-    "network_domains": [                     // outbound fetch allowlist enforced by WFP
+    "scopes": ["tools:register"],          // platform scopes only; env.SPRIGR.data needs none
+    "network_domains": [                     // every host fetch() calls; undeclared hosts are logged now, refused later
       "api.example.com", "login.example.com"
     ]
   },
@@ -119,7 +119,7 @@ Single source of truth. Validated server-side at publish.
     {
       "key": "PROVIDER_CLIENT_ID",
       "label": "Provider OAuth client_id",
-      "type": "secret",                      // ALWAYS "secret", never "string" (validation rejects)
+      "type": "secret",                      // "secret" (masked) or "text"; anything else fails validation
       "required": true,
       "description": "..."
     }
@@ -139,12 +139,12 @@ Single source of truth. Validated server-side at publish.
       "name": "refresh_tokens",              // snake_case, kebab is rejected
       "cron": "*/45 * * * *",
       "tool": "refresh_provider_tokens",     // must match a tools[].name
-      "scope": "per_install"                 // 'per_install' or 'platform' - "install" alone is rejected
+      "scope": "per_install"                 // 'per_install' (default) or 'per_tenant'; anything else is rejected
     }
   ],
   "tools": [
     {
-      "name": "my_crm",                      // snake_case; collisions across apps allowed (scoped by app)
+      "name": "my_crm",                      // snake_case; prefix with your slug: agents see every app's tools in one namespace
       "description": "...",
       "handler": "src/handlers/my-crm-tool.ts",   // path relative to app dir; built into __sprigr_handlers.js
       "input_schema": { /* JSON Schema for the tool args */ }
@@ -158,6 +158,7 @@ Single source of truth. Validated server-side at publish.
     },
     {
       "name": "my_crm_oauth_callback",        // dispatched by the bouncer
+      "description": "Completes the My CRM OAuth connection. Called by the platform only.",
       "handler": "src/handlers/oauth-callback.ts",
       "internal": true,                       // bouncer-only: keep it off the agent tool list
       "input_schema": { /* { code, state, redirectUri, environment }, state required */ }
@@ -166,12 +167,14 @@ Single source of truth. Validated server-side at publish.
 }
 ```
 
+**Handler files export an object keyed by tool name.** The build merges the default export of every `handler` file into one map and dispatches `/__sprigr/tool/<name>` to `map[name]`. Write `export default { my_crm: async (args, env) => { ... } }`. A default-exported function has no keys, so every call to it answers `404 no_handler`. One file may export several tools.
+
 **Common schema gotchas:**
-- `secrets[].type` must be `"secret"`. `"string"` is rejected with `Invalid secrets[].type`.
+- `secrets[].type` is `"secret"` or `"text"`. `"string"` is rejected with `secrets entry "X" has invalid type "string"`.
 - `schedules[].name` must be snake_case. `refresh-tokens` is rejected; `refresh_tokens` works.
-- `schedules[].scope` must be `"per_install"` or `"platform"`. `"install"` alone is rejected.
-- `runtime.tier` is required for non-agent apps (`"ssr"` for Next.js/Astro/Remix, `"static"` for plain HTML).
-- `permissions.network_domains` is an outbound allowlist - every domain `fetch()` calls **must** be there, including OAuth login hosts. WFP returns a network error otherwise.
+- `schedules[].scope` is `"per_install"` (default: one fire per install) or `"per_tenant"` (one fire per company, even if the app is installed more than once). Any other value fails publish.
+- `runtime.tier` defaults to `"ssr"` (`"static"` for plain HTML). Always set `runtime.framework` (`next`, `astro`, `remix` or `static`): an `ssr` app without it is built as static and fails at build time, not at publish.
+- `permissions.network_domains` lists every domain `fetch()` calls, including OAuth login hosts. Today the platform logs calls to undeclared hosts; once its egress fence moves to enforce mode they will be refused, so declare every host now.
 - `tools[].handler` paths are **relative to the app dir**, not the bundle root. The build-runner adapter resolves them when generating `__sprigr_handlers.js`.
 
 ### Declaring a tool's side effects (`tools[].effects`)
@@ -195,8 +198,8 @@ Typical candidates: `*_or_create_*` composites, `sync_*`, `reconcile_*`, and any
 
 - **Declaring it forces the write tier** regardless of the name: shorter budget, no automatic retry on a dispatch timeout or a DO disconnect, idempotency token forwarded.
 - **Omitting it changes nothing.** The name heuristic decides, exactly as it does for every app published so far. This field is opt-in and inert until you set it.
-- **`"read"` is not accepted.** Declaring `write` can only ever narrow what your app is granted, which is what makes it app-declarable; the opposite direction would let a manifest opt a write into the blind retry, so the platform does not honour it.
-- **A value other than `"write"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
+- **`"read"` is honoured, except for the retry.** On a read-only tool whose name is not a read verb (`preview_*`, `query_*`), it buys the read dispatch budget and timeout wording, lets the tool run in Plan Mode, and skips the chat-turn approval card (decision 0294). The blind retry still goes by the name, so a read tool should still carry a read-verb name where it can. The platform takes the declaration as stated, so declare `"read"` only on a tool that never writes. Today publish still logs a server-side warning calling a `"read"` declaration ignored; that warning is out of date.
+- **A value other than `"write"` or `"read"` is ignored with a publish-time warning**, never a rejection. So is a `"write"` on a read-shaped name (honoured on purpose, but usually a hint the name misdescribes the action). The warning is logged server-side, so it will not show up in the CLI's publish response.
 
 In TypeScript the field is on `ManifestToolLike` in `@sprigr/apps-app-sdk`, typed `AppToolEffectsDeclaration`.
 
@@ -312,7 +315,7 @@ Doc-object shape (one concept per object, recipe-first; the platform injects `ap
 ]
 ```
 
-**Caps + validation** (publish is rejected on violation): ≤ 20 doc files, ≤ 100 objects total, ≤ 4000 chars per `content`; `objectID` must be lowercase kebab/snake and unique across all your docs files; each file must be a JSON array. The CLI checks the declaration shape + that each file exists and parses; the server re-validates the content.
+**Caps + validation** (publish is rejected on violation): ≤ 20 doc files, ≤ 100 objects total, ≤ 4000 chars per `content`; `objectID` must be lowercase kebab/snake and unique across all your docs files; each file must be a JSON array. `sprigr app validate` checks only the declaration shape; publish checks that each file is in the upload and parses, and validates the content.
 
 **Lifecycle:** every publish **replaces** your app's docs (upsert new, prune removed), so deleting an object from the file removes it from the index on the next publish. Deleting the app prunes all its docs. Ingestion is best-effort - a search hiccup logs but never fails your publish.
 
@@ -369,22 +372,25 @@ Every dispatch, your step-function tool receives `args.job` and returns a **dire
 
 ```ts
 // src/handlers/provision.ts
-export default async function provisionStep(args) {
-  const { id, name, step, attempt, params, state, signal } = args.job;
-  // step:    monotonic 0-based counter
-  // attempt: 1-based dispatch attempt of THIS step (resets when the step advances)
-  // params:  immutable, supplied at jobs.start
-  // state:   whatever the previous step's directive persisted (null on step 0)
-  // signal:  present ONLY on the dispatch right after a `wait` -   //          { delivered: true, payload } if jobs.signal resumed it,
-  //          { delivered: false } if the wait timed out
+export default {
+  provision_step: async (args, env) => {
+    const { id, name, step, attempt, params, state, signal } = args.job;
+    // step:    monotonic 0-based counter
+    // attempt: 1-based dispatch attempt of THIS step (resets when the step advances)
+    // params:  immutable, supplied at jobs.start
+    // state:   whatever the previous step's directive persisted (null on step 0)
+    // signal:  present ONLY on the dispatch right after a `wait`:
+    //          { delivered: true, payload } if jobs.signal resumed it,
+    //          { delivered: false } if the wait timed out
 
-  if (step === 0) {
-    const session = await ensureLogin();                       // do one increment of work
-    return { op: 'continue', state: { session }, label: 'logged in' };
-  }
-  // ...
-  return { op: 'complete', result: { appId } };
-}
+    if (step === 0) {
+      const session = await ensureLogin();                       // do one increment of work
+      return { op: 'continue', state: { session }, label: 'logged in' };
+    }
+    // ...
+    return { op: 'complete', result: { appId } };
+  },
+};
 ```
 
 The directive union:
@@ -574,9 +580,10 @@ Plus a companion `@sprigr/apps-oauth-utils` with:
 - `exchangeAuthCode` / `exchangeAndPersist` - code → tokens, persisted with the refresh token written first
 - `getValidAccessToken` / `refreshAndPersist` - race-safe refresh rotation; `ProviderConfig.timeoutMs` (0.3.0) bounds the refresh fetch on scheduled paths, but not for providers that rotate refresh tokens (see its README)
 - `OAuthError` typed errors, with a message that never carries the provider's raw response body
+- `revokeOnUninstall` (0.4.0) - revoke the provider grant in `on_uninstall`, bounded to the hook's 15 s, with `googleRevoker`, `asanaRevoker` and `formPostRevoker`
 
 Three more packages cover the rest of an OAuth app's plumbing. Every OAuth app needs the first two; reach for the third when the app has one token per user:
-- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page.
+- `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page. `makeOAuthRefusals` and `consumeOAuthCallback` do the same for a callback that refused after the consume, so a reload repeats the refusal and its hint.
 - `@sprigr/apps-redact` - `redactSecrets` / `redactErrorMessage` strip codes, client secrets, tokens and API keys out of a string (JSON pairs, form pairs, `Bearer` values, known token prefixes, JSON nested inside a string) while keeping status codes and provider error text. Run every error you store in an audit row or `last_error` column through it.
 - `@sprigr/apps-actor-token-refresh` - `ActorRefreshLatch` coalesces concurrent refreshes for one user onto one in-flight call, and `needsRefresh` / `REFRESH_BUFFER_MS` decide when to refresh. Pass a lease config to `run` for providers that rotate refresh tokens, so two invocations in different isolates never spend the same refresh token.
 
@@ -683,24 +690,106 @@ The binding has no company slug in it, so it survives a company rename. It does 
 
 ### Publish
 ```bash
-# from the app's directory (or with --dir apps/<slug> from the root)
-sprigr app publish --dir .
+pnpm lock:app apps/<slug>                         # per-app pnpm-lock.yaml; commit it
+sprigr app publish --dir apps/<slug> --wait-fanout
 ```
 
 What happens server-side:
 1. The CLI POSTs `{ manifest, files: {path: content, ...} }` to the platform publish endpoint.
-2. The platform validates the manifest, upserts the app record, and creates a new version row with the source files stored on it.
-3. **No build yet** - publish only stages the source. Builds run per-install.
+2. The platform validates the manifest and refuses an app that has dependencies but no lockfile in its directory (`lockfile_required`).
+3. It stores the source, records the version, and makes it the app's current version.
+4. **It then rolls the version out.** Every install that tracks the latest version (the default for a new install) is upgraded and rebuilt. `--wait-fanout` waits for those builds; `sprigr app rollout <slug> <version>` reports progress later. Installs pinned to an older version stay put.
 
 ### Install
 - A user clicks Install in the portal → the platform creates an install record → provisions the per-install website (slug shape `<appSlug>-<lastEightOfInstallId>`, e.g. `my-crm-5oema5wd`) → grants the installer access → enqueues a build job.
-- The build-runner container picks up the job, runs `npm install` + the framework build (e.g. `opennext build` for Next.js), then uploads the bundle to WFP.
+- The build-runner installs strictly from your lockfile (`pnpm install --frozen-lockfile`) and runs the framework build (OpenNext for Next.js), then uploads the bundle to WFP. A version is compiled once; every other install of that version reuses the compiled output with its own bindings.
 - The build-runner allocates the per-install D1 + KV if missing, then attaches all the bindings above.
 - After upload, the platform runs the manifest's `migrations[]` against the per-install D1.
+- The success callback then fires the app's `on_install` hook, if it declares one (see [Lifecycle hooks](#lifecycle-hooks-on_install-on_upgrade-on_uninstall)).
 
 ### Upgrade
-- After publishing a new version, upgrade existing installs via the portal "Upgrade" banner or `sprigr app upgrade <slug>`.
+- Publishing a new version upgrades every install that tracks the latest version automatically. A pinned install moves only when its owner runs `sprigr app upgrade <slug>` or uses the portal's Upgrade banner. Installs never move to a lower version automatically.
 - The install is re-pinned to the latest approved version and the build is re-enqueued with the same website id. The new WFP script replaces the old one; the install URL stays the same; per-install D1 + secrets are preserved.
+- Once `on_install` has succeeded, every successful build fires the app's `on_upgrade` hook, if it declares one (see below).
+
+### Lifecycle hooks: `on_install`, `on_upgrade`, `on_uninstall`
+
+The platform calls three optional hooks around an install. Each one is an ordinary `tools[]` entry, dispatched as `POST /__sprigr/tool/<name>` through the same wrapper route an agent's tool call takes. File and line references in this section are to sprigr-team `main` at f7013d2ac. Most are in `workers/provisioning/src/lifecycle-dispatch.ts`, abbreviated `lifecycle-dispatch.ts`.
+
+**The name must be exactly `on_install`, `on_upgrade` or `on_uninstall`.** The platform finds a hook by comparing names exactly, `t.name === 'on_install'` (`lifecycle-dispatch.ts:270`, `:453`, `:606`). The `<slug>_<op>` prefix the rest of your tools carry does not apply here: a tool named `my_crm_on_install` is never called. The install is stamped `skipped:no_handler`, and nothing else tells you. The fulfilment-hub app shipped to staging this way, with `fh_on_install` and no collections defined (sprigr-app-kit#65).
+
+Declare each hook `"internal": true`. The platform keeps these names off the agent tool list either way (`PLATFORM_LIFECYCLE_HOOK_TOOLS` in `packages/shared/src/utils/marketplace-platform-only-tools.ts:46`). Publish logs a warning when the flag is missing (`:221`), so the flag makes the manifest say what it means.
+
+```jsonc
+{
+  "name": "on_install",                   // exactly this: a prefixed name is never called
+  "handler": "src/handlers/on-install.ts",
+  "internal": true,                       // platform-only: keep it off the agent tool list
+  "input_schema": { "type": "object" }
+}
+```
+
+```ts
+// src/handlers/on-install.ts
+export default {
+  on_install: async (args, env) => {
+    // args: { install_id, company_id, integrations: [{ integration_type, integration_id }] }
+    const { collection } = await env.SPRIGR.collections.define({ /* see "Collections" in platform-reference.md */ });
+    await env.DB.prepare(
+      'INSERT INTO my_crm_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    ).bind('orders_collection', collection).run();
+    // To have a failure retried on the next build, THROW. A returned
+    // { ok: false } is recorded as success, and the hook never runs again.
+    return { collection };
+  },
+};
+```
+
+Your migrations have already run when a hook fires. The build-runner applies `migrations[]` before it posts the success callback that fires the hooks, and a failed migration fails the build, so no hook runs (`workers/build-runner/src/publish-result.ts:593-620`).
+
+#### `on_install`: once, after the first successful build
+
+- **When it fires.** It fires on the callback of every successful build while the install's `on_install_dispatched_at` is NULL or `skipped:<reason>` (`workers/provisioning/src/build-routes.ts:789-816`, `lifecycle-dispatch.ts:247-264`). Normally that means the first build of a new install. If you add `on_install` in a later version, it runs on each existing install's build of that version, because those installs were stamped `skipped:no_handler`.
+- **What it receives.** It receives `{ install_id, company_id, integrations: [{ integration_type, integration_id }] }` as `args`, not an empty object. A deprecated `shopify_integration_id` is added when the install has exactly one Shopify binding (`lifecycle-dispatch.ts:145-157`, `:286-298`).
+- **Time limit.** 60 s, cold start included (`:319`). Defining a collection that is new to the company walks the full provisioning path. Re-declaring an unchanged one is a fast no-op (sprigr-team#8235).
+- **What gets recorded.** The platform stamps `on_install_dispatched_at` on the install. Only a timestamp is final. Every `skipped:*` value is retried on the next successful build (`:247-258`). Nothing re-fires the hook between builds.
+
+| `on_install_dispatched_at` | Meaning | Next successful build |
+|---|---|---|
+| ISO timestamp | The handler returned, whatever it returned (`:359-360`) | Does not fire it (`:258`) |
+| `skipped:no_handler` | No tool named exactly `on_install` (`:270-273`) | Fires it if the manifest now declares one |
+| `skipped:unsupported_kind` | The install has no per-install worker (`:278-280`) | Checks the install again |
+| `skipped:no_ssr` | No deployment to dispatch to yet (`:322-330`) | Retries |
+| `skipped:timeout` | Over the 60 s limit | Retries |
+| `skipped:dispatch_error` | The platform could not reach the worker | Retries |
+| `skipped:handler_failed` | The handler threw, which the wrapper answers with 500, or the bundle has no handler under that name, answered with 404 (`:336-356`) | Retries |
+
+- **Return or throw.** The wrapper answers 200 `{ ok: true, result }` for any value your handler returns, including `{ ok: false, error }` (`containers/build-runner/entrypoint/adapters/sprigr-wrapper.ts:3063-3066`), and the platform records that as a success. To have a failure retried, throw. A retry runs the handler from the top, so make it idempotent: upsert settings rows, and re-declare collections instead of assuming the first attempt got nowhere.
+
+#### `on_upgrade`: every later build
+
+- **When it fires.** It fires on every successful build of the install once `on_install_dispatched_at` holds a real timestamp, whether the build upgrades to a new version or rebuilds the current one. There is no latch and no version check (`lifecycle-dispatch.ts:383-394`, `:466-478`; `build-routes.ts:818-835`).
+- **It needs a successful `on_install`.** An app that declares `on_upgrade` without `on_install` has its installs stamped `skipped:no_handler`, so its `on_upgrade` never fires. If you only need `on_upgrade`, also declare an `on_install`, even one that just returns `{}`. Likewise, while `on_install` keeps failing, `on_upgrade` stays silent.
+- **What it receives.** `{ trigger: 'upgrade', build_id, version_id }` (`:427-431`). Read everything else from your own per-install state.
+- **Time limit.** 60 s (`:501`).
+- **What gets recorded.** Nothing is stamped on the install. A failure is logged and the deployment stands (`:405-407`). The next build fires the hook again anyway.
+- **Make it idempotent.** The hook re-runs on every build, so a handler that is not idempotent applies its effect again each time. The platform calls this "a hard contract, not a nicety" (`:394-399`). Shopify's `register_webhooks` is the model: create what is missing, skip what exists, prune what is stale.
+- **It may also fire on the first build.** Going by the code, a bootstrap build where `on_install` succeeds goes on to fire `on_upgrade` too, though the platform's own comments say a bootstrap build never fires both hooks (sprigr-team#13177; found by reading the code, not reproduced). An idempotent handler is safe either way. Do not read `on_upgrade` as "this is not the first build".
+
+#### `on_uninstall`: before teardown
+
+- **When it fires.** It fires when the install is uninstalled, before the platform tears anything down. At that point the worker, its D1 (with your provider tokens) and its secrets still exist (`lifecycle-dispatch.ts:555-572`). Use it to release what the platform cannot see. The case that motivated it is Xero's app-wide cap on connections (sprigr-apps#1001).
+- **What it receives.** `{ trigger: 'uninstall', install_id, company_id }` (`:585-589`).
+- **Time limit.** 15 s, not 60 (`:633`).
+- **What gets recorded.** Nothing. It is best effort and at most once: a failed or slow handler is logged, and the uninstall goes ahead (`:564-567`).
+- **Revoke your OAuth grant here.** Deleting tokens does not end the grant at the provider. Use `revokeOnUninstall` from `@sprigr/apps-oauth-utils` (0.4.0) within the 15 s, then delete your rows ([decision 0001](decisions/0001-revoke-provider-grants-on-uninstall.md)).
+
+#### Checking whether a hook ran
+
+- **`on_install`.** `GET /api/data/apps/<slug>` returns `app.installation.on_install_dispatched_at` for your company's install. `handleAppDetail` in `workers/provisioning/src/marketplace-listing-routes.ts` passes the install row through. A timestamp means the handler returned. `skipped:no_handler` on an app that declares the hook almost always means the tool name is wrong.
+- **Platform logs.** Every hook logs to the platform's system log under `marketplace.lifecycle.on_install`, `marketplace.lifecycle.on_upgrade` and `marketplace.lifecycle.on_uninstall`, at `info` on success and `warn` on failure (`lifecycle-dispatch.ts:1092-1222`). Only operators can read these today: the install's Recent issues feed does not show them (sprigr-team#13177).
+- **`on_upgrade` and `on_uninstall`.** The platform records nothing an author can read for these two. If you need to know, have the handler record it: one upserted settings row such as `last_upgrade_build_id`, not a new row per run.
+- **Locally.** `sprigr dev` runs a hook like any other tool: `curl -X POST localhost:8666/__sprigr/tool/on_install -d '{"install_id":"inst_dev","company_id":"comp_dev","integrations":[]}'` (see the [build-guide](build-guide.md)).
 
 ### Retire (per-actor apps): `on_actor_retired`
 - A per-actor app (`auth.model: per_actor`) should declare an `internal: true` tool named `on_actor_retired` and wrap its handler with `actorRetiredHook` from `@sprigr/apps-app-sdk` (0.16.0+). The platform calls it when the identity behind one of your actor keys is gone: a member removed, an agent deleted, a companion's bound user id corrected (the OLD key), or an operator retiring an orphan. Revoke the person's grant at the provider and purge what you keep for that key, exactly as your disconnect tool does.

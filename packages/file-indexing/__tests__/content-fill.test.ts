@@ -392,3 +392,65 @@ describe('content_pending and the queue boundaries', () => {
     expect(r.fp.acl.get(oid)).toMatchObject({ content: 'body 1', acl_principals: ['user:alice@corp.com'] });
   });
 });
+
+describe('a fill that finishes past the tick deadline', () => {
+  it('starts no index write after the deadline and keeps the row queued for the next pass', async () => {
+    const r = await rig('dropbox');
+    const c = clock();
+    r.src.pageSize = 100;
+    seedBurst(r, 10);
+    const first = await tick(r, slowText(r, c, 1_000), c, 3_000);
+    expect(first.contentPending).toBe(7);
+
+    // Each download now takes 1.5 s: the fourth starts with 1 s left and
+    // finishes 0.5 s past the deadline.
+    const importAt: number[] = [];
+    const data = r.fp.env.SPRIGR!.data!;
+    const realImport = data.import.bind(data);
+    data.import = async (objects, o) => {
+      importAt.push(c.now());
+      return realImport(objects, o);
+    };
+    const deadlineAt = c.now() + 4_000;
+    const out = await indexActorFiles(slowText(r, c, 1_500), r.store, r.fp.env, r.scope, {
+      deadline: { at: deadlineAt },
+      now: c.now,
+    });
+    expect(c.now()).toBeGreaterThan(deadlineAt);
+    expect(importAt.every((t) => t <= deadlineAt)).toBe(true);
+    // Nothing was written, so nothing left the queue.
+    expect(out.contentFilled ?? 0).toBe(0);
+    expect(await countPendingContentFills(r.store, r.scope)).toBe(7);
+
+    const next = await tick(r, slowText(r, c, 1_000), c, 60_000);
+    expect(next.contentPending).toBe(0);
+  });
+});
+
+describe('a deferred extraction polled past the tick deadline', () => {
+  it('is not imported after the deadline and stays queued', async () => {
+    const r = await rig('dropbox');
+    const c = clock();
+    const rec = JSON.stringify({ objectID: dbx('p1'), acl_principals: ['user:a@b.c'] });
+    await r.store.upsertPendingExtraction({ objectId: dbx('p1'), jobToken: 'slow', recordJson: rec, format: 'pptx' });
+    r.fp.jobs.set('slow', { status: 'done', result: { ok: true, text: 'slide text' } });
+
+    const files = r.fp.env.SPRIGR!.files!;
+    const realJob = files.job!.bind(files);
+    files.job = async (token: string) => {
+      c.advance(2_000);
+      return realJob(token);
+    };
+    let imports = 0;
+    const data = r.fp.env.SPRIGR!.data!;
+    const realImport = data.import.bind(data);
+    data.import = async (objects, o) => {
+      imports++;
+      return realImport(objects, o);
+    };
+    const n = await drainPendingExtractions(r.store, r.fp.env, { deadline: { at: c.now() + 1_000 }, now: c.now, minItemMs: 1 });
+    expect(n).toBe(0);
+    expect(imports).toBe(0);
+    expect((await r.store.listPendingExtractions(10)).length).toBe(1);
+  });
+});

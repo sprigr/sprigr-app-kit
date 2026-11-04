@@ -16,6 +16,13 @@
  *   SELECT completed_at FROM <t> WHERE csrf_hash = ?
  *   DELETE FROM <t> WHERE completed_at < ?
  *
+ * and the refusal-marker SQL (./src/refusals.ts):
+ *   INSERT INTO <t> (csrf_hash, reason, refused_at) VALUES (?, ?, ?)
+ *     ON CONFLICT(csrf_hash) DO UPDATE SET reason = excluded.reason,
+ *                                          refused_at = excluded.refused_at
+ *   SELECT reason, refused_at FROM <t> WHERE csrf_hash = ?
+ *   DELETE FROM <t> WHERE refused_at < ?
+ *
  * The statement matchers are anchored on the full normalised SQL, so a
  * reflow of the emitted text fails loudly here instead of silently
  * changing what the app test suites regex-match on.
@@ -40,6 +47,12 @@ export interface CompletionRow {
  *  table can never be read through the pending-row matchers. */
 export type CompletionState = Record<string, Record<string, CompletionRow>>;
 
+export interface RefusalRow {
+  reason: string;
+  refused_at: number;
+}
+export type RefusalState = Record<string, Record<string, RefusalRow>>;
+
 export interface MockD1 {
   db: D1Like;
   state: DbState;
@@ -47,6 +60,8 @@ export interface MockD1 {
   rows(table: string): TableState;
   /** Completion markers currently in `table`, keyed by csrf_hash. */
   completionRows(table: string): Record<string, CompletionRow>;
+  /** Refusal markers currently in `table`, keyed by csrf_hash. */
+  refusalRows(table: string): Record<string, RefusalRow>;
   /** SQL statements executed, normalised to single spaces. */
   log: string[];
 }
@@ -57,10 +72,11 @@ export function makeMockD1(initial: DbState = {}): MockD1 {
     state[t] = { ...rows };
   }
   const completions: CompletionState = {};
+  const refusals: RefusalState = {};
   const log: string[] = [];
   const db: D1Like = {
     prepare(sql: string): D1PreparedStatementLike {
-      return makeStmt(sql, [], state, completions, log);
+      return makeStmt(sql, [], { state, completions, refusals }, log);
     },
   };
   return {
@@ -69,22 +85,23 @@ export function makeMockD1(initial: DbState = {}): MockD1 {
     log,
     rows: (table) => ensure(state, table),
     completionRows: (table) => ensure(completions, table),
+    refusalRows: (table) => ensure(refusals, table),
   };
 }
 
-function makeStmt(
-  sql: string,
-  args: unknown[],
-  state: DbState,
-  completions: CompletionState,
-  log: string[],
-): D1PreparedStatementLike {
+interface Stores {
+  state: DbState;
+  completions: CompletionState;
+  refusals: RefusalState;
+}
+
+function makeStmt(sql: string, args: unknown[], stores: Stores, log: string[]): D1PreparedStatementLike {
   return {
     bind(...next: unknown[]): D1PreparedStatementLike {
-      return makeStmt(sql, [...args, ...next], state, completions, log);
+      return makeStmt(sql, [...args, ...next], stores, log);
     },
     async run() {
-      const result = execStatement(sql, args, state, completions, log);
+      const result = execStatement(sql, args, stores, log);
       // Report rows changed the way D1 does, for the statements that count.
       if (result && typeof result === 'object' && 'changes' in result) {
         return { meta: { changes: (result as { changes: number }).changes } };
@@ -92,10 +109,10 @@ function makeStmt(
       return {};
     },
     async first<T = unknown>(): Promise<T | null> {
-      return execStatement(sql, args, state, completions, log) as T | null;
+      return execStatement(sql, args, stores, log) as T | null;
     },
     async all<T = unknown>(): Promise<{ results: T[] }> {
-      const result = execStatement(sql, args, state, completions, log);
+      const result = execStatement(sql, args, stores, log);
       const arr = Array.isArray(result) ? result : result == null ? [] : [result];
       return { results: arr as T[] };
     },
@@ -113,13 +130,13 @@ const COMPLETION_UPSERT_RX =
 const COMPLETION_SELECT_RX = /^SELECT completed_at FROM (\w+) WHERE csrf_hash = \?$/;
 const COMPLETION_DELETE_OLD_RX = /^DELETE FROM (\w+) WHERE completed_at < \?$/;
 
-function execStatement(
-  sql: string,
-  args: unknown[],
-  state: DbState,
-  completions: CompletionState,
-  log: string[],
-): unknown {
+const REFUSAL_UPSERT_RX =
+  /^INSERT INTO (\w+) \(csrf_hash, reason, refused_at\) VALUES \(\?, \?, \?\) ON CONFLICT\(csrf_hash\) DO UPDATE SET reason = excluded\.reason, refused_at = excluded\.refused_at$/;
+const REFUSAL_SELECT_RX = /^SELECT reason, refused_at FROM (\w+) WHERE csrf_hash = \?$/;
+const REFUSAL_DELETE_OLD_RX = /^DELETE FROM (\w+) WHERE refused_at < \?$/;
+
+function execStatement(sql: string, args: unknown[], stores: Stores, log: string[]): unknown {
+  const { state, completions, refusals } = stores;
   const normalized = sql.replace(/\s+/g, ' ').trim();
   log.push(normalized);
 
@@ -177,6 +194,29 @@ function execStatement(
     const cutoff = args[0] as number;
     for (const [hash, row] of Object.entries(rows)) {
       if (row.completed_at < cutoff) delete rows[hash];
+    }
+    return null;
+  }
+
+  const rIns = REFUSAL_UPSERT_RX.exec(normalized);
+  if (rIns) {
+    const rows = ensure(refusals, rIns[1] as string);
+    rows[String(args[0])] = { reason: String(args[1]), refused_at: args[2] as number };
+    return null;
+  }
+
+  const rSel = REFUSAL_SELECT_RX.exec(normalized);
+  if (rSel) {
+    const rows = ensure(refusals, rSel[1] as string);
+    return rows[String(args[0])] ?? null;
+  }
+
+  const rDelOld = REFUSAL_DELETE_OLD_RX.exec(normalized);
+  if (rDelOld) {
+    const rows = ensure(refusals, rDelOld[1] as string);
+    const cutoff = args[0] as number;
+    for (const [hash, row] of Object.entries(rows)) {
+      if (row.refused_at < cutoff) delete rows[hash];
     }
     return null;
   }

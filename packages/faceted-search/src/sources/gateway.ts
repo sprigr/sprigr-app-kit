@@ -19,11 +19,35 @@ export function gatewayBase(): string {
     : 'https://api.team.sprigr.com';
 }
 
-/** Parse `#install_id=` from the current URL hash. Null when absent/SSR. */
+/**
+ * The platform's install id shape: `inst_` plus 20 lowercase letters or digits
+ * (sprigr-team `generateId('inst')`, packages/shared/src/utils/id.ts).
+ *
+ * The id goes into a credentialed gateway path, sent with the portal session
+ * cookie. Anything else in it would become path separators, a query or a
+ * fragment there, so a crafted `#install_id=` link could pick a different
+ * install and tool than the page declares (sprigr-apps#2443, #3590). An id that
+ * fails this check is treated as absent: no request is made.
+ */
+const INSTALL_ID_RX = /^inst_[a-z0-9]{20}$/;
+
+export function isValidInstallId(id: string): boolean {
+  return INSTALL_ID_RX.test(id);
+}
+
+/** Parse `#install_id=` from the current URL hash. Null when absent, SSR,
+ *  malformed, or not a well-formed install id. */
 export function readInstallId(): string | null {
   if (typeof window === 'undefined') return null;
   const m = window.location.hash.match(/install_id=([^&]+)/);
-  return m ? decodeURIComponent(m[1]!) : null;
+  if (!m) return null;
+  let id: string;
+  try {
+    id = decodeURIComponent(m[1]!);
+  } catch {
+    return null; // malformed percent-encoding
+  }
+  return isValidInstallId(id) ? id : null;
 }
 
 /**
@@ -36,11 +60,11 @@ export async function invokeTool<T = unknown>(
   installId?: string,
 ): Promise<T> {
   const id = installId ?? readInstallId();
-  if (!id) {
-    throw new Error('Open this search from the Sprigr Apps page (no install context in the URL).');
+  if (!id || !isValidInstallId(id)) {
+    throw new Error('Open this search from the Sprigr Apps page (no valid install id in the URL).');
   }
   const res = await fetch(
-    `${gatewayBase()}/api/v1/data/marketplace/installations/${id}/tools/${encodeURIComponent(toolName)}`,
+    `${gatewayBase()}/api/v1/data/marketplace/installations/${encodeURIComponent(id)}/tools/${encodeURIComponent(toolName)}`,
     {
       method: 'POST',
       credentials: 'include',

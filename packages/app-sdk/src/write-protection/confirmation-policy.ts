@@ -1,4 +1,5 @@
 import type { ConfirmRule, ConfirmationPolicy } from './types';
+import DESTRUCTIVE from './destructive-verbs.json';
 
 /**
  * Declare a dispatcher tool's confirmation policy beside its action registry,
@@ -85,7 +86,11 @@ export function buildConfirmationPolicy(src: PolicySource): ConfirmationPolicy {
  * registry action with one of these prefixes must be gated or listed as
  * deliberately ungated. Reads (`get_`, `list_`, `search_`) are not here.
  */
+/** Destructive verbs, shared with the `sprigr-check-write-protection` CLI so the two cannot drift. */
+export const DESTRUCTIVE_VERBS: readonly string[] = DESTRUCTIVE.verbs;
+
 export const DEFAULT_WRITE_PREFIXES: readonly string[] = [
+  ...new Set([
   'create_', 'update_', 'delete_', 'remove_', 'set_', 'add_', 'archive_', 'unarchive_', 'void_',
   'refund_', 'cancel_', 'send_', 'email_', 'post_', 'publish_', 'unpublish_', 'approve_', 'reject_',
   'submit_', 'allocate_', 'mark_', 'complete_', 'reopen_', 'convert_', 'clone_', 'upload_', 'attach_',
@@ -97,6 +102,8 @@ export const DEFAULT_WRITE_PREFIXES: readonly string[] = [
   'patch_', 'put_', 'write_', 'save_', 'book_', 'schedule_', 'reschedule_', 'escalate_', 'resolve_',
   'dismiss_', 'accept_', 'decline_', 'follow_', 'unfollow_', 'like_', 'comment_', 'deactivate_',
   'activate_', 'suspend_', 'generate_', 'issue_', 'charge_',
+    ...DESTRUCTIVE_VERBS.map((v) => `${v}_`),
+  ]),
 ];
 
 /** Fields a threshold must never be placed on: a numeric string never trips. */

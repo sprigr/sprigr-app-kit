@@ -50,9 +50,13 @@ const INSERT_RX =
  * `datetime('now')` is `YYYY-MM-DD HH:MM:SS`; the strftime form is ISO with
  * milliseconds, identical to what tryClaim writes. A `Date.parse` compare
  * here would hide the exact bug the ISO form fixes.
+ *
+ * Only the bounded form is recognised (#126): one statement deletes at most
+ * the bound LIMIT. An unbounded `DELETE ... WHERE expires_at <= ...` is
+ * unhandled SQL here, so a regression to it fails these tests.
  */
 const DELETE_EXPIRED_RX =
-  /^DELETE FROM (\w+) WHERE expires_at <= (datetime\('now'\)|strftime\('%Y-%m-%dT%H:%M:%fZ', 'now'\))$/;
+  /^DELETE FROM (\w+) WHERE id IN \(SELECT id FROM (\w+) WHERE expires_at <= (datetime\('now'\)|strftime\('%Y-%m-%dT%H:%M:%fZ', 'now'\)) LIMIT \?\)$/;
 
 /** Render "now" the way the given SQLite expression would. */
 export function sqliteNow(expression: string): string {
@@ -76,9 +80,11 @@ function execStatement(sql: string, args: unknown[], state: MockState): D1RunRes
 
   const del = DELETE_EXPIRED_RX.exec(normalized);
   if (del) {
-    const now = sqliteNow(del[2]!);
+    const now = sqliteNow(del[3]!);
+    const limit = Number(args[0]);
     let deleted = 0;
     for (const [id, row] of state.rows) {
+      if (deleted >= limit) break;
       // TEXT comparison, byte-wise, exactly as SQLite does it.
       if (row.expires_at <= now) {
         state.rows.delete(id);
