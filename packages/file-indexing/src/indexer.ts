@@ -21,6 +21,7 @@ import { enrichObjectsWithContent, type ExtractionBudget } from './content';
 import {
   CONTENT_FILL_BUDGET_MS,
   IDLE_CONTENT_FILL_BUDGET_MS,
+  IDLE_CONTENT_FILL_MAX_BINARIES,
   contentFillToken,
   drainContentFills,
   storeSupportsContentFills,
@@ -102,6 +103,10 @@ export interface IndexActorFilesBudget {
    *  `contentFillBudgetMs`). Still bounded by the deadline. Ignored when
    *  `contentFillBudgetMs` is 0. */
   idleContentFillBudgetMs?: number;
+  /** sprigr-team#13478: binaries the idle drain may extract this pass
+   *  (default IDLE_CONTENT_FILL_MAX_BINARIES). A busy pass keeps
+   *  MAX_EXTRACTIONS_PER_RUN, shared with its walk. */
+  idleContentFillMaxBinaries?: number;
   /** 0.1.4 (sprigr-team#10300): do not START a binary extraction (download,
    *  stage, extract) when less than this much of the walk's content deadline
    *  remains; the file is recorded for a content fill instead, exactly like a
@@ -808,6 +813,7 @@ async function runContentFills<TEntry, TEnv extends FileIndexingEnv>(
     ...(budget.maxContentFills !== undefined ? { maxFills: budget.maxContentFills } : {}),
     ...(budget.contentFillConcurrency !== undefined ? { concurrency: budget.contentFillConcurrency } : {}),
     budget: shared.budget,
+    ...(shared.idle ? { maxBinaries: budget.idleContentFillMaxBinaries ?? IDLE_CONTENT_FILL_MAX_BINARIES } : {}),
     throttled: shared.throttled,
     label: shared.label,
     ...(budget.binaryStartReserveMs !== undefined ? { binaryStartReserveMs: budget.binaryStartReserveMs } : {}),
