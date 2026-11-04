@@ -24,6 +24,7 @@ export type { SettingsStore, MakeSettingsStoreOpts } from './settings-store';
 export { makeD1TokenStore } from './token-store';
 export type {
   TokenStore,
+  D1TokenStore,
   MakeD1TokenStoreOpts,
   TokenStoreEncryption,
 } from './token-store';
