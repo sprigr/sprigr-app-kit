@@ -5,7 +5,7 @@ import { requireApproval, type ApprovalSpec } from '../../src/write-protection/r
 describe('emailAudience (sprigr-team decision 0312)', () => {
   it('merges to, cc and bcc into lowercased, deduplicated bare addresses', () => {
     expect(emailAudience({ to: ['Fiq <Fiq@Example.com>', 'b@example.com'], cc: 'fiq@example.com; c@example.com', sender: 'actor' }))
-      .toEqual({ recipients: ['fiq@example.com', 'b@example.com', 'c@example.com'], sender: 'actor' });
+      .toEqual({ recipients: ['fiq@example.com', 'b@example.com', 'c@example.com'], names: ['Fiq', '', ''], sender: 'actor' });
   });
 
   it('is undefined when nothing is sent to, or when any entry is not an address', () => {
