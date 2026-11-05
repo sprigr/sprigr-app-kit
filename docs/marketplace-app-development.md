@@ -458,6 +458,26 @@ Subscribe via `events.subscribes[]` (self-subscription is allowed - the event yo
 
 Finalization is transition-guarded, so each terminal event fires exactly once (no double delivery on retry/replay).
 
+### Event handlers: the 25 s limit and opt-in redelivery
+
+An event handler (any `events.subscribes[]` `handler_tool`, lifecycle or app-emitted) must answer within **25 s**. A handler that runs past it is recorded as `dispatch_timeout` and, by default, never sees that event again. Make the handler fast first: do the minimum, and hand long work to a durable job.
+
+If a handler cannot always fit, opt that subscription into one redelivery path with `idempotent_on`:
+
+```jsonc
+"events": {
+  "subscribes": [
+    { "event": "acme.order.created", "handler_tool": "on_order_created", "idempotent_on": "event_id" }
+  ]
+}
+```
+
+A timed-out delivery is then re-sent after about 60 s, and once more after 120 s if that also fails (at most two redeliveries). The handler gets the same `args.eventId` and `args.payload` each time.
+
+**Key the work itself on the event id, not a "seen" flag.** The cut-off attempt may have stopped part-way or never started the work, so a handler that records "seen" and returns early on the redelivery loses the work. Write the result with the event id as its key (`INSERT ... ON CONFLICT(event_id) DO NOTHING`), pass the event id as the idempotency key to an outside API, or use a claim row you mark `done` only after the work, skipping when it is done. Declaring `idempotent_on` without once-only work double-applies on redelivery.
+
+The platform guide `guide-marketplace-event-timeout-redelivery` (agent docs) has the same rules plus the audit rows to look for.
+
 ### The scoped store - `env.SPRIGR.store`
 
 A small key/value store for state that outlives a single run. Values are strings (`JSON.stringify` objects yourself), ≤ **128KB**, with an optional TTL.
