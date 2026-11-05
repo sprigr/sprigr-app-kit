@@ -21,6 +21,7 @@ import { enrichObjectsWithContent, type ExtractionBudget } from './content';
 import {
   CONTENT_FILL_BUDGET_MS,
   IDLE_CONTENT_FILL_BUDGET_MS,
+  IDLE_CONTENT_FILL_CONCURRENCY,
   IDLE_CONTENT_FILL_MAX_BINARIES,
   contentFillToken,
   drainContentFills,
@@ -39,7 +40,7 @@ import {
   parseQueuedPurge,
   storeSupportsPurgeQueue,
 } from './purge-pending';
-import { EMIT_BUDGET_MS, budgetBelow, deadlinePassed } from './tick-budget';
+import { EMIT_BUDGET_MS, budgetBelow, deadlinePassed, remainingBudgetMs } from './tick-budget';
 import type {
   ChangePage,
   ExtraScopesResult,
@@ -96,7 +97,7 @@ export interface IndexActorFilesBudget {
   /** Rows the content-fill drain reads this pass (default MAX_CONTENT_FILLS_PER_PASS). */
   maxContentFills?: number;
   /** 0.1.3: rows the content-fill drain works on at once (default
-   *  CONTENT_FILL_CONCURRENCY). */
+   *  CONTENT_FILL_CONCURRENCY; IDLE_CONTENT_FILL_CONCURRENCY on an idle pass). */
   contentFillConcurrency?: number;
   /** 0.1.3: the drain's slice on a pass with a deadline whose walk started no
    *  content fetch (default: the larger of IDLE_CONTENT_FILL_BUDGET_MS and
@@ -115,6 +116,10 @@ export interface IndexActorFilesBudget {
    *  kill) one started near the deadline overruns it. Default: no reserve
    *  (scheduled ticks keep their behaviour). */
   binaryStartReserveMs?: number;
+  /** sprigr-team#13478: scopes still to run in this tick, this one included.
+   *  With a deadline, the drain's slice is at most the time left divided by
+   *  this, so a scope that runs first cannot spend the scopes after it. */
+  contentFillScopesLeft?: number;
 }
 
 export interface FileIndexingOutcome {
@@ -803,15 +808,23 @@ async function runContentFills<TEntry, TEnv extends FileIndexingEnv>(
   }
   const busySliceMs = budget.contentFillBudgetMs ?? CONTENT_FILL_BUDGET_MS;
   if (pending === 0 || busySliceMs <= 0) return { filled: 0, pending };
-  const sliceMs = shared.idle
+  let sliceMs = shared.idle
     ? (budget.idleContentFillBudgetMs ?? Math.max(busySliceMs, IDLE_CONTENT_FILL_BUDGET_MS))
     : busySliceMs;
+  const share = budget.contentFillScopesLeft;
+  if (ctx.deadline && share !== undefined && share > 1) {
+    sliceMs = Math.min(sliceMs, Math.max(0, Math.floor(remainingBudgetMs(ctx.deadline, ctx.now) / share)));
+  }
   const startedAt = ctx.now();
   const out: ContentFillOutcome = await drainContentFills(adapter, store, ctx, {
     ...(ctx.deadline ? { deadline: ctx.deadline } : {}),
     budgetMs: sliceMs,
     ...(budget.maxContentFills !== undefined ? { maxFills: budget.maxContentFills } : {}),
-    ...(budget.contentFillConcurrency !== undefined ? { concurrency: budget.contentFillConcurrency } : {}),
+    ...(budget.contentFillConcurrency !== undefined
+      ? { concurrency: budget.contentFillConcurrency }
+      : shared.idle
+        ? { concurrency: IDLE_CONTENT_FILL_CONCURRENCY }
+        : {}),
     budget: shared.budget,
     ...(shared.idle ? { maxBinaries: budget.idleContentFillMaxBinaries ?? IDLE_CONTENT_FILL_MAX_BINARIES } : {}),
     throttled: shared.throttled,
