@@ -15,6 +15,7 @@ import {
   CONTENT_FILL_BUDGET_MS,
   CONTENT_FILL_CONCURRENCY,
   IDLE_CONTENT_FILL_BUDGET_MS,
+  IDLE_CONTENT_FILL_CONCURRENCY,
   MAX_CONTENT_FILLS_PER_PASS,
   contentFillToken,
   countPendingContentFills,
@@ -24,52 +25,13 @@ import { buildContext, indexActorFiles, type IndexActorFilesBudget } from '../sr
 import type { FileIndexingLogEntry, FileIndexingStore, FileSourceAdapter, IndexedFileObject } from '../src/types';
 import type { FakeFile } from './helpers/fake-source';
 import { rig, type Rig } from './helpers/setup';
+import { VirtualTime } from './helpers/virtual-time';
 
 const K = 'u:user_alice';
 const dbx = (id: string) => `dbx:file:${K}:${id}`;
 const WALK_KEY = `dbx-acct-1/${K}`;
 const TICK_MS = 60_000;
 const TICK_INTERVAL_MS = 15 * 60_000;
-
-/** A clock that moves only when every pending task is asleep. */
-class VirtualTime {
-  t = 1_000_000;
-  private timers: Array<{ at: number; seq: number; wake: () => void }> = [];
-  private seq = 0;
-  now = (): number => this.t;
-  sleep(ms: number): Promise<void> {
-    return new Promise((wake) => this.timers.push({ at: this.t + ms, seq: this.seq++, wake }));
-  }
-  advance(ms: number): void {
-    this.t += ms;
-  }
-  /** Settle `p`, moving the clock to the next timer whenever nothing else can run. */
-  async run<T>(p: Promise<T>): Promise<T> {
-    let settled = false;
-    p.then(
-      () => (settled = true),
-      () => (settled = true),
-    );
-    for (let guard = 0; guard < 1_000_000; guard++) {
-      // sql.js answers synchronously behind a promise: a macrotask turn lets
-      // every microtask chain run to its next sleep.
-      await new Promise<void>((r) => setImmediate(r));
-      if (settled) return p;
-      if (this.timers.length === 0) {
-        await new Promise<void>((r) => setImmediate(r));
-        if (settled) return p;
-        throw new Error('virtual time stalled: nothing is asleep and the task has not settled');
-      }
-      this.timers.sort((a, b) => a.at - b.at || a.seq - b.seq);
-      const at = this.timers[0]!.at;
-      this.t = Math.max(this.t, at);
-      const due = this.timers.filter((x) => x.at <= this.t);
-      this.timers = this.timers.filter((x) => x.at > this.t);
-      for (const d of due) d.wake();
-    }
-    throw new Error('virtual time: too many steps');
-  }
-}
 
 interface Probe {
   inFlight: number;
@@ -188,7 +150,7 @@ async function scheduledTick(r: Rig, vt: VirtualTime, adapter: FileSourceAdapter
 }
 
 describe('sprigr-apps#2725: a 300-file burst drains in two scheduled ticks', () => {
-  it('fills 300 queued rows in 2 ticks at 4 in flight, inside the slice, with batched writes', async () => {
+  it('fills 300 queued rows in 2 ticks at 8 in flight, inside the slice, with batched writes', async () => {
     const r = await rig('dropbox');
     await queueBurst(r, 300);
     const vt = new VirtualTime();
@@ -214,18 +176,18 @@ describe('sprigr-apps#2725: a 300-file burst drains in two scheduled ticks', () 
       vt.advance(TICK_INTERVAL_MS);
     }
 
-    // A row starts while 1 s of the 45 s idle slice is left: at 0, 1.1 s, ...,
-    // 44 s, so 41 rows per worker and 164 per tick at 4 in flight.
-    expect(filled).toEqual([164, 136]);
-    expect(pending).toEqual([136, 0]);
+    // A row starts while 1 s of the 45 s idle slice is left: 41 rows per
+    // worker, so 8 in flight could start 328; a drain reads at most 200.
+    expect(filled).toEqual([MAX_CONTENT_FILLS_PER_PASS, 300 - MAX_CONTENT_FILLS_PER_PASS]);
+    expect(pending).toEqual([300 - MAX_CONTENT_FILLS_PER_PASS, 0]);
     expect(withText(r)).toBe(300);
     expect(r.fp.acl.get(dbx('b173'))!.content).toBe('Bulk test file 173');
-    expect(probe.peak).toBe(CONTENT_FILL_CONCURRENCY);
+    expect(probe.peak).toBe(IDLE_CONTENT_FILL_CONCURRENCY);
     // D1: no per-row write beyond 0.1.2's (a batched delete per import chunk).
     expect(writes).toMatchObject({ bumps: 0, singleDeletes: 0, upserts: 0, batchDeleted: 300 });
-    // One data.import per chunk of at most 100 rows: 100+64, then 100+36.
+    // One data.import per chunk of at most 100 rows: 100+100, then 100.
     const fillImports = r.fp.imports.slice(importsBefore).map((b) => b.length);
-    expect(fillImports).toEqual([100, 64, 100, 36]);
+    expect(fillImports).toEqual([100, 100, 100]);
     expect(writes.batchDeletes).toBe(fillImports.length);
   });
 
@@ -291,10 +253,10 @@ describe('sprigr-apps#2725: back-off, exactness and bounds with rows in flight',
     });
     const { out, start } = await scheduledTick(r, vt, adapter, store);
     // 40 filled before the 429, plus the rows that were already in flight
-    // when it answered (at most 3 others); no row starts after it.
-    // Downloads 41 to 44 run together; 41 answers 429, 42 to 44 finish.
-    expect(out.contentFilled).toBe(43);
-    const throttledAt = start + Math.ceil(41 / CONTENT_FILL_CONCURRENCY) * 1_100;
+    // when it answered (at most 7 others); no row starts after it.
+    // Downloads 41 to 48 run together; 41 answers 429, 42 to 48 finish.
+    expect(out.contentFilled).toBe(47);
+    const throttledAt = start + Math.ceil(41 / IDLE_CONTENT_FILL_CONCURRENCY) * 1_100;
     expect(probe.rowStarts.filter((s) => s > throttledAt)).toEqual([]);
     expect(writes.bumps).toBe(0);
     const rows = await r.store.listPendingContentFills!(contentFillToken(WALK_KEY), 500);
@@ -324,12 +286,12 @@ describe('sprigr-apps#2725: back-off, exactness and bounds with rows in flight',
       },
     };
     const { out } = await scheduledTick(r, vt, adapter, r.store);
-    // Re-reads 5 to 8 ran together; 6 answered 429. 5, 7 and 8 see the
-    // throttle before their download and wait too. Only the first four fill.
+    // Re-reads 1 to 8 ran together; 6 answered 429. The other seven see the
+    // throttle before their download and wait too, so none fills.
     expect(reads).toBe(8);
-    expect(out.contentFilled).toBe(4);
+    expect(out.contentFilled).toBeUndefined();
     const rows = await r.store.listPendingContentFills!(contentFillToken(WALK_KEY), 50);
-    expect(rows.length).toBe(20 - out.contentFilled!);
+    expect(rows.length).toBe(20);
     expect(rows.every((x) => x.attempts === 0)).toBe(true);
   });
 
@@ -466,7 +428,7 @@ describe('sprigr-apps#2725: back-off, exactness and bounds with rows in flight',
     expect(logs[0]).toMatchObject({
       level: 'info',
       category: 'file_indexing.content_fill',
-      metadata: { walk_key: WALK_KEY, filled: 30, pending: 0, pending_before: 30, idle: true, peak_in_flight: 4 },
+      metadata: { walk_key: WALK_KEY, filled: 30, pending: 0, pending_before: 30, idle: true, peak_in_flight: IDLE_CONTENT_FILL_CONCURRENCY },
     });
     expect(await countPendingContentFills(r.store, r.scope)).toBe(0);
   });
