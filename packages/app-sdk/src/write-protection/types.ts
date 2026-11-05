@@ -142,6 +142,14 @@ export interface AppApprovalAudience {
   recipients: string[];
   /** 'actor': through the actor's own per-actor connection. 'other': a shared, delegate or service mailbox. */
   sender: 'actor' | 'other';
+  /**
+   * `names[i]` is the display name of `recipients[i]`, '' when unknown, at
+   * most 128 chars each (sprigr-team decision 0318). An unattended workflow
+   * step may only reach people it names; a name lets "message Riley" match
+   * Riley's address. Exactly one entry per recipient, or the platform drops
+   * the whole audience. Optional; an older platform ignores it.
+   */
+  names?: string[];
 }
 
 /** A slot bound to an argument name or dotted path, or a value you state. */
