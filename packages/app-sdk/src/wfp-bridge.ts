@@ -132,7 +132,8 @@ export interface EmitResult {
 export const DEFAULT_EMIT_TIMEOUT_MS = 5_000;
 
 export interface EmitMarketplaceEventOptions extends MarketplaceEventEmitOpts {
-  /** Override the 5s ceiling on the HTTP fallback. */
+  /** Ceiling on the call. On the HTTP fallback it replaces the 5s default; on
+   *  the binding it tightens the runtime's 60 s backstop. */
   timeoutMs?: number;
 }
 
@@ -243,9 +244,14 @@ export async function emitMarketplaceEvent(
   payload: unknown,
   opts?: EmitMarketplaceEventOptions,
 ): Promise<EmitResult> {
-  const { timeoutMs, ...emitOpts } = opts ?? {};
+  const { timeoutMs, signal, ...emitOpts } = opts ?? {};
   const compact = compactOpts(emitOpts);
-  const passThrough = Object.keys(compact).length > 0 ? (compact as MarketplaceEventEmitOpts) : undefined;
+  // signal and timeoutMs bound the binding's own fetch (sprigr-team#14323);
+  // a Promise.race around it would leave the request holding a connection.
+  const bindingOpts: MarketplaceEventEmitOpts = { ...compact };
+  if (signal) bindingOpts.signal = signal;
+  if (timeoutMs !== undefined) bindingOpts.timeoutMs = timeoutMs;
+  const passThrough = Object.keys(bindingOpts).length > 0 ? bindingOpts : undefined;
 
   const injected = bindingEmit(env);
   if (injected) {
@@ -271,7 +277,7 @@ export async function emitMarketplaceEvent(
       bridge,
       '/internal/wfp/emit',
       { event, payload: payload === undefined ? null : payload, ...compact },
-      { label: 'emit', timeoutMs: timeoutMs ?? DEFAULT_EMIT_TIMEOUT_MS },
+      { label: 'emit', timeoutMs: timeoutMs ?? DEFAULT_EMIT_TIMEOUT_MS, signal },
     )) as WfpEmitReply;
     if (reply.ok === false || reply.queued === false) {
       return { emitted: false, via: 'http', eventId: reply.eventId, error: reply.error ?? 'not_queued' };
@@ -342,7 +348,7 @@ export function withSprigrEmitFallback<E extends WfpBridgeEnv & object>(env: E):
       bridge,
       '/internal/wfp/emit',
       { event, payload: payload === undefined ? null : payload, ...compactOpts(opts) },
-      { label: 'emit', timeoutMs: DEFAULT_EMIT_TIMEOUT_MS },
+      { label: 'emit', timeoutMs: opts?.timeoutMs ?? DEFAULT_EMIT_TIMEOUT_MS, signal: opts?.signal },
     )) as WfpEmitReply;
 
   // Preserve any other namespaces already on SPRIGR (data, files, inbox): we
