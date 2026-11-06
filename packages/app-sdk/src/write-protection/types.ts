@@ -134,6 +134,13 @@ export interface AppApprovalEnvelope {
    * person's verified address; an older platform ignores the field.
    */
   audience?: AppApprovalAudience;
+  /**
+   * Technical context for the person deciding: an id, the query, the raw
+   * change. The card shows it collapsed under the summary (sprigr-team
+   * decision 0360). Display only and not part of the hash. Keep the plain
+   * account in `question` and `summary`; an older platform ignores this.
+   */
+  details?: string;
 }
 
 /** `_approval.audience`: every address the call delivers to, and how it is sent. */
