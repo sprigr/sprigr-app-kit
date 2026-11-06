@@ -230,6 +230,14 @@ export interface MarketplaceEventEmitOpts {
    *  non-empty string of at most 512 chars is ignored. Two copies emitted within
    *  about a second can both pass (the store is eventually consistent). */
   dedupId?: string;
+  /** Abort the call from your side. The emit then throws `emit_aborted`. The
+   *  platform call may still complete, so give a retried emit a `dedupId`.
+   *  Client-side only, never sent. Ignored by a runtime older than
+   *  sprigr-team#14323. */
+  signal?: AbortSignal;
+  /** Stop waiting after this many ms (`emit_timeout`). It only tightens the
+   *  runtime's 60 s backstop. Client-side only, never sent. */
+  timeoutMs?: number;
 }
 
 /**

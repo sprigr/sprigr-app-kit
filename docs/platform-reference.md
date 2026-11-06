@@ -415,6 +415,8 @@ It picks the transport for you: the injected binding on `/__sprigr/*` dispatch, 
 
 Record `via` in your audit row. It is the cheapest way to notice the binding silently disappearing again.
 
+To give up on an emit (a batch deadline, a stage cut), pass `signal` (an `AbortSignal`) or `timeoutMs`. Both reach the binding's own fetch, so the request is released instead of holding a connection until the runtime's 60 s backstop, which is what a `Promise.race` around the call does. The result is `emitted: false` with the cause in `error` (on the binding, `env.SPRIGR.emit aborted by the caller` or `... timed out after Nms`; a direct `env.SPRIGR.emit` call throws with `err.code` `emit_aborted` or `emit_timeout`). The platform call may still complete, so pass a `dedupId` on any emit you might retry. Neither option is sent to the platform. A runtime older than sprigr-team#14323 ignores both on the binding path.
+
 Two failure modes it handles that hand-rolled versions miss:
 
 - A **200 with `{queued: false}`** means the platform accepted the call but the enqueue failed. Treating that as success is how an event disappears without a trace (the shopify silent-drop, 2026-05-28). The helper reports `emitted: false`.

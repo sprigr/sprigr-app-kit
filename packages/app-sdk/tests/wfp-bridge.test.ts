@@ -141,6 +141,21 @@ describe('emitMarketplaceEvent — inline route (no env.SPRIGR)', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('a caller signal aborts the HTTP fallback and is never sent', async () => {
+    let sentBody = '';
+    globalThis.fetch = ((_i: unknown, init?: RequestInit) =>
+      new Promise((_res, rej) => {
+        sentBody = String(init?.body);
+        init?.signal?.addEventListener('abort', () => rej(new Error('The operation was aborted')));
+      })) as typeof globalThis.fetch;
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 10);
+    const r = await emitMarketplaceEvent(inlineEnv(), 'a.b.c', {}, { signal: ctl.signal, timeoutMs: 60_000 });
+    expect(r).toMatchObject({ emitted: false, via: 'http' });
+    expect(sentBody).not.toContain('signal');
+    expect(sentBody).not.toContain('timeoutMs');
+  });
+
   it('aborts a hung platform call instead of holding the webhook ack', async () => {
     globalThis.fetch = ((_i: unknown, init?: RequestInit) =>
       new Promise((_res, rej) => {
@@ -190,6 +205,17 @@ describe('emitMarketplaceEvent — dispatch path (env.SPRIGR present)', () => {
     const emit = vi.fn(async () => ({ ok: true, queued: true, settled: 'deduped' as const, eventId: 'evt_first' }));
     const r = await emitMarketplaceEvent(inlineEnv({ SPRIGR: { emit } }), 'a.b.c', {}, { dedupId: 'wh_1' });
     expect(r).toEqual({ emitted: true, via: 'binding', eventId: 'evt_first', settled: 'deduped' });
+  });
+
+  it('hands signal and timeoutMs to the binding so it can release its own fetch', async () => {
+    const emit = vi.fn(async () => ({ ok: true }));
+    const ctl = new AbortController();
+    await emitMarketplaceEvent(inlineEnv({ SPRIGR: { emit } }), 'a.b.c', {}, {
+      dedupId: 'wh_1',
+      signal: ctl.signal,
+      timeoutMs: 8000,
+    });
+    expect(emit).toHaveBeenCalledWith('a.b.c', {}, { dedupId: 'wh_1', signal: ctl.signal, timeoutMs: 8000 });
   });
 
   it('ignores a SPRIGR that has no callable emit', async () => {
