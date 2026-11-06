@@ -105,6 +105,8 @@ export {
   deadlinePassed,
   budgetBelow,
 } from './tick-budget';
+export { ADAPTER_CALLS, callsForRow, newCallTiming, timeAdapter, withCallTiming, withD1Timing } from './tick-timing';
+export type { CallStat, CallTiming } from './tick-timing';
 
 export {
   MAX_WALK_PAGES,
