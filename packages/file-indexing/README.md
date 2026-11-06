@@ -57,6 +57,22 @@ export async function runIndexFiles(env: DropboxEnv) {
 }
 ```
 
+## Timing a tick that runs long
+
+When a tick runs past its budget, the step that was running tells you little.
+`newCallTiming` records each call's count, total and slowest ms, and the ms it
+ran past the deadline (`late`, the column to read):
+
+```ts
+const timing = newCallTiming({ deadlineAt: deadline.at, now });
+const timedEnv = withD1Timing(withCallTiming(env, timing), timing); // files.*, data.*, emit, d1.*
+const adapter = timeAdapter(myAdapter, timing, 'ms');              // ms.fullWalk, ms.downloadBinary, ...
+await timing.time('step.pass', () => indexActorFiles(adapter, store, timedEnv, scope, { deadline }));
+log({ calls: callsForRow(timing.calls), open: timing.open(), untimed: timing.untimed() });
+```
+
+`callsForRow` keeps the slowest calls within a size cap (default 1,800 chars) and counts the rest in `_omitted`.
+
 ## Worked example: a Dropbox adapter
 
 Dropbox's listing is cursor-based like Graph delta: `files/list_folder` (recursive) enumerates everything and ends with a cursor; `files/list_folder/continue` returns changes since a cursor; a `409` with `reset` means the cursor is dead and the app must start over. Principals come from `sharing/list_file_members`, and every file in a shared folder has the same members, so they are cached per shared folder.
