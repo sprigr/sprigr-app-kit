@@ -509,7 +509,7 @@ const shared = await env.SPRIGR.store.get('publisher-session', { scope: 'publish
 
 A `publisher`-scoped call without the `sprigr.jobs:publisher` grant returns `publisher_scope_not_granted` (403).
 
-Every `store` call also takes `signal` (an `AbortSignal`) and `timeoutMs` in its options, to stop waiting from your side: an abort throws `store_<op>_aborted` (e.g. `store_get_aborted`), and a `timeoutMs` throws `store_<op>_timeout`. `timeoutMs` only tightens the 100 s backstop. The platform call may still complete after either. Neither is sent to the platform.
+Every `store` call also takes `signal` (an `AbortSignal`) and `timeoutMs` in its options, to stop waiting from your side: an abort throws `store_<op>_aborted` (e.g. `store_get_aborted`), and a `timeoutMs` throws `store_<op>_timeout`. `timeoutMs` only tightens the 100 s backstop. The platform call may still complete after either. Neither is sent to the platform. The runtime wrapper does this since sprigr-team#14390 (for sprigr-team#14323); an older runtime ignores both.
 
 ## 2d. App cards (interactive chat cards)
 
