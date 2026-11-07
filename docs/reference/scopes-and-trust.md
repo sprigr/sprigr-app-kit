@@ -56,7 +56,7 @@ Today a new version that declares a scope the install does not have still gets i
 2. Each of those scopes is also marked **awaiting review** on the install. A declared scope the installer left out at install time is treated the same way on the next upgrade.
 3. The company's owner or an admin sees a **Review <app>'s new permissions** card on the installed app's page, with **Keep** or **Turn off** for each scope. Installs with scopes awaiting review are also listed on the dashboard's approvals page.
 4. **Keep** leaves the scope granted and clears the review. **Turn off** removes the grant, and later upgrades never add that scope back.
-5. The page's **Permissions** list shows every granted scope with **Remove**, and every turned-off scope with **Restore**. A restored scope goes back to awaiting review and stays off until someone keeps it.
+5. The page's **Permissions** list shows every granted scope with **Remove**, and every turned-off scope with **Ask again**. A scope asked again goes back to awaiting review and stays off until someone keeps it.
 6. Only an owner or admin can decide; anyone else gets 403.
 
 Once a scope is removed or turned off, every call that needs it answers 403 `scope_not_granted`, exactly as for an install that never had it. Each new scope and each decision is recorded in the install's Recent issues feed.
