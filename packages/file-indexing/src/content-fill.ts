@@ -70,6 +70,29 @@ export const IDLE_CONTENT_FILL_BUDGET_MS = 45_000;
  *  about 12 calls in flight at most; a 429 stops new rows on its key. */
 export const CONTENT_FILL_CONCURRENCY = 4;
 
+/** sprigr-team#13478: binaries an idle drain may extract in one pass, in
+ *  place of MAX_EXTRACTIONS_PER_RUN. A binary row cost about 6.7 s on LSR's
+ *  Dropbox (2026-11-04: re-read 0.5 s, download 0.7 s, stage 1.6 s, extract
+ *  3.8 s), so 16 at 4 in flight is about 27 s of the 45 s idle slice, and
+ *  about 40 s at the slowest calls measured. The slice still stops new rows. */
+export const IDLE_CONTENT_FILL_MAX_BINARIES = 16;
+
+/** sprigr-team#13478: rows an idle drain works on at once. Binaries are the
+ *  slow part (8 to 12 s a row on LSR's Dropbox), so at 4 one account's 16 used
+ *  the pass and a second account filled none. */
+export const IDLE_CONTENT_FILL_CONCURRENCY = 8;
+
+/** sprigr-team#13478: binary bytes in flight at once, from each row's recorded
+ *  size. A download without a content-length buffers whole in the 128 MB
+ *  isolate, and 8 rows near the 16 MB inline ceiling would fill it. A row over
+ *  the cap still starts when no other binary is in flight. */
+export const MAX_BINARY_BYTES_IN_FLIGHT = 48 * 1024 * 1024;
+
+/** sprigr-team#13478: with a pass deadline and no reserve from the caller, a
+ *  binary row is not started with less than this left. One still in flight at
+ *  the deadline loses its index write, so its extraction is thrown away. */
+export const DEFAULT_FILL_BINARY_START_RESERVE_MS = 12_000;
+
 /** Rows one pass's drain reads (and at most fills). 100 before 0.1.3. */
 export const MAX_CONTENT_FILLS_PER_PASS = 200;
 
@@ -197,10 +220,16 @@ export interface ContentFillOptions {
   /** Throttle keys that answered 429 this pass; they are not asked again. */
   throttled?: Set<string>;
   label?: string;
+  /** Binaries this drain may extract, counted on `budget` with the walk's
+   *  (default MAX_EXTRACTIONS_PER_RUN). */
+  maxBinaries?: number;
   /** 0.1.4 (sprigr-team#10300): a binary row is not STARTED with less than
    *  this left before the pass `deadline`; it stays waiting (no attempt is
-   *  spent) for a pass with room. */
+   *  spent) for a pass with room. Default with a `deadline`:
+   *  DEFAULT_FILL_BINARY_START_RESERVE_MS. */
   binaryStartReserveMs?: number;
+  /** Binary bytes in flight at once (default MAX_BINARY_BYTES_IN_FLIGHT). */
+  maxBinaryBytesInFlight?: number;
 }
 
 export interface ContentFillOutcome {
@@ -268,6 +297,10 @@ export async function drainContentFills<TEntry>(
   const minItemMs = Math.max(1, opts.minItemMs ?? MIN_ITEM_BUDGET_MS);
   const concurrency = Math.max(1, Math.floor(opts.concurrency ?? CONTENT_FILL_CONCURRENCY) || 1);
   const budget = opts.budget ?? { extracted: 0, deferred: 0 };
+  const maxBinaries = opts.maxBinaries ?? MAX_EXTRACTIONS_PER_RUN;
+  const reserveMs = opts.binaryStartReserveMs ?? (opts.deadline ? DEFAULT_FILL_BINARY_START_RESERVE_MS : undefined);
+  const maxBytes = opts.maxBinaryBytesInFlight ?? MAX_BINARY_BYTES_IN_FLIGHT;
+  let bytesInFlight = 0;
   const throttled = opts.throttled ?? new Set<string>();
   const token = contentFillToken(ctx.walkKey);
 
@@ -320,6 +353,13 @@ export async function drainContentFills<TEntry>(
       return null;
     }
     let mime = row.format;
+    // sprigr-team#13478: a binary the cap cannot take waits before its
+    // re-read and permission read, not after; it spends no attempt.
+    if (budget.extracted >= maxBinaries && contentKindFor(adapter, ctx, object, mime)?.kind === 'binary') {
+      budget.deferred++;
+      out.waiting++;
+      return null;
+    }
     if (adapter.refetchEntry) {
       let entry: TEntry | null;
       try {
@@ -365,21 +405,34 @@ export async function drainContentFills<TEntry>(
       out.waiting++;
       return null;
     }
+    let held = 0;
     if (kind.kind === 'binary') {
       // Same rule as the walk's enrichment: a binary started this late would
       // run past the pass's ceiling. It waits, without spending an attempt.
-      if (opts.binaryStartReserveMs !== undefined && remainingBudgetMs(opts.deadline, now) < opts.binaryStartReserveMs) {
+      if (reserveMs !== undefined && remainingBudgetMs(opts.deadline, now) < reserveMs) {
         out.waiting++;
         return null;
       }
-      if (budget.extracted >= MAX_EXTRACTIONS_PER_RUN) {
+      if (budget.extracted >= maxBinaries) {
         budget.deferred++;
         out.waiting++;
         return null;
       }
+      const size = typeof object.size === 'number' && object.size > 0 ? object.size : 0;
+      if (bytesInFlight > 0 && bytesInFlight + size > maxBytes) {
+        out.waiting++;
+        return null;
+      }
       budget.extracted++;
+      bytesInFlight += size;
+      held = size;
     }
-    const got = await fetchObjectContent(adapter, ctx, object, mime, kind);
+    let got: Awaited<ReturnType<typeof fetchObjectContent>>;
+    try {
+      got = await fetchObjectContent(adapter, ctx, object, mime, kind);
+    } finally {
+      bytesInFlight -= held;
+    }
     if (got.status === 'filled') {
       if (got.text.length === 0) {
         // Nothing to add: the row already holds empty content.

@@ -58,6 +58,10 @@ export {
   CONTENT_FILL_TOKEN_PREFIX,
   CONTENT_FILL_BUDGET_MS,
   IDLE_CONTENT_FILL_BUDGET_MS,
+  IDLE_CONTENT_FILL_MAX_BINARIES,
+  IDLE_CONTENT_FILL_CONCURRENCY,
+  MAX_BINARY_BYTES_IN_FLIGHT,
+  DEFAULT_FILL_BINARY_START_RESERVE_MS,
   CONTENT_FILL_CONCURRENCY,
   CONTENT_FILL_IMPORT_CHUNK,
   MAX_CONTENT_FILLS_PER_PASS,
@@ -101,6 +105,8 @@ export {
   deadlinePassed,
   budgetBelow,
 } from './tick-budget';
+export { ADAPTER_CALLS, callsForRow, newCallTiming, timeAdapter, withCallTiming, withD1Timing } from './tick-timing';
+export type { CallStat, CallTiming } from './tick-timing';
 
 export {
   MAX_WALK_PAGES,

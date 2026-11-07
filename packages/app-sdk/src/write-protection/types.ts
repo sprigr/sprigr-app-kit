@@ -134,6 +134,13 @@ export interface AppApprovalEnvelope {
    * person's verified address; an older platform ignores the field.
    */
   audience?: AppApprovalAudience;
+  /**
+   * Technical context for the person deciding: an id, the query, the raw
+   * change. The card shows it collapsed under the summary (sprigr-team
+   * decision 0360). Display only and not part of the hash. Keep the plain
+   * account in `question` and `summary`; an older platform ignores this.
+   */
+  details?: string;
 }
 
 /** `_approval.audience`: every address the call delivers to, and how it is sent. */
@@ -142,6 +149,14 @@ export interface AppApprovalAudience {
   recipients: string[];
   /** 'actor': through the actor's own per-actor connection. 'other': a shared, delegate or service mailbox. */
   sender: 'actor' | 'other';
+  /**
+   * `names[i]` is the display name of `recipients[i]`, '' when unknown, at
+   * most 128 chars each (sprigr-team decision 0318). An unattended workflow
+   * step may only reach people it names; a name lets "message Riley" match
+   * Riley's address. Exactly one entry per recipient, or the platform drops
+   * the whole audience. Optional; an older platform ignores it.
+   */
+  names?: string[];
 }
 
 /** A slot bound to an argument name or dotted path, or a value you state. */

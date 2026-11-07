@@ -9,6 +9,9 @@
  *   UPDATE <t> SET value = ?, updated_at = datetime('now') WHERE key = ? AND value = ?
  *   DELETE FROM <t> WHERE key = ?
  *   SELECT key, value FROM <t>
+ *   SELECT key, value FROM <t> WHERE value NOT LIKE ? LIMIT ?
+ *
+ * `run` answers `{ meta: { changes } }` like D1, for the compare-and-set.
  *
  * Keys are matched literally; nothing is escaped. The mock is for unit
  * tests of d1-kv only.
@@ -37,8 +40,8 @@ function makeStmt(sql: string, args: unknown[], state: DbState): D1PreparedState
       return makeStmt(sql, [...args, ...next], state);
     },
     async run() {
-      execStatement(sql, args, state);
-      return {};
+      const result = execStatement(sql, args, state);
+      return { meta: { changes: typeof result === 'number' ? result : 0 } };
     },
     async first<T = unknown>(): Promise<T | null> {
       return execStatement(sql, args, state) as T | null;
@@ -56,6 +59,7 @@ const INSERT_UPSERT_RX = /^INSERT INTO (\w+) \(key, value, updated_at\)\s+VALUES
 const UPDATE_CAS_RX = /^UPDATE (\w+) SET value = \?, updated_at = datetime\('now'\) WHERE key = \? AND value = \?$/;
 const DELETE_RX = /^DELETE FROM (\w+) WHERE key = \?$/;
 const SELECT_ALL_RX = /^SELECT key, value FROM (\w+)$/;
+const SELECT_UNPREFIXED_RX = /^SELECT key, value FROM (\w+) WHERE value NOT LIKE \? LIMIT \?$/;
 
 function execStatement(sql: string, args: unknown[], state: DbState): unknown {
   const normalized = sql.replace(/\s+/g, ' ').trim();
@@ -81,8 +85,9 @@ function execStatement(sql: string, args: unknown[], state: DbState): unknown {
     const table = cas[1] as string;
     const rows = ensure(state, table);
     const key = String(args[1]);
-    if (rows[key] === String(args[2])) rows[key] = String(args[0]);
-    return null;
+    if (rows[key] !== String(args[2])) return 0;
+    rows[key] = String(args[0]);
+    return 1;
   }
 
   const del = DELETE_RX.exec(normalized);
@@ -91,6 +96,17 @@ function execStatement(sql: string, args: unknown[], state: DbState): unknown {
     const rows = ensure(state, table);
     delete rows[String(args[0])];
     return null;
+  }
+
+  const unprefixed = SELECT_UNPREFIXED_RX.exec(normalized);
+  if (unprefixed) {
+    const rows = ensure(state, unprefixed[1] as string);
+    // SQLite LIKE with a trailing % is a case-insensitive prefix match.
+    const prefix = String(args[0]).replace(/%$/, '').toLowerCase();
+    return Object.entries(rows)
+      .filter(([, value]) => !value.toLowerCase().startsWith(prefix))
+      .slice(0, Number(args[1]))
+      .map(([key, value]) => ({ key, value }));
   }
 
   const all = SELECT_ALL_RX.exec(normalized);

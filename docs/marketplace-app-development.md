@@ -458,6 +458,26 @@ Subscribe via `events.subscribes[]` (self-subscription is allowed - the event yo
 
 Finalization is transition-guarded, so each terminal event fires exactly once (no double delivery on retry/replay).
 
+### Event handlers: the 25 s limit and opt-in redelivery
+
+An event handler (any `events.subscribes[]` `handler_tool`, lifecycle or app-emitted) must answer within **25 s**. A handler that runs past it is recorded as `dispatch_timeout` and, by default, never sees that event again. Make the handler fast first: do the minimum, and hand long work to a durable job.
+
+If a handler cannot always fit, opt that subscription into one redelivery path with `idempotent_on`:
+
+```jsonc
+"events": {
+  "subscribes": [
+    { "event": "acme.order.created", "handler_tool": "on_order_created", "idempotent_on": "event_id" }
+  ]
+}
+```
+
+A timed-out delivery is then re-sent after about 60 s, and once more after 120 s if that also fails (at most two redeliveries). The handler gets the same `args.eventId` and `args.payload` each time.
+
+**Key the work itself on the event id, not a "seen" flag.** The cut-off attempt may have stopped part-way or never started the work, so a handler that records "seen" and returns early on the redelivery loses the work. Write the result with the event id as its key (`INSERT ... ON CONFLICT(event_id) DO NOTHING`), pass the event id as the idempotency key to an outside API, or use a claim row you mark `done` only after the work, skipping when it is done. Declaring `idempotent_on` without once-only work double-applies on redelivery.
+
+The platform guide `guide-marketplace-event-timeout-redelivery` (agent docs) has the same rules plus the audit rows to look for.
+
 ### The scoped store - `env.SPRIGR.store`
 
 A small key/value store for state that outlives a single run. Values are strings (`JSON.stringify` objects yourself), ≤ **128KB**, with an optional TTL.
@@ -580,6 +600,7 @@ Plus a companion `@sprigr/apps-oauth-utils` with:
 - `exchangeAuthCode` / `exchangeAndPersist` - code → tokens, persisted with the refresh token written first
 - `getValidAccessToken` / `refreshAndPersist` - race-safe refresh rotation; `ProviderConfig.timeoutMs` (0.3.0) bounds the refresh fetch on scheduled paths, but not for providers that rotate refresh tokens (see its README)
 - `OAuthError` typed errors, with a message that never carries the provider's raw response body
+- `revokeOnUninstall` (0.4.0) - revoke the provider grant in `on_uninstall`, bounded to the hook's 15 s, with `googleRevoker`, `asanaRevoker` and `formPostRevoker`
 
 Three more packages cover the rest of an OAuth app's plumbing. Every OAuth app needs the first two; reach for the third when the app has one token per user:
 - `@sprigr/apps-pending-oauth` - `makePendingOAuthStore` holds the single-use csrf state between "start connect" and the provider callback, in a per-install D1 table; `makeOAuthCompletions` records a finished connect so your callback can recognise a replayed or reopened callback and report `already_connected` instead of a red "link expired" page. `makeOAuthRefusals` and `consumeOAuthCallback` do the same for a callback that refused after the consume, so a reload repeats the refusal and its hint.
@@ -781,6 +802,7 @@ Your migrations have already run when a hook fires. The build-runner applies `mi
 - **What it receives.** `{ trigger: 'uninstall', install_id, company_id }` (`:585-589`).
 - **Time limit.** 15 s, not 60 (`:633`).
 - **What gets recorded.** Nothing. It is best effort and at most once: a failed or slow handler is logged, and the uninstall goes ahead (`:564-567`).
+- **Revoke your OAuth grant here.** Deleting tokens does not end the grant at the provider. Use `revokeOnUninstall` from `@sprigr/apps-oauth-utils` (0.4.0) within the 15 s, then delete your rows ([decision 0001](decisions/0001-revoke-provider-grants-on-uninstall.md)).
 
 #### Checking whether a hook ran
 

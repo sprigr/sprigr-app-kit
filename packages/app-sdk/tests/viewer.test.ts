@@ -295,12 +295,19 @@ describe('legacy transport fallback', () => {
 });
 
 describe('resolveViewerUserId', () => {
-  it('matches what the hand-rolled per-app copies returned', async () => {
+  it('does not trust the unsigned header unless the call site opts in', async () => {
     const h = new Headers({ [VIEWER_PLATFORM_USER_ID_HEADER]: 'usr_oidc_1' });
-    expect(await resolveViewerUserId(h, {})).toBe('usr_oidc_1');
-    expect(await resolveViewerUserId(new Headers(), {})).toBeNull();
+    expect(await resolveViewerUserId(h, await envFor())).toBeNull();
+    expect(await resolveViewerUserId(h, {})).toBeNull();
+  });
+
+  it('reads the unsigned header when allowTransportFallback is passed', async () => {
+    const fallback = { allowTransportFallback: true };
+    const h = new Headers({ [VIEWER_PLATFORM_USER_ID_HEADER]: 'usr_oidc_1' });
+    expect(await resolveViewerUserId(h, {}, fallback)).toBe('usr_oidc_1');
+    expect(await resolveViewerUserId(new Headers(), {}, fallback)).toBeNull();
     expect(
-      await resolveViewerUserId(new Headers({ [VIEWER_PLATFORM_USER_ID_HEADER]: 'anonymous' }), {}),
+      await resolveViewerUserId(new Headers({ [VIEWER_PLATFORM_USER_ID_HEADER]: 'anonymous' }), {}, fallback),
     ).toBeNull();
   });
 

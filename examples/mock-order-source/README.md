@@ -28,6 +28,18 @@ mock_order_source_place_order { source_number: 'MOS-2001', sku: 'CONF-SKU-1', qu
 
 Ids are derived from `source_number`, so a shakedown script knows every id before it runs.
 
+To exercise the hub's wait on an unbound line (sprigr-apps#4633), make the re-read throw and place an order whose request names a line `order.created` left out:
+
+```
+mock_order_source_fail_next { op: 'get_order', count: 2 }
+mock_order_source_place_order { source_number: 'MOS-2002', sku: 'CONF-SKU-1', extra_request_sku: 'CONF-SKU-EDIT' }
+  -> the hub stores the order with CONF-SKU-1 only; the request also names CONF-SKU-EDIT
+  -> its re-read throws twice: the push waits on the retry ladder, nothing reaches the warehouse
+  -> the third read answers both lines: the push goes out with CONF-SKU-EDIT bound
+```
+
+`fail_next` arms `add_note` and `mark_shipped` to answer the retryable `error` ack, and `get_order` to throw.
+
 ## Tests
 
 ```

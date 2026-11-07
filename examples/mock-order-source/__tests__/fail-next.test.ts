@@ -1,10 +1,11 @@
 /**
  * The fault lever behind the hub's resend shakedown (sprigr-apps#3474): an
  * armed write op answers the retryable `error` ack, writes nothing, and runs
- * for real once its count is used up.
+ * for real once its count is used up. An armed `get_order` THROWS instead,
+ * the way an overloaded store does (sprigr-apps#4633).
  */
 import { describe, expect, it } from 'vitest';
-import { addNote, failNext, markShipped } from '../src/handlers/order-source';
+import { addNote, failNext, getOrder, markShipped } from '../src/handlers/order-source';
 import { freshDeps } from '../src/lib/deps';
 import { SEED_ORDER, SEED_REQUEST } from '../src/lib/records';
 
@@ -50,6 +51,25 @@ describe('fail_next', () => {
         tracking_number: 'T2',
       }),
     ).toMatchObject({ status: 'accepted' });
+  });
+
+  it('makes get_order THROW for exactly count calls, then answer the order', async () => {
+    const deps = freshDeps(at);
+    expect(await failNext(deps, { op: 'get_order', count: 2 })).toEqual({ ok: true, op: 'get_order', count: 2 });
+
+    await expect(getOrder(deps, { source_ref: SEED_ORDER.source_ref })).rejects.toThrow(/injected fault/);
+    await expect(getOrder(deps, { source_ref: SEED_ORDER.source_ref })).rejects.toThrow(/injected fault/);
+    expect(await getOrder(deps, { source_ref: SEED_ORDER.source_ref })).toMatchObject({
+      found: true,
+      order: { source_ref: SEED_ORDER.source_ref },
+    });
+  });
+
+  it('an armed get_order does not fail a write op', async () => {
+    const deps = freshDeps(at);
+    await failNext(deps, { op: 'get_order' });
+    expect(await addNote(deps, { source_ref: SEED_ORDER.source_ref, note: 'x' })).toEqual({ status: 'accepted' });
+    await expect(getOrder(deps, { source_ref: SEED_ORDER.source_ref })).rejects.toThrow(/injected fault/);
   });
 
   it('refuses an op outside the lever and a count out of range', async () => {
