@@ -50,23 +50,23 @@ Install is the moment a company consents to your scopes.
 
 ### Scopes on upgrade
 
-> **Not yet implemented.** This section describes decision 0328, which is in review. Today an upgrade grants every newly declared scope straight away, with no pending state and no approval. Design for the behaviour below, but do not rely on it as a safety net yet.
+Today a new version that declares a scope the install does not have still gets it straight away, but the company can now see it and take it back.
 
-Under decision 0328, a new version that declares a scope the install has not granted does **not** gain it silently.
+1. The upgrade runs as usual: the new code is built and deployed to every tracking install, and each newly declared scope is granted at once.
+2. Each of those scopes is also marked **awaiting review** on the install. A declared scope the installer left out at install time is treated the same way on the next upgrade.
+3. The company's owner or an admin sees a **Review <app>'s new permissions** card on the installed app's page, with **Keep** or **Turn off** for each scope. Installs with scopes awaiting review are also listed on the dashboard's approvals page.
+4. **Keep** leaves the scope granted and clears the review. **Turn off** removes the grant, and later upgrades never add that scope back.
+5. The page's **Permissions** list shows every granted scope with **Remove**, and every turned-off scope with **Restore**. A restored scope goes back to awaiting review and stays off until someone keeps it.
+6. Only an owner or admin can decide; anyone else gets 403.
 
-1. The upgrade itself runs as usual: the new code is built and deployed to every tracking install.
-2. Each newly declared scope is held as **pending** on the install. A declared scope the installer left out at install time is held the same way on the next upgrade.
-3. Until the scope is approved, every call that needs it answers 403 `scope_not_granted`, exactly as for an install that never had it. Everything the install already granted keeps working.
-4. The company's owner or an admin sees a **New permissions requested** card on the installed app's page in the portal, with one plain sentence per scope saying what it allows and the version that asked for it. Installs with pending scopes are also counted on the dashboard's approvals page.
-5. **Approve** grants the scope; the next call that needs it succeeds. **Deny** records a refusal, and later upgrades do not ask again. A denied scope can be restored to pending from the same page.
-6. The page also lists every granted scope with a **Remove** action, so a company can withdraw a scope at any time.
+Once a scope is removed or turned off, every call that needs it answers 403 `scope_not_granted`, exactly as for an install that never had it. Each new scope and each decision is recorded in the install's Recent issues feed.
 
-A scope that a later version stops declaring is dropped from pending. Each held scope and each decision is recorded in the install's Recent issues feed.
+**Not live yet.** The second step of decision 0328 will stop granting new scopes on upgrade: a new scope will stay off until an owner or admin keeps it. Listed-app publishers will be told before it ships.
 
-So when you add a scope in a new version:
+So when you add a scope in a new version, write for both stages:
 
-- ship the code so the feature that needs the scope is optional until it is granted;
-- handle `scope_not_granted` by telling the user an owner or admin needs to approve the new permission;
+- make the feature that needs the scope optional, because the company can turn it off today and it will start off once the second step ships;
+- handle `scope_not_granted` by telling the user an owner or admin needs to allow the new permission;
 - say in your release notes which scope you added and why.
 
 ### The data an app can reach

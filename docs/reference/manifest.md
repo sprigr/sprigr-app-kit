@@ -151,7 +151,7 @@ Scope errors: `permissions.scopes: "X" is not a platform scope. Known scopes: ..
 
 Three legacy scopes are still accepted but grant nothing: `sprigr.data:write`, `sprigr.data:read` and `sprigr.knowledge:write`. Publishing with one returns this warning: `permissions.scopes: "<scope>" grants nothing and a later release will refuse it. Remove it from the manifest.` Remove them.
 
-Runtime calls are checked against the scopes an install was granted. A scope added in a new version is granted to existing auto-upgrading installs on upgrade, without asking the user again.
+Runtime calls are checked against the scopes an install was granted. A scope added in a new version is granted to existing auto-upgrading installs on upgrade, and the installing company's owner or admin is asked to keep it or turn it off (see [scopes on upgrade](scopes-and-trust.md#scopes-on-upgrade)).
 
 ## Secrets
 
