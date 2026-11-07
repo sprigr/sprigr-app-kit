@@ -85,6 +85,20 @@ describe('actorTool: not_connected is distinct and actionable', () => {
     expect(res).toMatchObject({ ok: false, error: 'not_connected', status: 412 });
   });
 
+  it('marks not_connected terminal for this actor, and no_caller_identity not', async () => {
+    // The platform stops a loop on status 412 + scope 'actor'. A missing
+    // identity is a plumbing fault, not this person's dead connection.
+    const wrapped = actorTool<Env, unknown, never>(async () => {
+      throw new NotConnectedError();
+    });
+    const unconnected = await wrapped(ACTOR, env);
+    const missing = await wrapped({}, env);
+
+    expect(unconnected).toMatchObject({ status: 412, scope: 'actor' });
+    expect(missing).toMatchObject({ error: 'no_caller_identity', status: 412 });
+    expect(missing).not.toHaveProperty('scope');
+  });
+
   it('carries the app-supplied connect hint verbatim', async () => {
     const wrapped = actorTool<Env, unknown, never>(
       async () => {
