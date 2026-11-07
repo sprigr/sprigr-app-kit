@@ -32,7 +32,18 @@ import { parseActor, type Actor } from './actor';
 /** What every wrapped handler returns. `ok:false` never throws past the wrapper. */
 export type ToolResult<R> =
   | { ok: true; result: R }
-  | { ok: false; error: string; hint?: string; status?: number };
+  | {
+      ok: false;
+      error: string;
+      hint?: string;
+      status?: number;
+      /**
+       * `'actor'` with status 412: terminal for this actor; do not retry until
+       * they reconnect. Other callers' connections are unaffected. The platform
+       * stops a code_mode loop on it instead of calling every remaining item.
+       */
+      scope?: 'actor';
+    };
 
 /**
  * Throw this from a token resolver when the CALLING actor has no connection
@@ -159,6 +170,7 @@ export function actorTool<Env, A, R>(
           error: 'not_connected',
           hint: opts.notConnectedHint ?? DEFAULT_NOT_CONNECTED_HINT,
           status: 412,
+          scope: 'actor',
         };
       }
       return shapeError(err, opts);

@@ -815,6 +815,9 @@ Your migrations have already run when a hook fires. The build-runner applies `mi
 - A per-actor app (`auth.model: per_actor`) should declare an `internal: true` tool named `on_actor_retired` and wrap its handler with `actorRetiredHook` from `@sprigr/apps-app-sdk` (0.16.0+). The platform calls it when the identity behind one of your actor keys is gone: a member removed, an agent deleted, a companion's bound user id corrected (the OLD key), or an operator retiring an orphan. Revoke the person's grant at the provider and purge what you keep for that key, exactly as your disconnect tool does.
 - Without it, a removed member's third-party grant stays live in your app, and the platform logs `actor_retire_unhandled` for your install. The SDK README has the contract.
 
+### A dead connection for one actor: `scope: 'actor'`
+- When only a reconnect can fix a call (the person's grant is revoked or expired), return `{ ok: false, error, hint, status: 412, scope: 'actor' }` (`@sprigr/apps-app-sdk` 0.56.0+; `actorTool` sets it on `not_connected`). The platform treats it as terminal for that actor for the rest of the run: a code_mode loop gets the error once instead of calling every remaining item, and a workflow step that hit it is not retried. Leave `scope` off any 412 a retry or a different call could fix.
+
 ## 6. OAuth - the shared bouncer pattern
 
 Most third-party OAuth providers require a **single registered redirect_uri per dev-app registration**. But every install is a different URL (`my-crm-5oema5wd.apps.sprigr.com`, `my-crm-abc12345.apps.sprigr.com`, ...) - you can't register them all.
