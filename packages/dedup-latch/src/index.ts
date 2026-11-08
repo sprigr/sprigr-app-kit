@@ -4,7 +4,7 @@
  * D1-backed "have we seen this id?" latch for at-least-once delivery
  * sources (webhook redeliveries, queue retries). One factory:
  *
- *   makeDedupLatch({db, table, ttlSec}) → { tryClaim, sweep }
+ *   makeDedupLatch({db, table, ttlSec}) → { tryClaim, release, sweep }
  *
  * See `dedup-latch.ts` for full schema + usage details.
  *
