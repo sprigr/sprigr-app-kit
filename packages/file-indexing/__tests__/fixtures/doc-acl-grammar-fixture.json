@@ -129,6 +129,30 @@
     [
       "user:x@y.com OR acl_principals:public",
       false
+    ],
+    [
+      "user:a@x.com\u0085",
+      false
+    ],
+    [
+      "group:g1\u0085",
+      false
+    ],
+    [
+      "user:a\u0085b@x.com",
+      false
+    ],
+    [
+      "\u0085public",
+      false
+    ],
+    [
+      "org:t\u2028",
+      true
+    ],
+    [
+      "user:a\u2029b@x.com",
+      false
     ]
   ],
   "normalizePrincipal": [
