@@ -17,7 +17,7 @@ The package owns everything that must behave the same for every provider:
 
 | Concern | What the package guarantees |
 |---|---|
-| Principal grammar | `user:` / `group:` / `org:` / `public`, byte-identical to the platform (`__tests__/doc-acl-platform-parity.test.ts`, a fixture generated from sprigr-team `packages/shared/src/utils/doc-acl.ts`) |
+| Principal grammar | `user:` / `group:` / `org:` / `public`, byte-identical to the platform (`__tests__/doc-acl-platform-parity.test.ts`, a fixture generated from sprigr-team `packages/shared/src/utils/doc-acl.ts`). A principal may hold no whitespace, U+0085 included, which the engine trims and JS does not. `keepValidPrincipals(candidates, scope)` drops invalid ones and warns once without the values |
 | Fail closed | A file whose permissions cannot be read is skipped, never stamped `public`. A row whose principals do not validate is never sent, so one bad row cannot reject a whole batch |
 | Cursor discipline | The cursor moves only after its rows are imported, seen IDs recorded, deletions applied and events emitted. Any failure keeps the old cursor |
 | Unreadable permissions | A transient permission failure holds the cursor at that page so the file is retried (sprigr-apps#2419), bounded by `MAX_UNRESOLVED_HOLD_MS` |

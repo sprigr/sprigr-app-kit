@@ -58,6 +58,9 @@ const INSERT_RX =
 const DELETE_EXPIRED_RX =
   /^DELETE FROM (\w+) WHERE id IN \(SELECT id FROM (\w+) WHERE expires_at <= (datetime\('now'\)|strftime\('%Y-%m-%dT%H:%M:%fZ', 'now'\)) LIMIT \?\)$/;
 
+/** release(id): a plain delete by primary key, no expiry predicate. */
+const DELETE_BY_ID_RX = /^DELETE FROM (\w+) WHERE id = \?$/;
+
 /** Render "now" the way the given SQLite expression would. */
 export function sqliteNow(expression: string): string {
   const iso = new Date().toISOString();
@@ -92,6 +95,13 @@ function execStatement(sql: string, args: unknown[], state: MockState): D1RunRes
       }
     }
     return { meta: { changes: deleted } };
+  }
+
+  const delId = DELETE_BY_ID_RX.exec(normalized);
+  if (delId) {
+    const id = String(args[0]);
+    const existed = state.rows.delete(id);
+    return { meta: { changes: existed ? 1 : 0 } };
   }
 
   throw new Error(`mock-d1: unhandled SQL "${normalized}"`);

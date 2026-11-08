@@ -44,8 +44,12 @@ export const ACL_PRINCIPALS_ATTR = 'acl_principals';
  * space-padded ` OR ` / ` AND ` operators into the read-time filter grammar, so
  * any candidate that contains it is rejected rather than silently corrupting
  * the filter. Mirrors FILTER_RESERVED in the platform doc-acl.ts.
+ *
+ * "Whitespace" is the engine's: JS `\s` and `trim()` leave U+0085 (NEXT LINE)
+ * alone, but the engine trims filter values with Rust whitespace, which counts
+ * it (sprigr-search#599 row 58), so it is reserved too.
  */
-const FILTER_RESERVED = /\s/;
+const FILTER_RESERVED = /[\s\u0085]/;
 
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -109,6 +113,22 @@ export function normalizePrincipal(principal: string): string {
     return userPrincipal(v.slice('user:'.length));
   }
   return v;
+}
+
+/**
+ * Keep only the candidates `isValidPrincipal` accepts, and warn once under
+ * `[scope]` when any were dropped. A stored invalid principal hides its row
+ * from every requester; dropping it narrows the row's audience to the valid
+ * principals, never widens it. The values are not logged (they are email
+ * addresses). Mirrors keepValidPrincipals in the platform doc-acl.ts.
+ */
+export function keepValidPrincipals(candidates: Iterable<string>, scope: string): string[] {
+  const all = [...candidates];
+  const kept = all.filter((p) => isValidPrincipal(p));
+  if (kept.length < all.length) {
+    console.warn(`[${scope}] dropped ${all.length - kept.length} invalid principal(s); kept ${kept.length}`);
+  }
+  return kept;
 }
 
 /**
