@@ -69,6 +69,9 @@ export function needsRefresh(tokens: RefreshableTokenFields, opts: NeedsRefreshO
   );
 }
 
+/** Stub for sprigr/sprigr-app-kit#272's red test; the bound lands with the fix. */
+export const REFRESH_JOIN_WAIT_MS = 10_000;
+
 /** Canonical message for the "actor has a token row but no usable key to
  *  latch on" failure — neither platformUserId nor agentId resolved. Each
  *  app throws this text via its own auth-error class (so callers can keep
