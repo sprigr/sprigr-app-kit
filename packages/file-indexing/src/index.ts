@@ -33,6 +33,7 @@ export {
   isValidPrincipal,
   normalizePrincipal,
   stampedPrincipalsValid,
+  keepValidPrincipals,
 } from './doc-acl';
 
 export {

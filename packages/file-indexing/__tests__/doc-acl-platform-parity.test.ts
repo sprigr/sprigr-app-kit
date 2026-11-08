@@ -7,13 +7,14 @@
  * this test, and regenerating the fixture against a newer platform shows the
  * change in review.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import fixture from './fixtures/doc-acl-grammar-fixture.json';
 import {
   ACL_PRINCIPALS_ATTR,
   PUBLIC_PRINCIPAL,
   groupPrincipal,
   isValidPrincipal,
+  keepValidPrincipals,
   normalizePrincipal,
   orgPrincipal,
   stampedPrincipalsValid,
@@ -48,6 +49,25 @@ describe('doc-acl grammar parity with the platform', () => {
     expect(orgPrincipal(' Tenant ')).toBe('org:Tenant');
     expect(isValidPrincipal('user:a b@x.com')).toBe(false);
     expect(isValidPrincipal('public')).toBe(true);
+  });
+  // sprigr-search#599 row 58: the engine trims U+0085 as whitespace and JS does
+  // not, so `user:a@x.com\u0085` would be read as `user:a@x.com`.
+  it('refuses a principal carrying U+0085, which the engine trims and JS does not', () => {
+    expect(isValidPrincipal('user:a@x.com\u0085')).toBe(false);
+    expect(isValidPrincipal('\u0085public')).toBe(false);
+    expect(stampedPrincipalsValid(['user:a@x.com', 'group:g1\u0085'])).toBe(false);
+  });
+  it('keepValidPrincipals drops bad principals and warns once without the values', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(keepValidPrincipals(['user:a@x.com', 'user:b@x.com\u0085', 'nope'], 'drive-acl')).toEqual(['user:a@x.com']);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0]![0]).toBe('[drive-acl] dropped 2 invalid principal(s); kept 1');
+      expect(keepValidPrincipals(['group:g1'], 'drive-acl')).toEqual(['group:g1']);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
   it('stampedPrincipalsValid rejects an empty list and any bad entry', () => {
     expect(stampedPrincipalsValid([])).toBe(false);
