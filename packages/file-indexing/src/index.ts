@@ -107,6 +107,8 @@ export {
 } from './tick-budget';
 export { ADAPTER_CALLS, callsForRow, newCallTiming, timeAdapter, withCallTiming, withD1Timing } from './tick-timing';
 export type { CallStat, CallTiming } from './tick-timing';
+export { lateTimingFields, watchLate } from './tick-late';
+export type { LateTimers, LateWatch, WatchLateOptions } from './tick-late';
 
 export {
   MAX_WALK_PAGES,
