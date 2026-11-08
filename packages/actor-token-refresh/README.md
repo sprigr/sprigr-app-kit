@@ -14,7 +14,7 @@ auth methods, etc.); only the generic freshness check and the in-flight
 latch live here.
 
 Depend on the published package at an exact version
-(`"@sprigr/apps-actor-token-refresh": "0.1.0"`) and import it by name. It has
+(`"@sprigr/apps-actor-token-refresh": "0.1.1"`) and import it by name. It has
 no runtime dependencies.
 
 ## Usage
@@ -33,6 +33,20 @@ async function ensureFreshTokens(env, actor, tokens, opts = {}) {
   return refreshLatch.run(key, () => doRefresh(env, actor, tokens));
 }
 ```
+
+A caller that joins a refresh another request started waits until that
+refresh is `REFRESH_JOIN_WAIT_MS` (10 s) old. In Workers a promise owned by a
+torn-down request never settles, so past that point the first joiner to wake
+drops the entry and refreshes on its own request, and every other joiner of
+the same entry shares that one replacement. A caller that outwaits the
+replacement too fails with `RefreshJoinTimeoutError` instead of refreshing
+again. The normal case still makes one refresh (sprigr/sprigr-app-kit#272).
+
+Known limit: a provider that is alive but slower than 10 s gets at most one
+replacement refresh per 10 s while callers keep arriving. Without a lease the
+slow original and its replacement can both redeem the same refresh token, and
+on a rotating provider the later rotation wins. Pass a lease (below) if the
+provider rotates refresh tokens.
 
 ## Optional: the durable cross-invocation lease
 
