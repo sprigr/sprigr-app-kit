@@ -113,4 +113,50 @@ describe('ActorRefreshLatch join wait', () => {
     expect(late).toMatchObject({ done: true, value: 'replacement-token' });
     expect(third).not.toHaveBeenCalled();
   });
+
+  it('several joiners of a dead owner make one replacement refresh between them', async () => {
+    const latch = new ActorRefreshLatch<string>();
+    void latch.run('actor-1', () => never<string>());
+
+    const own = vi.fn(async () => 'own-token');
+    const joiners = [1, 2, 3].map(() => track(latch.run('actor-1', own)));
+    await vi.advanceTimersByTimeAsync(REFRESH_JOIN_WAIT_MS);
+
+    expect(own).toHaveBeenCalledTimes(1);
+    for (const j of joiners) expect(j).toMatchObject({ done: true, value: 'own-token' });
+  });
+
+  it('the wait is measured from when the shared refresh started, not from the join', async () => {
+    const latch = new ActorRefreshLatch<string>();
+    void latch.run('actor-1', () => never<string>());
+    await vi.advanceTimersByTimeAsync(REFRESH_JOIN_WAIT_MS - 1000);
+
+    const own = vi.fn(async () => 'own-token');
+    const joiner = track(latch.run('actor-1', own));
+    await vi.advanceTimersByTimeAsync(999);
+    expect(joiner.done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(joiner).toMatchObject({ done: true, value: 'own-token' });
+  });
+
+  it('a joiner that already outwaited one refresh fails on the next instead of refreshing again', async () => {
+    const latch = new ActorRefreshLatch<string>();
+    void latch.run('actor-1', () => never<string>());
+
+    // A live but slow provider: the replacement does not settle either.
+    const slowReplacement = vi.fn(() => never<string>());
+    const second = vi.fn(async () => 'second-token');
+    const a = track(latch.run('actor-1', slowReplacement));
+    const b = track(latch.run('actor-1', second));
+
+    await vi.advanceTimersByTimeAsync(REFRESH_JOIN_WAIT_MS);
+    expect(slowReplacement).toHaveBeenCalledTimes(1);
+    expect(b.done).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(REFRESH_JOIN_WAIT_MS);
+    expect(b.done).toBe(true);
+    expect((b.error as Error | undefined)?.name).toBe('RefreshJoinTimeoutError');
+    expect(second).not.toHaveBeenCalled();
+    expect(a.done).toBe(false);
+  });
 });
