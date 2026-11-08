@@ -26,9 +26,9 @@ name: release
 # that carries this file runs nothing. That is NOT a full guard: a dispatch
 # runs the release.yml of the branch it names, so an older branch (or one
 # that edits this file) still holds the unguarded version and can publish.
-# The real boundary is NPM_TOKEN in a protected `npm-publish` environment
-# that only main may use; until that repo setting exists, S033-01 stays
-# open (sprigr-apps#2643).
+# The real boundary is NPM_TOKEN in the protected `npm-publish` environment,
+# whose deployment branches are limited to main, so an older branch's copy
+# of this file gets no token.
 #
 # THE TOKEN NEVER MEETS THIRD-PARTY SETUP CODE (sprigr-apps#2643, S033-03).
 # Two jobs:
@@ -43,9 +43,8 @@ name: release
 # Every action is pinned to a commit SHA; .github/dependabot.yml keeps the
 # pins current.
 #
-# Required repo secret: NPM_TOKEN (automation token with publish rights
-# on the @sprigr npm scope). Moving it into a protected `npm-publish`
-# environment restricted to main is a repo-settings follow-up.
+# Required environment secret: NPM_TOKEN in `npm-publish` (automation token
+# with publish rights on the @sprigr npm scope). There is no repo-level copy.
 
 on:
   push:
@@ -124,6 +123,7 @@ jobs:
     needs: build
     if: github.ref == 'refs/heads/main' && needs.build.outputs.count != '0'
     runs-on: ubuntu-latest
+    environment: npm-publish
     permissions:
       contents: read
       id-token: write # npm provenance
