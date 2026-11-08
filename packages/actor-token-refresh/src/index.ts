@@ -95,14 +95,33 @@ export const ACTOR_KEY_MISSING_MESSAGE = 'actor missing both platformUserId and 
  * app, so it's shared across requests within one isolate for the isolate's
  * whole lifetime — matching the WFP one-isolate-per-install execution model.
  */
+/** A caller outwaited one shared refresh and then its replacement too. */
+export class RefreshJoinTimeoutError extends Error {
+  constructor(readonly actorKey: string) {
+    super(`refresh for ${actorKey} did not settle within the join wait, twice; not refreshing again`);
+    this.name = 'RefreshJoinTimeoutError';
+  }
+}
+
+interface InFlightRefresh<T> {
+  promise: Promise<T>;
+  startedAt: number;
+  /** The refresh that took over once this one went stale. Joiners read it
+   *  here rather than from the Map, which a fast replacement has already
+   *  left by the time a later joiner's timer fires. */
+  replacedBy?: InFlightRefresh<T>;
+}
+
 export class ActorRefreshLatch<T> {
-  private readonly inFlight = new Map<string, Promise<T>>();
+  private readonly inFlight = new Map<string, InFlightRefresh<T>>();
 
   /**
    * Run `refresh` for `key`, coalescing concurrent callers onto one
    * Promise. `refresh` is only invoked when no refresh for `key` is
-   * already in flight, or when the one in flight has not settled within
-   * `REFRESH_JOIN_WAIT_MS`.
+   * already in flight, or when the one in flight is older than
+   * `REFRESH_JOIN_WAIT_MS`. Every joiner of that stale refresh then shares
+   * one replacement, and a caller that outwaits the replacement as well
+   * fails with `RefreshJoinTimeoutError` rather than refreshing again.
    *
    * `lease` is OPTIONAL and off by default. Without it this method is an
    * in-isolate latch, and nothing here touches D1. With it, the caller
@@ -113,45 +132,58 @@ export class ActorRefreshLatch<T> {
    * must also ship the lease table's migration.
    */
   run(key: string, refresh: () => Promise<T>, lease?: RefreshLeaseConfig<T>): Promise<T> {
-    const existing = this.inFlight.get(key);
-    return existing ? this.join(key, existing, refresh, lease) : this.start(key, refresh, lease);
+    const entry = this.inFlight.get(key);
+    return entry ? this.join(key, entry, refresh, lease, false) : this.start(key, refresh, lease).promise;
   }
 
-  private start(key: string, refresh: () => Promise<T>, lease?: RefreshLeaseConfig<T>): Promise<T> {
+  private start(key: string, refresh: () => Promise<T>, lease?: RefreshLeaseConfig<T>): InFlightRefresh<T> {
     // The in-isolate latch stays the OUTER guard, deliberately: it costs
     // nothing, and it means at most one caller per isolate ever spends a
     // D1 round trip on the lease.
-    const promise: Promise<T> = (lease ? withRefreshLease(key, refresh, lease) : refresh()).finally(() => {
-      // A joiner may have replaced a stale entry; only clear our own.
-      if (this.inFlight.get(key) === promise) this.inFlight.delete(key);
-    });
-    this.inFlight.set(key, promise);
-    return promise;
+    const entry: InFlightRefresh<T> = {
+      startedAt: Date.now(),
+      promise: (lease ? withRefreshLease(key, refresh, lease) : refresh()).finally(() => {
+        // A joiner may have replaced a stale entry; only clear our own.
+        if (this.inFlight.get(key) === entry) this.inFlight.delete(key);
+      }),
+    };
+    this.inFlight.set(key, entry);
+    return entry;
   }
 
   // The shared promise may belong to another request. Bound the wait with
   // a timer of our own, which also keeps this request from reading as hung.
+  // The bound runs from the entry's start, so every joiner of one stale
+  // entry wakes together and the first one's replacement serves the rest.
   private join(
     key: string,
-    existing: Promise<T>,
+    entry: InFlightRefresh<T>,
     refresh: () => Promise<T>,
-    lease?: RefreshLeaseConfig<T>,
+    lease: RefreshLeaseConfig<T> | undefined,
+    waitedOnce: boolean,
   ): Promise<T> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const stale = new Promise<typeof STALE>((resolve) => {
-      timer = setTimeout(() => resolve(STALE), REFRESH_JOIN_WAIT_MS);
+      timer = setTimeout(() => resolve(STALE), Math.max(0, entry.startedAt + REFRESH_JOIN_WAIT_MS - Date.now()));
     });
-    return Promise.race([existing, stale])
+    return Promise.race([entry.promise, stale])
+      .finally(() => clearTimeout(timer))
       .then((result) => {
         if (result !== STALE) return result;
-        if (this.inFlight.get(key) === existing) this.inFlight.delete(key);
+        // A provider slower than the wait would otherwise get one refresh
+        // per joiner in turn, each spending the same refresh token.
+        if (waitedOnce) throw new RefreshJoinTimeoutError(key);
+        const current = this.inFlight.get(key);
+        const replacement = entry.replacedBy ?? (current !== entry ? current : undefined);
+        if (replacement) return this.join(key, replacement, refresh, lease, true);
+        this.inFlight.delete(key);
         console.warn(
           `[actor-token-refresh] refresh for ${key} still pending after ${REFRESH_JOIN_WAIT_MS}ms; ` +
             `dropped it and refreshing on this request`,
         );
-        return this.start(key, refresh, lease);
-      })
-      .finally(() => clearTimeout(timer));
+        entry.replacedBy = this.start(key, refresh, lease);
+        return entry.replacedBy.promise;
+      });
   }
 }
 
