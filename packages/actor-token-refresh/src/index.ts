@@ -69,7 +69,13 @@ export function needsRefresh(tokens: RefreshableTokenFields, opts: NeedsRefreshO
   );
 }
 
-/** Stub for sprigr/sprigr-app-kit#272's red test; the bound lands with the fix. */
+/**
+ * Longest a caller waits on a refresh another request started before it
+ * drops that entry and refreshes on its own (sprigr/sprigr-app-kit#272). A
+ * Workers promise owned by a torn-down request never settles, so an
+ * unbounded join hung every later caller for that actor in the isolate. A
+ * healthy refresh is one token-endpoint round trip, well inside this.
+ */
 export const REFRESH_JOIN_WAIT_MS = 10_000;
 
 /** Canonical message for the "actor has a token row but no usable key to
@@ -95,27 +101,58 @@ export class ActorRefreshLatch<T> {
   /**
    * Run `refresh` for `key`, coalescing concurrent callers onto one
    * Promise. `refresh` is only invoked when no refresh for `key` is
-   * already in flight.
+   * already in flight, or when the one in flight has not settled within
+   * `REFRESH_JOIN_WAIT_MS`.
    *
-   * `lease` is OPTIONAL and off by default. Without it this method is
-   * exactly what it always was: an in-isolate latch, and nothing here
-   * touches D1. With it, the caller that reaches the provider must also
-   * win a durable per-actor row first, so the guard survives the
-   * cross-isolate case a module-scoped Map cannot see (sprigr/sprigr-apps#1547,
-   * sprigr/sprigr-team#7183). See `refresh-lease.ts` for the full protocol; a
-   * consumer that adopts it must also ship the lease table's migration.
+   * `lease` is OPTIONAL and off by default. Without it this method is an
+   * in-isolate latch, and nothing here touches D1. With it, the caller
+   * that reaches the provider must also win a durable per-actor row first,
+   * so the guard survives the cross-isolate case a module-scoped Map cannot
+   * see (sprigr/sprigr-apps#1547, sprigr/sprigr-team#7183). See
+   * `refresh-lease.ts` for the full protocol; a consumer that adopts it
+   * must also ship the lease table's migration.
    */
   run(key: string, refresh: () => Promise<T>, lease?: RefreshLeaseConfig<T>): Promise<T> {
     const existing = this.inFlight.get(key);
-    if (existing) return existing;
+    return existing ? this.join(key, existing, refresh, lease) : this.start(key, refresh, lease);
+  }
 
+  private start(key: string, refresh: () => Promise<T>, lease?: RefreshLeaseConfig<T>): Promise<T> {
     // The in-isolate latch stays the OUTER guard, deliberately: it costs
     // nothing, and it means at most one caller per isolate ever spends a
     // D1 round trip on the lease.
-    const promise = (lease ? withRefreshLease(key, refresh, lease) : refresh()).finally(() => {
-      this.inFlight.delete(key);
+    const promise: Promise<T> = (lease ? withRefreshLease(key, refresh, lease) : refresh()).finally(() => {
+      // A joiner may have replaced a stale entry; only clear our own.
+      if (this.inFlight.get(key) === promise) this.inFlight.delete(key);
     });
     this.inFlight.set(key, promise);
     return promise;
   }
+
+  // The shared promise may belong to another request. Bound the wait with
+  // a timer of our own, which also keeps this request from reading as hung.
+  private join(
+    key: string,
+    existing: Promise<T>,
+    refresh: () => Promise<T>,
+    lease?: RefreshLeaseConfig<T>,
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stale = new Promise<typeof STALE>((resolve) => {
+      timer = setTimeout(() => resolve(STALE), REFRESH_JOIN_WAIT_MS);
+    });
+    return Promise.race([existing, stale])
+      .then((result) => {
+        if (result !== STALE) return result;
+        if (this.inFlight.get(key) === existing) this.inFlight.delete(key);
+        console.warn(
+          `[actor-token-refresh] refresh for ${key} still pending after ${REFRESH_JOIN_WAIT_MS}ms; ` +
+            `dropped it and refreshing on this request`,
+        );
+        return this.start(key, refresh, lease);
+      })
+      .finally(() => clearTimeout(timer));
+  }
 }
+
+const STALE: unique symbol = Symbol('stale-refresh');

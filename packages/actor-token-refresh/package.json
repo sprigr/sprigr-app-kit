@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-actor-token-refresh",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Per-actor OAuth token freshness for Sprigr apps: refresh buffer, in-isolate single-flight latch, optional durable cross-invocation lease.",
   "type": "module",
   "main": "./dist/index.js",

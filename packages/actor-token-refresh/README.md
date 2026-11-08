@@ -14,7 +14,7 @@ auth methods, etc.); only the generic freshness check and the in-flight
 latch live here.
 
 Depend on the published package at an exact version
-(`"@sprigr/apps-actor-token-refresh": "0.1.0"`) and import it by name. It has
+(`"@sprigr/apps-actor-token-refresh": "0.1.1"`) and import it by name. It has
 no runtime dependencies.
 
 ## Usage
@@ -33,6 +33,13 @@ async function ensureFreshTokens(env, actor, tokens, opts = {}) {
   return refreshLatch.run(key, () => doRefresh(env, actor, tokens));
 }
 ```
+
+A caller that joins a refresh another request started waits at most
+`REFRESH_JOIN_WAIT_MS` (10 s). In Workers a promise owned by a torn-down
+request never settles, so past that bound the joiner drops the entry and
+refreshes on its own request (with a lease: contends for the row, so a
+still-held lease gives a bounded `RefreshLeaseBusyError`). The normal case
+still makes one refresh (sprigr/sprigr-app-kit#272).
 
 ## Optional: the durable cross-invocation lease
 
