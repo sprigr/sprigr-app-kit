@@ -51,6 +51,12 @@
  *   const writes = makeIdempotentWrite({ db: env.DB, table: 'simpro_write_keys' });
  *   const outcome = await writes.run(args._write_key, () => createQuoteNote(env, args));
  *   return idempotentToolResult(outcome);
+ *
+ * NOT a dedup latch: do NOT call makeDedupLatch's release() on a
+ * write-keys row. run() owns this claim's whole lifecycle (it releases
+ * internally on a retryable error), and a `done` row is the stored
+ * result a repeat replays, so deleting it would re-run the write. The
+ * two share only sweepExpired for GC.
  */
 
 import type { D1Like, D1RunResult } from './types';

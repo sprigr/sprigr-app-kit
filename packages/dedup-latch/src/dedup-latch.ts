@@ -2,8 +2,16 @@
  * D1-backed dedup latch for any at-least-once delivery source.
  *
  * Use cases: webhook redeliveries from a third-party provider, queue
- * retries, idempotent task dispatch, exactly-once processing of
- * eventually-consistent events. The package is provider-agnostic.
+ * retries, idempotent task dispatch, deduping eventually-consistent
+ * events. The package is provider-agnostic.
+ *
+ * Delivery semantics: by default this is AT-MOST-ONCE. tryClaim latches
+ * before you process, so a failure AFTER the claim is deduped as a
+ * duplicate on every redelivery until the TTL passes and a sweep runs,
+ * i.e. the work is dropped, not retried. For AT-LEAST-ONCE, call
+ * release(id) on a processing failure so the provider's next redelivery
+ * re-claims and reprocesses (see "Retry mode" below). A D1 latch cannot
+ * give exactly-once across an arbitrary side-effecting process.
  *
  * Schema this expects (apps own the migration; pick whatever table
  * name suits, the package only requires the column shape):
@@ -26,6 +34,26 @@
  *     return { status: 200, ok: true, reason: 'duplicate' };
  *   }
  *   // ... process ...
+ *
+ * Retry mode (at-least-once): release the claim on failure so the
+ * provider's retry reprocesses. Do NOT release on success, or the latch
+ * stops deduping future redeliveries.
+ *
+ *   const firstSeen = await latch.tryClaim(dedupId);
+ *   if (!firstSeen) return { status: 200, ok: true, reason: 'duplicate' };
+ *   try {
+ *     await process(envelope);            // keep the latch on success
+ *   } catch (err) {
+ *     await latch.release(dedupId);       // unlatch so the retry re-claims
+ *     throw err;
+ *   }
+ *
+ * release has no claim-ownership token (the schema is a single `id`), so
+ * size ttlSec LONGER than the max processing time. ttlSec is also the
+ * reclaim horizon, so correctness already requires this: if a claim
+ * outlives ttlSec, a sweep could drop the row mid-process, a redelivery
+ * could re-claim, and a late release(id) would then delete that newer
+ * claim.
  *
  * The dedup key shape is the app's choice. Common patterns:
  *   - `<topic>:<resourceId>:<updatedAt>` for webhooks that carry the
@@ -58,6 +86,18 @@ export interface DedupLatch {
    * false if `id` was already claimed.
    */
   tryClaim(id: string): Promise<boolean>;
+
+  /**
+   * Unlatch `id` so a future redelivery re-claims and reprocesses. Call
+   * it on a processing FAILURE (not on success, see "Retry mode"). Plain
+   * `DELETE FROM <table> WHERE id = ?`: it ignores `expires_at` (expiry
+   * is only sweep's GC horizon, not a reclaim gate), and there is no
+   * ownership token, so it removes whatever row currently bears `id`.
+   * Returns true if a row was removed, false if `id` was already absent
+   * (swept or never claimed); the boolean only tells you a row existed,
+   * not that this caller claimed it.
+   */
+  release(id: string): Promise<boolean>;
 
   /**
    * Delete rows with `expires_at <= now()`, in bounded batches. Returns
@@ -103,6 +143,14 @@ export function makeDedupLatch(opts: MakeDedupLatchOpts): DedupLatch {
            ON CONFLICT(id) DO NOTHING`,
         )
         .bind(id, expiresAt)
+        .run();
+      const changes = (raw as D1RunResult | null)?.meta?.changes ?? 0;
+      return changes > 0;
+    },
+    async release(id) {
+      const raw = await db
+        .prepare(`DELETE FROM ${table} WHERE id = ?`)
+        .bind(id)
         .run();
       const changes = (raw as D1RunResult | null)?.meta?.changes ?? 0;
       return changes > 0;

@@ -111,3 +111,60 @@ describe('makeDedupLatch', () => {
     expect(await latch.tryClaim('event-1')).toBe(true);
   });
 });
+
+describe('makeDedupLatch release (#87 S025-07, at-least-once retry mode)', () => {
+  it('release removes a claimed row and returns true', async () => {
+    const { db, state } = makeMockD1();
+    const latch = makeDedupLatch({ db, table: 'webhook_dedup', ttlSec: 60 });
+    expect(await latch.tryClaim('event-1')).toBe(true);
+    expect(await latch.release('event-1')).toBe(true);
+    expect(state.rows.has('event-1')).toBe(false);
+  });
+
+  it('after release, a redelivery re-claims and reprocesses', async () => {
+    const { db } = makeMockD1();
+    const latch = makeDedupLatch({ db, table: 'webhook_dedup', ttlSec: 60 });
+    expect(await latch.tryClaim('event-1')).toBe(true);
+    // a redelivery mid-process is still deduped
+    expect(await latch.tryClaim('event-1')).toBe(false);
+    // processing failed -> unlatch
+    expect(await latch.release('event-1')).toBe(true);
+    // the next redelivery re-claims
+    expect(await latch.tryClaim('event-1')).toBe(true);
+  });
+
+  it('release returns false when the id was never claimed', async () => {
+    const { db } = makeMockD1();
+    const latch = makeDedupLatch({ db, table: 'webhook_dedup', ttlSec: 60 });
+    expect(await latch.release('never')).toBe(false);
+  });
+
+  it('release returns false the second time (row already gone)', async () => {
+    const { db } = makeMockD1();
+    const latch = makeDedupLatch({ db, table: 'webhook_dedup', ttlSec: 60 });
+    await latch.tryClaim('event-1');
+    expect(await latch.release('event-1')).toBe(true);
+    expect(await latch.release('event-1')).toBe(false);
+  });
+
+  it('release ignores expiry: it removes a not-yet-expired claim', async () => {
+    // sweep would keep this future-expiry row; release deletes it anyway,
+    // proving release is not gated on expires_at.
+    const future = new Date(Date.now() + 3_600_000).toISOString();
+    const { db, state } = makeMockD1([['event-1', { expires_at: future }]]);
+    const latch = makeDedupLatch({ db, table: 'webhook_dedup', ttlSec: 60 });
+    expect((await latch.sweep()).deleted).toBe(0);
+    expect(await latch.release('event-1')).toBe(true);
+    expect(state.rows.has('event-1')).toBe(false);
+  });
+
+  it('release is scoped to its id; other claims survive', async () => {
+    const { db, state } = makeMockD1();
+    const latch = makeDedupLatch({ db, table: 'webhook_dedup', ttlSec: 60 });
+    await latch.tryClaim('event-1');
+    await latch.tryClaim('event-2');
+    expect(await latch.release('event-1')).toBe(true);
+    expect(state.rows.has('event-1')).toBe(false);
+    expect(state.rows.has('event-2')).toBe(true);
+  });
+});
