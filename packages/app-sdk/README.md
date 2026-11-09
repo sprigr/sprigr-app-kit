@@ -37,7 +37,8 @@ export const { tool, actorTool } = createToolWrappers<MyEnv>({
 export default { list_things: actorTool(async (env, actor, args) => { /* ... */ }) };
 ```
 
-- `actorTool(fn)`: reads the platform-stamped `args.actor`, returns `412 no_caller_identity` when it is absent, and maps a thrown `NotConnectedError` to `412 not_connected` with your connect hint. Identity comes only from the nested `args.actor`; flat body fields are agent-supplied and spoofable.
+- `actorTool(fn)`: reads the platform-stamped `args.actor`, returns `412 no_caller_identity` when it is absent, and maps a thrown `NotConnectedError` to `412 not_connected` with your connect hint and `scope: 'actor'`. Identity comes only from the nested `args.actor`; flat body fields are agent-supplied and spoofable.
+- `scope: 'actor'` on a 412 means "terminal for this actor; do not retry until reconnected". Set it on any error of your own that only a reconnect fixes (a revoked or expired grant), so the platform stops a code_mode loop instead of calling every remaining item.
 - `tool(fn)`: for handlers with genuinely no caller (schedules, webhooks, platform mirrors). Those need a *designated service connection*, which is not licence for an agent-facing handler to borrow one.
 - `NotConnectedError`: throw from your token resolver when the **caller** has no connection. Don't throw it for "the install has none", which is a different fault with a different fix.
 - `isNotConnectedError(err)`: matches by class *and* by `name`, so it still works when the vendor pattern puts two copies of this module in one isolate and `instanceof` would silently fail.
