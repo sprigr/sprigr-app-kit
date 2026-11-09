@@ -358,3 +358,51 @@ describe('#12926 — wouldPostInvisibleVerdict', () => {
     expect(wouldPostInvisibleVerdict(body)).toBe(false);
   });
 });
+
+// ─── sprigr-team#14736: a lane reviewer's own tag ────────────────────────────
+//
+// Decision 0296 gives every lane reviewer the shared `[tech-lead-reviewer]`
+// tag, and only that tag authorizes. A lane reviewer that writes its own tag
+// instead (sprigr-apps#4830, comment 6729301530) posted a verdict no reader
+// could see, and the merge gate then said "no verdict". It is now refused at
+// post time, so the reviewer re-posts it with the shared tag.
+describe('#14736 — a lane-tagged verdict is refused at post time, never read', () => {
+  // Structure verbatim from the live comment's first three lines.
+  const LANE_TAGGED_4830 = [
+    '[tech-lead-reviewer-apps]',
+    '<!-- verdict sha=c39fdf5 -->',
+    'VERDICT: APPROVE | (apps) Follow-on audit fix for #4828: same minimal pattern already validated on #4829.',
+  ].join('\n');
+
+  it('refuses the real sprigr-apps#4830 shape', () => {
+    expect(wouldPostInvisibleVerdict(LANE_TAGGED_4830)).toBe(true);
+    expect(isMalformedVerdictPost(LANE_TAGGED_4830)).toBe(true);
+  });
+
+  it('refuses each lane tag, with or without the marker', () => {
+    for (const lane of ['apps', 'misc', 'sessions', 'search']) {
+      const marked = `<!-- verdict sha=abc1234 -->\n[tech-lead-reviewer-${lane}] VERDICT: APPROVE | (${lane}) ok`;
+      const bare = `[tech-lead-reviewer-${lane}] VERDICT: REQUEST_CHANGES | (${lane}) fix it`;
+      expect(wouldPostInvisibleVerdict(marked)).toBe(true);
+      expect(isMalformedVerdictPost(bare)).toBe(true);
+    }
+  });
+
+  it('never lets a lane tag authorize', () => {
+    expect(parseAnchoredVerdictRuling(LANE_TAGGED_4830)).toBeNull();
+    expect(TECH_LEAD_VERDICT_FORM_RE.test('[tech-lead-reviewer-apps] VERDICT: APPROVE | ok')).toBe(false);
+  });
+
+  it('still passes a lane reviewer note that states no ruling, and the shared-tag verdict', () => {
+    const note = '[tech-lead-reviewer-sessions] Note on head abc1234: the standing verdict holds.';
+    expect(isMalformedVerdictPost(note)).toBe(false);
+    expect(wouldPostInvisibleVerdict(note)).toBe(false);
+    expect(wouldPostInvisibleVerdict('<!-- verdict sha=c39fdf5 -->\n[tech-lead-reviewer] VERDICT: APPROVE | (apps) ok')).toBe(false);
+  });
+
+  it('does not reach other tags that merely start the same way', () => {
+    // `[tech-lead-reviewer]` followed by text, and a fixer tag, stay as they were.
+    expect(isMalformedVerdictPost('[tech-lead-reviewers] VERDICT: APPROVE | ok')).toBe(false);
+    expect(isMalformedVerdictPost('[dev-fixer] VERDICT: APPROVE was posted earlier')).toBe(false);
+  });
+});
