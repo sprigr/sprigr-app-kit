@@ -626,17 +626,6 @@
       "reason": "When the brand also runs Shopify, the showcase app can correlate an Acme deal with a Shopify order. Optional \u2014 degrades gracefully when no Shopify integration is connected."
     }
   ],
-  "fulfillment_services": [
-    {
-      "platform": "shopify",
-      "multi_location": true,
-      "service_name_template": "Acme 3PL {location_name}",
-      "inventory_management": true,
-      "tracking_support": true,
-      "requires_shipping_method": false,
-      "reason": "Demonstrates registering a Shopify fulfillment location per warehouse via env.SPRIGR.fulfillment_services.register."
-    }
-  ],
   "webhooks": [
     {
       "path": "/acme/contact",

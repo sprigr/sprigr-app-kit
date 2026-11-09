@@ -159,12 +159,6 @@ export function fakeSprigr(canned: Record<string, unknown> = {}): { host: Sprigr
     },
     invoke: rec('invoke'),
     inbox: { append: rec('inbox.append') },
-    fulfillment_services: {
-      register: rec('fulfillment_services.register'),
-      list: rec('fulfillment_services.list'),
-      update: rec('fulfillment_services.update'),
-      delete: rec('fulfillment_services.delete'),
-    },
     files: { putStream: rec('files.putStream'), url: rec('files.url') },
   } as unknown as SprigrHost;
   return { host, calls };

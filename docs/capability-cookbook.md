@@ -61,7 +61,6 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 | Interface: ADAPTER scaffold | `cross_tenant_tools[].provides` + `events.emits[]`, generated | `pnpm create:app <slug> --template fulfilment-provider\|order-source` ([`tools/templates/fulfilment-adapter.mjs`](../tools/templates/fulfilment-adapter.mjs)) | **local** (the generated app is green on `pnpm test`) | none yet |
 | Cross-tenant tool (consumer side) | `app_dependencies[]` + `env.SPRIGR.invoke` | consumer [`handlers/enrich.ts`](../examples/showcase-consumer/src/handlers/enrich.ts) | staging (invoke) | — (no app declares `app_dependencies` yet) |
 | Integration dependency | `integration_dependencies[]` + `integrations.invoke` | [`handlers/cross-tenant.ts`](../examples/showcase/src/handlers/cross-tenant.ts) `correlateShopifyOrder` | staging (integrations.invoke) | — (no app declares `integration_dependencies` yet) |
-| Fulfillment services | `fulfillment_services[]` + `fulfillment_services.register` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) `registerWarehouse` | staging | — (no app declares `fulfillment_services` yet) |
 | Workflow template | `workflow_templates[]` | [`sprigr-app.json`](../examples/showcase/sprigr-app.json) `deal_won_intake` | n/a (instantiated on install) | `hello-marketplace`, `cross-tenant-demo` |
 | Decision point | `decision_points[]` + `run_workflow` | [`handlers/platform.ts`](../examples/showcase/src/handlers/platform.ts) `routeDecision` | local (fallback) + staging (run_workflow) | — (no app declares `decision_points` yet) |
 | Data index (per-company) | `data_index` + `data.import/search/get` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) | staging | `linkedin`, `intabot` |
@@ -81,7 +80,6 @@ This is a map, not a tutorial. For the end-to-end build flow read [build-guide.m
 | Agent template app | `kind: 'agent'` + `agent_config` (persona/model_tier/role/settings/channels/recommended_apps) | [`examples/agent-template`](../examples/agent-template) | n/a (provisions an agent at install) | `intabot` |
 | Agent training index | `training_index` | [`agent-template/sprigr-app.json`](../examples/agent-template/sprigr-app.json) | n/a (index provisioned at publish) | — (no app declares `training_index` yet) |
 | Job lifecycle (start/get/list/cancel/signal) | `jobs[]` + `jobs.*` | [`handlers/jobs.ts`](../examples/showcase/src/handlers/jobs.ts) | staging | — (no app declares `jobs[]` yet) |
-| Fulfillment service update / delete | `fulfillment_services[]` + `fulfillment_services.update/delete` | [`handlers/data-and-collections.ts`](../examples/showcase/src/handlers/data-and-collections.ts) | staging | — (no app declares `fulfillment_services` yet) |
 | Static tier (no Worker) | `runtime.tier: 'static'`, `framework: 'static'` | none | n/a | Not a marketplace app on its own: publish requires `tools:register` and at least one tool with a handler, and a static bundle has no Worker to run it. Host a plain static site with `sprigr site` ([website-hosting.md](website-hosting.md)). |
 
 ### Reading the exemplar column

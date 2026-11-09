@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-home-conformance",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Conformance suite for an app's Sprigr Home tool: basis echo, the person rule, actor isolation, no writes, the 64 KB and time budgets, run the way the platform dispatches.",
   "type": "module",
   "main": "./dist/index.js",
