@@ -56,7 +56,15 @@ export const VERDICT_MARKER_STRIP_RE = /^\s*<!--\s*verdict\s+sha=[^>]*-->\s*\n?/
  *  reviewer's prefix plus the word VERDICT, in any formatting. Used only to
  *  COUNT verdict-shaped comments the strict pattern could not parse — never
  *  to authorize anything. */
-const VERDICT_SHAPED_RE = /\[tech-lead-reviewer\][\s\S]{0,80}?VERDICT/i;
+/**
+ * The lane reviewers' own display tags (decision 0296). A verdict must still
+ * carry the shared `[tech-lead-reviewer]` tag; these are matched only to
+ * NOTICE a lane-tagged verdict (count it, refuse it at post time), never to
+ * authorize one. An explicit list, so any other suffix stays unrecognised.
+ */
+const LANE_TAG = '(?:-apps|-misc|-sessions)?';
+
+const VERDICT_SHAPED_RE = new RegExp(`\\[tech-lead-reviewer${LANE_TAG}\\][\\s\\S]{0,80}?VERDICT`, 'i');
 
 /**
  * Post-time form check: like TECH_LEAD_VERDICT_RE but also admitting the
@@ -204,7 +212,7 @@ export function isUnactionableRuling(body: string): boolean {
 
 /** Anchored "this body opens as a reviewer comment" test. Same prefix the FORM
  *  pattern anchors on, without requiring the verdict line to follow. */
-const REVIEWER_ANCHOR_RE = /^(?:<!--\s*verdict\s+sha=[^>]*-->\s*\n?)?\s*(?:#{1,6}\s*)?[*_]*\[tech-lead-reviewer\]/i;
+const REVIEWER_ANCHOR_RE = new RegExp(`^(?:<!--\\s*verdict\\s+sha=[^>]*-->\\s*\\n?)?\\s*(?:#{1,6}\\s*)?[*_]*\\[tech-lead-reviewer${LANE_TAG}\\]`, 'i');
 
 /** How far into a body a `VERDICT:` line still counts as this comment's own
  *  ruling attempt rather than a quotation buried in prose. */
