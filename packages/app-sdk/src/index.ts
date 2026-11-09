@@ -145,6 +145,7 @@ export {
   isNotConnectedError,
 } from './tool-wrappers';
 export type { ToolResult, ToolWrapperOptions } from './tool-wrappers';
+export { isConnectionLostError, reportConnectionLost } from './connection-lost';
 export {
   actorRetiredHook,
   parseActorRetiredArgs,
