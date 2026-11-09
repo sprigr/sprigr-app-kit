@@ -76,8 +76,10 @@ export interface ApprovalSpec<P = unknown, E = unknown> {
    * Use `set()` / `seq()` from `approval-hash`. Never include `confirm`.
    *
    * Omitted, the wrapper appends a canonical form of every OTHER argument:
-   * not the `keys` fields, not `confirm` / `_approval_granted`, and not the
-   * gate's `connectionArgs` (sprigr-apps#2605). So a grant approved for one
+   * not the `keys` fields, not `confirm` / `_approval_granted`, not the
+   * platform-stamped `actor` / `caller` / `_write_key` / `_home` /
+   * `_approval_granted_hash` (#274), and not the gate's `connectionArgs`
+   * (sprigr-apps#2605). So a grant approved for one
    * payload cannot be spent on another; before, a hash-less refund hashed the
    * same for 10.00 and 250.00. Supply `hash` when that default is too strict
    * (an order-insensitive set, a free-text field the model rewords) or
@@ -228,6 +230,13 @@ export interface DispatcherApprovalGate<E> {
 /** Keys never part of an operation's identity: the attestation flags. */
 const ATTESTATION_KEYS = ['confirm', APPROVAL_GRANTED_KEY];
 
+/**
+ * Args the platform stamps on every dispatch, never chosen by the caller. The
+ * replay of an approved call runs on a different turn, so `actor.surface` (and
+ * the rest) can differ from the asking turn and moved the hash (sprigr-app-kit#274).
+ */
+const PLATFORM_STAMPED_KEYS = ['actor', 'caller', '_write_key', '_home', '_approval_granted_hash'];
+
 /** JSON with object keys sorted at every depth, so key order cannot move a hash. */
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -243,12 +252,12 @@ function canonicalJson(value: unknown): string {
 
 /**
  * The default identity for a spec with no `hash` (sprigr-apps#2605): every
- * argument that is not the target id, an attestation flag, or a
- * connection-choosing argument, canonicalised. Empty when nothing is left,
+ * argument that is not the target id, an attestation flag, a platform-stamped
+ * key, or a connection-choosing argument, canonicalised. Empty when nothing is left,
  * so an id-only call keeps exactly the hash it always had.
  */
 function defaultPayloadParts(params: ToolArgs, keys: string[], connectionArgs: string[] = []): string[] {
-  const skip = new Set([...keys, ...ATTESTATION_KEYS, ...connectionArgs]);
+  const skip = new Set([...keys, ...ATTESTATION_KEYS, ...PLATFORM_STAMPED_KEYS, ...connectionArgs]);
   const rest: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(params)) {
     if (!skip.has(k) && v !== undefined) rest[k] = v;
