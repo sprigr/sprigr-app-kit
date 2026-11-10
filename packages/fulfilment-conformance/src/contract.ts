@@ -477,6 +477,22 @@ export const FULFILMENT_PROVIDER_OPS: readonly OpSpec[] = [
     output: { required: PROVIDER_ACK, optional: { provider_ref: 'nonempty_string', reason: 'string' } },
   },
   {
+    /**
+     * 1.7.0. Withdraw an inbound purchase order the warehouse has not accepted
+     * (decision 0397). Idempotent on `inbound_id`. `accepted`: the warehouse
+     * will not act on it; `rejected` with a reason: too late. It may overtake
+     * its own `create_inbound`: for an unseen `inbound_id` the provider
+     * answers `accepted` and rejects a later create with reason `withdrawn`.
+     * No capability flag and no events: the hub reads the bound op.
+     */
+    name: 'cancel_inbound',
+    optionalSince: '1.7.0',
+    effects: 'write',
+    ack: true,
+    ackStatuses: ['accepted', 'rejected'],
+    output: { required: { status: { enum: ['accepted', 'rejected'] } }, optional: { provider_ref: 'nonempty_string', reason: 'string' } },
+  },
+  {
     name: 'get_order_status',
     effects: 'read',
     ack: false,
