@@ -121,6 +121,46 @@ describe('checkAdapterManifest', () => {
     expect(failed(checkAdapterManifest(m, 'fulfilment_provider'))).toEqual(['events.required_emits_declared']);
   });
 
+  // cancel_inbound (1.7.0, decision 0397) answers synchronously and emits
+  // nothing, so claiming it needs no events; it may not be pinned earlier.
+  function withCancelInbound(version: string): Record<string, unknown> {
+    const m = withCreateInbound('1.6.0', INBOUND_EMITS);
+    (m.tools as Record<string, unknown>[]).push({
+      name: 'tiny_wh_cancel_inbound',
+      handler: 'src/handlers/provider.ts',
+      effects: 'write',
+    });
+    (m.cross_tenant_tools as Record<string, unknown>[]).push({
+      tool_name: 'tiny_wh_cancel_inbound',
+      resource_type: 'fulfilment',
+      action: 'write',
+      description: 'op cancel_inbound',
+      input_schema: { type: 'object', properties: {} },
+      provides: { interface: 'fulfilment-hub/fulfilment_provider', op: 'cancel_inbound', version },
+    });
+    return m;
+  }
+
+  it('accepts cancel_inbound pinned at 1.7.0 or later, with no events of its own', () => {
+    for (const v of ['1.7.0', '1.8.2', '1.0.0']) {
+      const report = checkAdapterManifest(withCancelInbound(v), 'fulfilment_provider');
+      expect(failed(report), `${v}\n${formatReport(report)}`).toEqual([]);
+    }
+  });
+
+  it('fails cancel_inbound pinned before it existed', () => {
+    for (const v of ['1.6.0', '2.0.0']) {
+      expect(failed(checkAdapterManifest(withCancelInbound(v), 'fulfilment_provider')), v).toEqual([
+        'provides.cancel_inbound.version',
+      ]);
+    }
+  });
+
+  it('still passes a 1.6.0 provider that does not claim cancel_inbound', () => {
+    const report = checkAdapterManifest(withCreateInbound('1.6.0', INBOUND_EMITS), 'fulfilment_provider');
+    expect(failed(report), formatReport(report)).toEqual([]);
+  });
+
   it('fails a write op with no effects: write', () => {
     const m = providerManifest();
     delete (m.tools as Record<string, unknown>[])[2]!.effects;
