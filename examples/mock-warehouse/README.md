@@ -36,6 +36,21 @@ mock_warehouse_advance { fulfilment_request_id: 'fr_...', to: 'cancel' }   -> pr
 outcome itself, so the lever stays quiet on a row that is already cancelled rather than double-reporting
 one cancellation to the hub.
 
+**Inbound purchase orders (1.5.0).** `create_inbound` answers `queued` under `mwi_<inbound_id>` and is
+idempotent on `inbound_id`. The warehouse's answer and its count come from a second lever:
+
+```
+mock_warehouse_inbound_advance { inbound_id: 'inb_...', to: 'accept' }    -> provider.inbound.accepted
+mock_warehouse_inbound_advance { inbound_id: 'inb_...', to: 'refuse',
+                                 reason: 'dock full' }                    -> provider.inbound.refused
+mock_warehouse_inbound_advance { inbound_id: 'inb_...', to: 'receive',
+                                 lines: [{ sku: 'CONF-SKU-2', quantity: 4 }] } -> partial delivery
+mock_warehouse_inbound_advance { inbound_id: 'inb_...', to: 'receive' }   -> the rest, complete
+```
+
+`receive` reports cumulative counts with `delivery_count`, and `complete` stays false until every line
+is in (`complete: true` settles a short delivery). The stock fixture does not move on a receipt.
+
 **The carrier half.** `provider.shipment.event` is the only way the hub learns a parcel moved, so
 without a lever for it the hub's scan handler, its `delivered_at` and its transit and delivery KPIs
 are unreachable from a shakedown.
@@ -63,6 +78,6 @@ are unreachable from a shakedown.
 pnpm -F mock-warehouse test
 ```
 
-`__tests__/conformance.test.ts` runs the full [`@sprigr/apps-fulfilment-conformance`](../../packages/fulfilment-conformance) suite against this app's real handler map plus its manifest. `__tests__/advance.test.ts` covers what the harness cannot reach: the advance lever's event sequence, the carrier-scan levers (sequence, dedup refs, the refusal before ship), the cancel outcome on both paths (and that the lever does not re-emit it), and the idempotency record underneath `push_order`.
+`__tests__/conformance.test.ts` runs the full [`@sprigr/apps-fulfilment-conformance`](../../packages/fulfilment-conformance) suite against this app's real handler map plus its manifest. `__tests__/advance.test.ts` covers what the harness cannot reach: the advance lever's event sequence, the carrier-scan levers (sequence, dedup refs, the refusal before ship), the cancel outcome on both paths (and that the lever does not re-emit it), and the idempotency record underneath `push_order`. `__tests__/inbound.test.ts` covers `create_inbound` and the inbound lever.
 
 There is no `DB` binding in a unit test, so `depsFor(env)` hands the handlers an in-memory store and a call-counting stand-in vendor. On the platform `env.DB` is always bound and the same handlers run against per-install D1; the fallback is unreachable in production.
