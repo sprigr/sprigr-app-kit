@@ -426,24 +426,34 @@ Both need `SPRIGR_PLATFORM_BASE` + `SPRIGR_INSTALL_TOKEN`, which unlike `SPRIGR`
 
 ### `env.SPRIGR`: platform callbacks (no API key)
 
-Tool / event / webhook handlers also get an injected `env.SPRIGR` host object. Every method calls back to the platform over the per-install `SPRIGR_INSTALL_TOKEN` bearer, so your app never holds a Sprigr or platform API key, and the platform scopes every call to the install's own company. The surface:
+Tool / event / webhook handlers also get an injected `env.SPRIGR` host object. Every method calls back to the platform over the per-install `SPRIGR_INSTALL_TOKEN` bearer, so your app never holds a Sprigr or platform API key. What a call can reach is set server-side: most namespaces are scoped to the install's company, some to the install itself, and the publisher store is shared across every install of the app (the "Data scoped to" column).
+
+A namespace with a **Scope** must list it in the manifest's `permissions.scopes`; a call without it is refused, and an owner who revokes the scope stops further calls without a redeploy. Scope names are the platform's `AppScope` vocabulary. A namespace with no scope is open to every install of the app, and for `data` and `datasets` the index or dataset must also be declared in the manifest.
+
+| Namespace | Purpose | Methods | Scope | Data scoped to | Example |
+|---|---|---|---|---|---|
+| `inbox` | Mirror external messages into Sprigr threads | `append`, `folders`, `revokeOwner`, `purgeActor` | `inbox:write` | The install's company; each thread's visibility is pinned to the batch `owner` (see below) | `await env.SPRIGR.inbox.append({ channel: 'acme_chat', messages, owner })` |
+| `browser` | One-shot headless fetch / screenshot | `fetch`, `screenshot` | `sprigr.browser:fetch` | Nothing is stored | `await env.SPRIGR.browser.fetch(url, { waitForSelector: '#app-root', timeoutMs: 30_000 })` |
+| `browser.session` | **OWNER-ONLY** stateful, cookie-persistent browser sessions (see below) | `open`, `act`, `snapshot`, `cookies`, `close` | `sprigr.browser:session` + `sprigr.jobs` + `sprigr.jobs:publisher` | The app's OWNER install only; the cookie jar lives in the publisher store (see below) | `await env.SPRIGR.browser.session.open({ url, cookieKey: 'acme-portal', hydrateCookies: true })` |
+| `jobs` | Durable, resumable multi-step jobs; declare each in the manifest `jobs[]` | `start`, `get`, `signal`, `cancel`, `list` | `sprigr.jobs` | The install | `await env.SPRIGR.jobs.start({ name: 'showcase_backfill', params: { max_pages: 3 } })` |
+| `store` | Key-value store | `get`, `put`, `delete`, `list` | `sprigr.jobs`; `scope: 'publisher'` also needs `sprigr.jobs:publisher` | `company` (default): the app in this company. `publisher`: shared by every install of the app | `await env.SPRIGR.store.put('sync:cursor', cursor, { scope: 'company', ttlSeconds: 86_400 })` |
+| `teams` | Read the company's teams and the asking person's teams | `list`, `mine` | `teams:read` | The install's company; `mine` answers only for the signed actor or viewer of the call | `await env.SPRIGR.teams.list()` |
+| `collections` | Typed, faceted data store (see below) | `define`, `ingest`, `ingestFromTable`, `query`, `reconcile`, `describe`, `history`, `delete`, `clear` | None | The install's company | `await env.SPRIGR.collections.define(DEALS_DEFINITION)` |
+| `data` | Raw private discovery index for search-then-fetch-live; `partialUpdate` merges fields without a read; `delete` / `listIds` / `exists` maintain a mirror (see below) | `import`, `partialUpdate`, `search`, `get`, `delete`, `listIds`, `exists` | None (the index must be declared in `data_index` / `data_indexes`) | The company's private app index, `<companyId>-app-<slug>` | `await env.SPRIGR.data.import(contacts.map((c) => ({ objectID: c.id, ...c })))` |
+| `files` | Durable app file storage in Sprigr R2, with signed download URLs (see below) | `put`, `putStream`, `get`, `list`, `delete`, `url`, `purgeOwner`, `edit`, `extract`, `create`, `job` | None | The install (`_apps/{installId}/`), and per user under `actor_scoped_storage_prefixes` | `await env.SPRIGR.files.putStream(key, csv, { contentType: 'text/csv', filename: 'acme-report.csv' })` |
+| `log` | Durable app log rows in the platform's `system_logs` (Analytics Engine, 90 days); replaces per-webhook / per-tick D1 audit rows (see below) | `log(entry \| entry[])`, at most 50 entries | None | The install's company, stamped with the install and app slug (see below) | `await env.SPRIGR.log({ level: 'info', category: 'webhook.ok', summary })` |
+| `datasets` | Bulk rows for analytics and the conform build | `append`, `seal`, `ready` | None (the dataset must be declared in `datasets`) | The install | `await env.SPRIGR.datasets.append(dataset, rows)` |
+
+Other host calls:
 
 | Call | What it does |
 |---|---|
 | `emit(name, payload, opts?)` | Emit a marketplace event (subscribers / cross-tenant fan-out) |
-| `collections.{define,ingest,ingestFromTable,query,reconcile,describe,history}` | Typed + faceted data store (see below) |
-| `data.{import,partialUpdate,search,get,delete,listIds,exists}` | Raw private discovery index (`<companyId>-app-<slug>`) for search-then-fetch-live; `partialUpdate` merges fields without a read; `delete`/`listIds`/`exists` maintain a mirror (see below) |
 | `schedules.create(args)` | Self-provision an agent-side scheduled task |
 | `integrations.invoke(req)` / `invoke(tool, args)` | Call a built-in integration / cross-tenant tool |
 | `run_workflow(id, opts)` | Synchronously run a tenant workflow (Decision Points) |
-| `inbox.append(args)` / `registerChannel(...)` / `usage.report(...)` | Inbox mirror, shared-channel routing, usage metering |
+| `registerChannel(...)` / `usage.report(...)` | Shared-channel routing, usage metering |
 | `registerWebhookTenant(tenantId, { path? })` | Route a provider tenant's events from the app's shared webhook to this install (see "Shared webhooks" above); idempotent, call at connect and periodically |
-| `files.{putStream,url,put,get,list,delete}` | Durable app-scoped file storage in Sprigr R2 + signed download URLs, per user under `actor_scoped_storage_prefixes` (see below) |
-| `log(entry \| entry[])` | Durable app log rows in the platform's `system_logs` (Analytics Engine, 90 days); replaces per-webhook / per-tick D1 audit rows (see below) |
-| `jobs.{start,get,signal,cancel,list}` | Durable, resumable multi-step jobs (declare in manifest `jobs[]`; needs `sprigr.jobs`) |
-| `store.{get,put,delete,list}` | Company/publisher-scoped KV (needs `sprigr.jobs`; publisher scope needs `sprigr.jobs:publisher`) |
-| `browser.fetch(url,opts)` / `browser.screenshot(url,opts)` | One-shot headless fetch/screenshot (needs `sprigr.browser:fetch`) |
-| `browser.session.{open,act,snapshot,cookies,close}` | **OWNER-ONLY** stateful, cookie-persistent browser sessions (see below) |
 
 **`inbox.append` / `inbox.folders` owner attribution (mail apps).** Every batch a mail app
 appends must carry `owner` — `{ platformUserId }` for a personal mailbox connection or
