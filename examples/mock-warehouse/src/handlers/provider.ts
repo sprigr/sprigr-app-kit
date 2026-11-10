@@ -28,7 +28,7 @@ import {
   type ShipmentStage,
 } from '../lib/scans';
 import { STOCK_FIXTURE, WAREHOUSE_FIXTURE } from '../lib/stock';
-import type { RequestRecord, RequestStage } from '../lib/store';
+import type { InboundLine, InboundRecord, RequestRecord, RequestStage } from '../lib/store';
 
 export const ADAPTER_SLUG = 'mock-warehouse';
 
@@ -53,6 +53,7 @@ export function describe() {
     adapter_slug: ADAPTER_SLUG,
     capabilities: {
       supports_cancel: true,
+      supports_inbound: true,
       supports_split: false,
       supports_hold: false,
       tracking_mode: 'push' as const,
@@ -253,6 +254,68 @@ export function getStock(deps: WarehouseDeps, args: { warehouse_key?: string; sk
 
 export function health() {
   return { ok: true, credentials_ok: true, breaker_open: false, detail: 'mock warehouse, always up' };
+}
+
+// ---------------------------------------------------------------------------
+// Inbound purchase orders (fulfilment_provider 1.5.0)
+// ---------------------------------------------------------------------------
+
+export interface CreateInboundArgs {
+  inbound_id: string;
+  po_number: string;
+  warehouse_key: string;
+  expected_arrival?: string;
+  supplier?: string;
+  notes?: string;
+  lines: Array<{ line_id?: string; sku: string; quantity: number; barcode?: string; title?: string }>;
+}
+
+const inboundRefFor = (inboundId: string) => `mwi_${inboundId}`;
+
+/**
+ * Take the PO and answer `queued`: the warehouse's yes or no arrives later as
+ * an event, on the inbound lever. Idempotent on `inbound_id` the same way
+ * push_order is on its request id: claimed first, and a repeat answers from
+ * the row without a second PO.
+ */
+export async function createInbound(deps: WarehouseDeps, args: CreateInboundArgs): Promise<Ack> {
+  if (!args?.inbound_id) return { status: 'rejected', reason: 'inbound_id is required' };
+  if (!WAREHOUSE_FIXTURE.some((w) => w.warehouse_key === args.warehouse_key)) {
+    return {
+      status: 'rejected',
+      reason: `unknown warehouse_key "${args.warehouse_key}" (known: ${WAREHOUSE_FIXTURE.map((w) => w.warehouse_key).join(', ')})`,
+    };
+  }
+  const given = Array.isArray(args.lines) ? args.lines : [];
+  if (given.length === 0) return { status: 'rejected', reason: 'a purchase order needs at least one line' };
+  const bad = given.filter((l) => !l?.sku || !Number.isInteger(l.quantity) || l.quantity <= 0);
+  if (bad.length > 0) {
+    return {
+      status: 'rejected',
+      reason: `every line needs a sku and a whole quantity above 0 (bad: ${bad.map((l) => l?.sku || '(no sku)').join(', ')})`,
+    };
+  }
+
+  const ref = inboundRefFor(args.inbound_id);
+  const lines: InboundLine[] = given.map((l, i) => ({
+    line_id: l.line_id || `line_${i + 1}`,
+    sku: l.sku,
+    quantity: l.quantity,
+    received_quantity: 0,
+  }));
+  const now = deps.now();
+  await deps.store.claimInbound({
+    inbound_id: args.inbound_id,
+    provider_ref: ref,
+    po_number: args.po_number ?? '',
+    warehouse_key: args.warehouse_key,
+    lines_json: JSON.stringify(lines),
+    stage: 'queued',
+    delivery_count: 0,
+    created_at: now,
+    updated_at: now,
+  });
+  return { status: 'queued', provider_ref: ref };
 }
 
 // ---------------------------------------------------------------------------
@@ -556,6 +619,99 @@ async function setStage(deps: WarehouseDeps, row: RequestRecord, stage: RequestS
 }
 
 // ---------------------------------------------------------------------------
+// The inbound lever
+// ---------------------------------------------------------------------------
+
+export interface InboundAdvanceArgs {
+  inbound_id: string;
+  to: 'accept' | 'refuse' | 'receive';
+  /** `refuse` only: shown to the brand verbatim. */
+  reason?: string;
+  /** `accept` and `receive`: the warehouse's note. */
+  note?: string;
+  /**
+   * `receive` only: what THIS delivery brought, by `line_id` or `sku`.
+   * Omitted means the rest of the PO.
+   */
+  lines?: Array<{ line_id?: string; sku?: string; quantity: number }>;
+  /** `receive` only: settle the PO with this delivery even if lines are short. */
+  complete?: boolean;
+}
+
+export interface InboundAdvanceResult {
+  ok: boolean;
+  stage?: InboundRecord['stage'];
+  emitted?: EmitOutcome[];
+  reason?: string;
+}
+
+/**
+ * Stand in for the warehouse's answer and its count. `receive` reports
+ * CUMULATIVE counts with a delivery number, and `complete` stays false until
+ * every line is in, which is how the hub tells a partial receipt from the
+ * last one.
+ */
+export async function inboundAdvance(
+  env: MockWarehouseEnv,
+  deps: WarehouseDeps,
+  args: InboundAdvanceArgs,
+): Promise<InboundAdvanceResult> {
+  const row = await deps.store.getInbound(args?.inbound_id ?? '');
+  if (!row) return { ok: false, reason: `no inbound ${args?.inbound_id}` };
+  const base = { adapter_slug: ADAPTER_SLUG, interface_version: '1.5.0', inbound_id: row.inbound_id, provider_ref: row.provider_ref };
+  const settled = row.stage === 'refused' || row.stage === 'received';
+
+  if (args.to === 'accept' || args.to === 'refuse') {
+    if (settled || row.delivery_count > 0) {
+      return { ok: false, stage: row.stage, reason: `inbound ${row.inbound_id} is ${row.stage}; it can no longer be ${args.to === 'accept' ? 'accepted' : 'refused'}` };
+    }
+    const stage = args.to === 'accept' ? 'accepted' : 'refused';
+    await deps.store.updateInbound(row.inbound_id, { stage, lines_json: row.lines_json, delivery_count: row.delivery_count, updated_at: deps.now() });
+    const outcome =
+      args.to === 'accept'
+        ? await safeEmit(env, 'provider.inbound.accepted', { ...base, ...(args.note ? { note: args.note } : {}) })
+        : await safeEmit(env, 'provider.inbound.refused', { ...base, reason: args.reason || 'refused by the mock warehouse' });
+    await report(env, 'inbound', { inbound: row.inbound_id, to: stage });
+    return { ok: true, stage, emitted: [outcome] };
+  }
+
+  if (args.to !== 'receive') return { ok: false, stage: row.stage, reason: `unknown to "${String(args.to)}" (known: accept, refuse, receive)` };
+  if (settled) return { ok: false, stage: row.stage, reason: `inbound ${row.inbound_id} is ${row.stage}; it takes no further delivery` };
+
+  const lines = JSON.parse(row.lines_json) as InboundLine[];
+  const delivery = new Map<number, number>();
+  if (Array.isArray(args.lines) && args.lines.length > 0) {
+    for (const want of args.lines) {
+      const i = lines.findIndex((l) => (want.line_id ? l.line_id === want.line_id : l.sku === want.sku));
+      if (i < 0) return { ok: false, stage: row.stage, reason: `${want.line_id || want.sku} is not on inbound ${row.inbound_id}` };
+      if (!Number.isInteger(want.quantity) || want.quantity < 0) {
+        return { ok: false, stage: row.stage, reason: `quantity for ${want.line_id || want.sku} must be a whole number of 0 or more` };
+      }
+      delivery.set(i, (delivery.get(i) ?? 0) + want.quantity);
+    }
+  } else {
+    lines.forEach((l, i) => delivery.set(i, Math.max(0, l.quantity - l.received_quantity)));
+  }
+
+  const counted = lines.map((l, i) => ({ ...l, received_quantity: l.received_quantity + (delivery.get(i) ?? 0) }));
+  const complete = args.complete === true || counted.every((l) => l.received_quantity >= l.quantity);
+  const deliveryCount = row.delivery_count + 1;
+  const stage = complete ? 'received' : 'partially_received';
+  const receivedAt = deps.now();
+  await deps.store.updateInbound(row.inbound_id, { stage, lines_json: JSON.stringify(counted), delivery_count: deliveryCount, updated_at: receivedAt });
+  const outcome = await safeEmit(env, 'provider.inbound.received', {
+    ...base,
+    received_at: receivedAt,
+    complete,
+    delivery_count: deliveryCount,
+    lines: counted.map((l) => ({ line_id: l.line_id, sku: l.sku, expected_quantity: l.quantity, received_quantity: l.received_quantity })),
+    ...(args.note ? { note: args.note } : {}),
+  });
+  await report(env, 'inbound', { inbound: row.inbound_id, to: stage, delivery: deliveryCount });
+  return { ok: true, stage, emitted: [outcome] };
+}
+
+// ---------------------------------------------------------------------------
 // The handler map the marketplace runtime dispatches, and the conformance
 // harness drives. Tool names are `<slug_with_underscores>_<op>`, which is the
 // only spelling publish accepts for a provides-tagged tool.
@@ -577,4 +733,7 @@ export default {
     getStock(depsFor(env), args),
   mock_warehouse_health: () => health(),
   mock_warehouse_advance: (args: AdvanceArgs, env: MockWarehouseEnv) => advance(env, depsFor(env), args),
+  mock_warehouse_create_inbound: (args: CreateInboundArgs, env: MockWarehouseEnv) => createInbound(depsFor(env), args),
+  mock_warehouse_inbound_advance: (args: InboundAdvanceArgs, env: MockWarehouseEnv) =>
+    inboundAdvance(env, depsFor(env), args),
 };
