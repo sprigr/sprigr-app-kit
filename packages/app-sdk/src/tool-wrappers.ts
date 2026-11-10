@@ -9,7 +9,9 @@
  *   tool(fn)       actor-less handlers: schedules, webhooks, internal work.
  *   actorTool(fn)  per-actor handlers: reads the platform-stamped
  *                  `args.actor`, fails closed with 412 when it is absent, and
- *                  maps NotConnectedError to a 412 `not_connected`.
+ *                  maps NotConnectedError to a 412 `not_connected`, and a
+ *                  terminal OAuthError to a 412 `connection_lost` after
+ *                  reporting it so the platform asks a person to reconnect.
  *
  * WHY THIS IS IN THE SDK. Every app hand-rolled this wrapper, and the gorgias
  * app got it wrong in the way that matters: when the caller had no connection
@@ -27,7 +29,9 @@
  * handler to borrow one.
  */
 
-import { parseActor, type Actor } from './actor';
+import { actorKey, parseActor, type Actor } from './actor';
+import { isConnectionLostError, reportConnectionLost } from './connection-lost';
+import type { WfpBridgeEnv } from './wfp-bridge';
 
 /** What every wrapped handler returns. `ok:false` never throws past the wrapper. */
 export type ToolResult<R> =
@@ -79,6 +83,11 @@ export interface ToolWrapperOptions {
    */
   notConnectedHint?: string;
   /**
+   * Hint returned alongside `connection_lost`: the caller's grant was refused
+   * by the provider and the platform has asked them (or an admin) to reconnect.
+   */
+  connectionLostHint?: string;
+  /**
    * Hint returned alongside `no_caller_identity`.
    */
   noCallerIdentityHint?: string;
@@ -96,6 +105,10 @@ export interface ToolWrapperOptions {
 
 const DEFAULT_NO_CALLER_HINT =
   'The platform did not stamp caller identity on this call. Retry from an agent context.';
+
+const DEFAULT_CONNECTION_LOST_HINT =
+  'The provider no longer accepts this connection (it was revoked or expired). The platform has asked ' +
+  'the person who connected it to reconnect; retrying will not help until they do.';
 
 const DEFAULT_NOT_CONNECTED_HINT =
   'You have not connected your own account with this app yet, and this tool only ever acts as ' +
@@ -158,6 +171,15 @@ export function actorTool<Env, A, R>(
           ok: false,
           error: 'not_connected',
           hint: opts.notConnectedHint ?? DEFAULT_NOT_CONNECTED_HINT,
+          status: 412,
+        };
+      }
+      if (isConnectionLostError(err)) {
+        await reportConnectionLost(env as WfpBridgeEnv, actorKey(actor)!);
+        return {
+          ok: false,
+          error: 'connection_lost',
+          hint: opts.connectionLostHint ?? DEFAULT_CONNECTION_LOST_HINT,
           status: 412,
         };
       }

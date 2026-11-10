@@ -38,6 +38,7 @@ export default { list_things: actorTool(async (env, actor, args) => { /* ... */ 
 ```
 
 - `actorTool(fn)`: reads the platform-stamped `args.actor`, returns `412 no_caller_identity` when it is absent, and maps a thrown `NotConnectedError` to `412 not_connected` with your connect hint. Identity comes only from the nested `args.actor`; flat body fields are agent-supplied and spoofable.
+- A terminal `OAuthError` (from `@sprigr/apps-oauth-utils`, `terminal: true`) thrown inside `actorTool` is reported to the platform with `reportConnectionLost(env, actorKey)` and answered `412 connection_lost` (`connectionLostHint`). The platform asks the person who connected, or the company's admins, to reconnect, at most once a day per install and actor. Background paths call `reportConnectionLost` themselves; only on a terminal failure (sprigr-team decision 0388, 0.57.0).
 - `tool(fn)`: for handlers with genuinely no caller (schedules, webhooks, platform mirrors). Those need a *designated service connection*, which is not licence for an agent-facing handler to borrow one.
 - `NotConnectedError`: throw from your token resolver when the **caller** has no connection. Don't throw it for "the install has none", which is a different fault with a different fix.
 - `isNotConnectedError(err)`: matches by class *and* by `name`, so it still works when the vendor pattern puts two copies of this module in one isolate and `instanceof` would silently fail.
