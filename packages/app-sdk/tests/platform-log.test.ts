@@ -8,6 +8,7 @@ import {
   validateLogEntries,
   SprigrLogValidationError,
   SPRIGR_LOG_LIMITS,
+  DEFAULT_LOG_TIMEOUT_MS,
   type SprigrLogEntry,
 } from '../src/platform-log';
 
@@ -353,6 +354,40 @@ describe('logToPlatform, dispatch path (env.SPRIGR present)', () => {
     const env = inlineEnv({ SPRIGR: { log: async () => Promise.reject(new Error('boom')) } });
     const r = await logToPlatform(env, entry());
     expect(r).toMatchObject({ ok: false, error: 'log_failed', detail: 'boom' });
+  });
+
+  // sprigr-app-kit#282: the host member posts with no AbortSignal, so
+  // timeoutMs has to bound the caller's wait on this branch too. The row is
+  // not lost: the host hands its send to ctx.waitUntil on its own.
+  it('stops waiting on a hung injected binding at timeoutMs (log_timeout)', async () => {
+    const env = inlineEnv({ SPRIGR: { log: () => new Promise(() => {}) } });
+    const stillWaiting = new Promise((resolve) => setTimeout(() => resolve('still waiting'), 500));
+    const r = await Promise.race([logToPlatform(env, entry(), { timeoutMs: 20 }), stillWaiting]);
+    expect(r).toMatchObject({ ok: false, error: 'log_timeout' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('bounds a hung injected binding by DEFAULT_LOG_TIMEOUT_MS when no timeoutMs is given', async () => {
+    vi.useFakeTimers();
+    try {
+      const env = inlineEnv({ SPRIGR: { log: () => new Promise(() => {}) } });
+      let settled: unknown = 'still waiting';
+      void logToPlatform(env, entry()).then((r) => (settled = r));
+      await vi.advanceTimersByTimeAsync(DEFAULT_LOG_TIMEOUT_MS - 1);
+      expect(settled).toBe('still waiting');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(settled).toMatchObject({ ok: false, error: 'log_timeout' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns the binding answer when it lands before timeoutMs', async () => {
+    const env = inlineEnv({
+      SPRIGR: { log: () => new Promise((resolve) => setTimeout(() => resolve({ ok: true, written: 1 }), 5)) },
+    });
+    const r = await logToPlatform(env, entry(), { timeoutMs: 1_000 });
+    expect(r).toEqual({ ok: true, written: 1 });
   });
 
   it('falls back to HTTP when SPRIGR exists but has no log (older wrapper build)', async () => {
