@@ -151,6 +151,7 @@ From `@sprigr/apps-oauth-utils` ([packages/oauth-utils/src](../packages/oauth-ut
 - `getValidAccessToken(config, store)`: THE runtime entry point. Returns a cached access token if not near expiry, otherwise refreshes and persists. Call it at the top of every provider API call.
 - `refreshOAuthToken` / `refreshAndPersist`: the underlying refresh cycle; handles rotating refresh tokens.
 - `OAuthError` with machine-readable `reason` (`revoked`, `network`, ...): distinguishes "user must reconnect" from transient failure.
+- `newCodeVerifier()` / `codeChallengeS256(verifier)`: PKCE S256 for the connect flow. The verifier stays on the pending row; the challenge goes on the authorize URL; the verifier goes on the exchange.
 - `ProviderConfig { provider, tokenUrl, clientId, clientSecret }` and `TokenStore { get, put, delete? }`: the two shapes you supply.
 
 Two facts to know up front:
