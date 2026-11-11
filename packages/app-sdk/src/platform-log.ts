@@ -261,7 +261,11 @@ function bindingLog(env: WfpBridgeEnv): SprigrLogFn | null {
 }
 
 export interface LogToPlatformOptions {
-  /** Override the 5s ceiling on the HTTP fallback. */
+  /**
+   * Override the 5s ceiling on how long the caller waits, on either
+   * transport. On the injected binding the send is not cancelled, only no
+   * longer awaited (sprigr-app-kit#282).
+   */
   timeoutMs?: number;
   /**
    * `ctx.waitUntil` from the route handler. On the HTTP fallback the row
@@ -321,6 +325,24 @@ async function postLog(
 }
 
 /**
+ * Stop awaiting the injected binding after `timeoutMs`. The host member posts
+ * with no AbortSignal, so during a platform stall it waits as long as the
+ * platform takes; on 2026-11-10 that held shopify's webhook batches past
+ * their 20 s deadline (sprigr-app-kit#282, sprigr-apps#4648). The row is not
+ * lost: the host already hands its send to `ctx.waitUntil`.
+ */
+function boundedWait(send: Promise<SprigrLogResult>, timeoutMs: number): Promise<SprigrLogResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<SprigrLogResult>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn(`[sprigr-log] env.SPRIGR.log did not answer within ${timeoutMs}ms; no longer waiting`);
+      resolve({ ok: false, error: 'log_timeout', detail: `no answer within ${timeoutMs}ms` });
+    }, timeoutMs);
+  });
+  return Promise.race([send, timedOut]).finally(() => clearTimeout(timer));
+}
+
+/**
  * Write log rows from any execution context.
  *
  * Prefers the injected `env.SPRIGR.log`; falls back to the install-token
@@ -360,6 +382,7 @@ export function logToPlatform(
         detail: err instanceof Error ? err.message : String(err),
       });
     }
+    result = boundedWait(result, opts?.timeoutMs ?? DEFAULT_LOG_TIMEOUT_MS);
   } else {
     result = postLog(env, entries, opts?.timeoutMs ?? DEFAULT_LOG_TIMEOUT_MS);
   }
