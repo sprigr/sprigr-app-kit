@@ -6,6 +6,7 @@ export {
   refreshAndPersist,
 } from './refresh';
 export { exchangeAuthCode, exchangeAndPersist } from './exchange';
+export { newCodeVerifier, codeChallengeS256 } from './pkce';
 export { revokeOnUninstall, formPostRevoker, googleRevoker, asanaRevoker } from './revoke';
 export type { ProviderRevoker, RevokeTarget, RevokeOnUninstallOpts, RevokeOnUninstallResult } from './revoke';
 export type {
