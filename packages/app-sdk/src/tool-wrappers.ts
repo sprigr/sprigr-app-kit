@@ -33,10 +33,14 @@ import { actorKey, parseActor, type Actor } from './actor';
 import { isConnectionLostError, reportConnectionLost } from './connection-lost';
 import type { WfpBridgeEnv } from './wfp-bridge';
 
-/** What every wrapped handler returns. `ok:false` never throws past the wrapper. */
+/**
+ * What every wrapped handler returns. `ok:false` never throws past the wrapper.
+ * `scope: 'actor'` means only this actor reconnecting can fix it; the platform
+ * holds that actor's triggered workflows on it (sprigr-team decision 0404).
+ */
 export type ToolResult<R> =
   | { ok: true; result: R }
-  | { ok: false; error: string; hint?: string; status?: number };
+  | { ok: false; error: string; hint?: string; status?: number; scope?: 'actor' };
 
 /**
  * Throw this from a token resolver when the CALLING actor has no connection
@@ -172,6 +176,7 @@ export function actorTool<Env, A, R>(
           error: 'not_connected',
           hint: opts.notConnectedHint ?? DEFAULT_NOT_CONNECTED_HINT,
           status: 412,
+          scope: 'actor',
         };
       }
       if (isConnectionLostError(err)) {
@@ -181,6 +186,7 @@ export function actorTool<Env, A, R>(
           error: 'connection_lost',
           hint: opts.connectionLostHint ?? DEFAULT_CONNECTION_LOST_HINT,
           status: 412,
+          scope: 'actor',
         };
       }
       return shapeError(err, opts);

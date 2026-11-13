@@ -45,3 +45,19 @@ export async function reportConnectionLost(env: WfpBridgeEnv, actorKey: string):
     return false;
   }
 }
+
+/**
+ * `env.SPRIGR.connect`: tell the platform an actor's connection works again,
+ * so it lifts the trigger hold it placed on that actor after a 412 with
+ * `scope: 'actor'` (sprigr-team decision 0404). Call `restored(actorKey)` from
+ * the app's OAuth callback once the new grant is stored.
+ *
+ * Typings only for now: neither the platform route
+ * (`POST /internal/wfp/connection-restored`) nor the `restored` method on
+ * `env.SPRIGR.connect` exists yet (`connect` itself does, with `lost`). Call it
+ * as `env.SPRIGR.connect?.restored?.(key)`. Until it exists, the platform lifts
+ * a hold when a probe run succeeds, at most every 6 hours.
+ */
+export interface SprigrConnectApi {
+  restored(actorKey: string): Promise<{ ok: boolean }>;
+}
