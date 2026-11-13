@@ -34,9 +34,10 @@ describe('refuseUnlessConnectionAdminActor', () => {
     expect(gate({ platformUserId: 'usr_o', role: 'owner', personId: 'usr_m', personSource: 'live', driverRole: 'member' })).toEqual(REFUSED);
   });
 
-  it('runs a system turn no person drove as an owner or admin bound user, and refuses otherwise', () => {
-    expect(gate({ platformUserId: 'usr_o', role: 'owner', surface: 'system' })).toBeNull();
-    expect(gate({ platformUserId: 'usr_a', role: 'admin', surface: 'system' })).toBeNull();
+  // An expired decision card or a delegation synthesis in an outsider's conversation runs as 'system' with no person.
+  it('refuses a system turn with no person, even on an owner or admin bound agent', () => {
+    expect(gate({ platformUserId: 'usr_o', role: 'owner', surface: 'system' })).toEqual(REFUSED);
+    expect(gate({ platformUserId: 'usr_a', role: 'admin', surface: 'system' })).toEqual(REFUSED);
     expect(gate({ platformUserId: 'usr_m', role: 'member', surface: 'system' })).toEqual(REFUSED);
     expect(gate({ agentId: 'agt_s', role: 'owner', surface: 'system' })).toEqual(REFUSED);
   });
