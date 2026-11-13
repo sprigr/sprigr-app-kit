@@ -1,5 +1,5 @@
 {
-  "_comment": "Decision 0406. The same file is in sprigr-app-kit packages/app-sdk/tests/fixtures; both validators must give these verdicts. Change both together.",
+  "_comment": "Decision 0408. The same file is in sprigr-app-kit packages/app-sdk/tests/fixtures; both validators must give these verdicts. Change both together.",
   "tools": [
     {"name": "acme_connect", "input_schema": {"type": "object", "properties": {"site": {"type": "string"}, "api_token": {"type": "string"}, "passenger": {"type": "string"}, "compass": {"type": "string"}, "pin": {"type": "string"}, "pwd": {"type": "string"}, "auth": {"type": "string"}, "access_key": {"type": "string"}, "privatekey": {"type": "string"}, "accesskey": {"type": "string"}, "secretkey": {"type": "string"}, "passkey": {"type": "string"}, "passcode": {"type": "string"}, "pincode": {"type": "string"}, "authorization": {"type": "string"}, "project_key": {"type": "string"}, "auth_domain": {"type": "string"}}}}
   ],

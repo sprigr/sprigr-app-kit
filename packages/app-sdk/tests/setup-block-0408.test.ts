@@ -1,5 +1,5 @@
 /**
- * The manifest `setup` block (sprigr-team decision 0406). The fixture file is
+ * The manifest `setup` block (sprigr-team decision 0408). The fixture file is
  * the same file sprigr-team's validator reads, so every case here gets the
  * platform's verdict and message.
  */

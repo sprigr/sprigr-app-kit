@@ -27,7 +27,7 @@ describe('validateHome', () => {
     expect(validateHome(m as never, deps)).toMatch(/get_xero_accounting_home/);
   });
 
-  it('accepts identity with no providers, and refuses no providers without identity (sprigr-team decision 0406)', () => {
+  it('accepts identity with no providers, and refuses no providers without identity (sprigr-team decision 0408)', () => {
     const m = load('xero-accounting.manifest.json');
     m.home.provides = [];
     expect(validateHome(m as never, deps)).toBeNull();

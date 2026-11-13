@@ -1,5 +1,5 @@
 /**
- * The manifest `setup` block (sprigr-team decision 0406): its types and the
+ * The manifest `setup` block (sprigr-team decision 0408): its types and the
  * publish rules, twin of sprigr-team's validateManifestSetup. Both suites read
  * tests/fixtures/setup-block-fixtures.json, the same file in both repos, so a
  * manifest an app checks here gets the platform's verdict and message.
@@ -141,7 +141,7 @@ const STARTERS_MAX = 3;
 const INPUTS_MAX = 3;
 const ROUTINE_NAME = /^[a-z][a-z0-9_]{1,31}$/;
 const PAGE = /^\/[A-Za-z0-9._~\-/]*$/;
-// Decision 0406: a connect input is never a secret; a key is typed on the app's own page.
+// Decision 0408: a connect input is never a secret; a key is typed on the app's own page.
 // Matched per word of the name (site_url -> site, url), so "passenger" passes and "access_key" does not.
 const SECRET_WORDS: ReadonlySet<string> = new Set([
   'pass', 'passwd', 'password', 'passphrase', 'pwd', 'pin', 'secret', 'secrets', 'token', 'key', 'apikey',
