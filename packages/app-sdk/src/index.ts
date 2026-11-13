@@ -1028,3 +1028,10 @@ export type { PruneAuditTableOpts, PruneAuditTableResult } from './audit-retenti
 // Durable jobs (env.SPRIGR.jobs) types and liveness helper (#176).
 export { jobIsLive, listedJobs, LIVE_JOB_STATUSES } from './jobs';
 export type { JobDirective, JobStepArgs, SprigrJobsApi, SprigrJobsListResult, SprigrJobRecord, SprigrJobStatus } from './jobs';
+
+// sprigr-team decision 0408: the manifest `setup` block for the guided setup on Home.
+export { SETUP_SLOTS, validateSetup } from './setup';
+export type {
+  SetupBlock, SetupConnect, SetupConnectInput, SetupConnectPage, SetupConnectTool, SetupSlot,
+  SetupStarterBuild, SetupStarterQuestion, SetupStarterRoutine,
+} from './setup';

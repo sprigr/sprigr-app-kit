@@ -427,8 +427,10 @@ export function validateHome(manifest: HomeManifestLike, deps: HomeValidationDep
   if (rateErr) return rateErr;
 
   const provides = raw.provides;
-  if (!Array.isArray(provides) || provides.length === 0) {
-    return `${F}.provides must be a non-empty array: each entry is one provider of a sprigr/home_* contract`;
+  // Decision 0408 (guided setup decision 62): identity alone is allowed, so an
+  // app can answer the connection read without feeding Home.
+  if (!Array.isArray(provides) || (provides.length === 0 && raw.identity === undefined)) {
+    return `${F}.provides must be a non-empty array unless ${F}.identity is declared: each entry is one provider of a sprigr/home_* contract`;
   }
   if (provides.length > HOME_MAX_PROVIDERS) return `${F}.provides has ${provides.length} providers; max ${HOME_MAX_PROVIDERS}`;
   const ids = new Set<string>();
