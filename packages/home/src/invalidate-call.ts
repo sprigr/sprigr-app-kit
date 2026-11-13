@@ -13,7 +13,7 @@
  */
 import { HOME_INVALIDATE_PATH, homeInvalidateBodyFor, type HomeInvalidateInput, type HomeInvalidateResult } from './invalidate';
 
-/** How long the inline-route POST may hold the caller. */
+/** How long the binding call or the POST may hold the caller. */
 export const HOME_INVALIDATE_TIMEOUT_MS = 2000;
 
 /** The parts of an app's env this reads. Every field is optional. */
@@ -53,8 +53,8 @@ function fail(provider: string, error: string, extra: { status?: number; detail?
  * Mark a Home provider's cached answers stale, so the next Home read asks the
  * app's Home tool again. Uses `env.SPRIGR.home.invalidate` when the handler
  * has it, otherwise POSTs to the platform with the install token. Resolves
- * `{ ok: false, error }` instead of throwing; `no_route` means neither path is
- * available (no binding and no install token).
+ * `{ ok: false, error }` instead of throwing; `no_route` (not logged) means
+ * neither path is available (no binding and no install token).
  */
 export async function invalidateHome(
   env: HomeInvalidateEnv,
@@ -69,24 +69,33 @@ export async function invalidateHome(
     return fail(provider, 'invalid_input', { detail: (err as Error).message });
   }
 
+  const timeoutMs = opts.timeoutMs ?? HOME_INVALIDATE_TIMEOUT_MS;
   const binding = bindingOf(env);
   if (binding) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    });
     try {
-      const res = await binding.invalidate(input);
+      const res = await Promise.race([binding.invalidate(input), timedOut]);
+      if (res === 'timeout') return fail(provider, 'timeout');
       if (res && res.ok === false) return fail(provider, res.error ?? 'refused', { status: res.status, detail: res.detail });
       return { ok: true };
     } catch (err) {
       return fail(provider, 'binding_failed', { detail: (err as Error).message });
+    } finally {
+      clearTimeout(timer);
     }
   }
 
   const base = typeof env.SPRIGR_PLATFORM_BASE === 'string' ? env.SPRIGR_PLATFORM_BASE : '';
   const token = typeof env.SPRIGR_INSTALL_TOKEN === 'string' ? env.SPRIGR_INSTALL_TOKEN : '';
-  if (!base || !token) return fail(provider, 'no_route');
+  // Silent: local dev and tests have neither, and every write would warn.
+  if (!base || !token) return { ok: false, error: 'no_route' };
 
   const doFetch = opts.fetch ?? fetch;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? HOME_INVALIDATE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await doFetch(`${base.replace(/\/+$/, '')}${HOME_INVALIDATE_PATH}`, {
       method: 'POST',

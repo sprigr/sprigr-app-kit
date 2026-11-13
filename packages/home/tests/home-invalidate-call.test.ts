@@ -4,11 +4,14 @@
  * must not fail on a stale Home answer.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { HOME_INVALIDATE_PATH, invalidateHome } from '../src/index';
+import { HOME_INVALIDATE_PATH, HOME_INVALIDATE_TIMEOUT_MS, invalidateHome } from '../src/index';
 
 const routeEnv = { SPRIGR_PLATFORM_BASE: 'https://platform.test/', SPRIGR_INSTALL_TOKEN: 'tok_1' };
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe('invalidateHome', () => {
   it('uses env.SPRIGR.home.invalidate when the handler has it, and does not POST', async () => {
@@ -88,8 +91,8 @@ describe('invalidateHome', () => {
     expect(res).toMatchObject({ ok: false, error: 'fetch_failed', detail: 'network down' });
   });
 
-  it('resolves no_route with neither a binding nor an install token', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+  it('resolves no_route with neither a binding nor an install token, without warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetch = vi.fn();
     expect(await invalidateHome({}, { provider: 'money' }, { fetch })).toMatchObject({ ok: false, error: 'no_route' });
     expect(await invalidateHome({ SPRIGR_PLATFORM_BASE: 'https://p.test' }, { provider: 'money' }, { fetch })).toMatchObject({
@@ -97,6 +100,38 @@ describe('invalidateHome', () => {
       error: 'no_route',
     });
     expect(fetch).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('gives up on a hung binding at the default timeout', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const invalidate = vi.fn(() => new Promise<never>(() => {}));
+    let settled: unknown;
+    const pending = invalidateHome({ SPRIGR: { home: { invalidate } } }, { provider: 'money' }).then((r) => (settled = r));
+    await vi.advanceTimersByTimeAsync(HOME_INVALIDATE_TIMEOUT_MS - 1);
+    expect(settled).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(settled).toMatchObject({ ok: false, error: 'timeout' });
+  });
+
+  it('aborts a hung POST at the default timeout', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetch = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal!.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        }),
+    );
+    let settled: unknown;
+    const pending = invalidateHome(routeEnv, { provider: 'money' }, { fetch }).then((r) => (settled = r));
+    await vi.advanceTimersByTimeAsync(HOME_INVALIDATE_TIMEOUT_MS - 1);
+    expect(settled).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(settled).toMatchObject({ ok: false, error: 'timeout' });
   });
 
   it('refuses a bad input before calling anything', async () => {
