@@ -24,7 +24,7 @@ export interface HomeInvalidateEnv {
 }
 
 export interface HomeInvalidateOptions {
-  /** Override the POST timeout (ms). */
+  /** Override the timeout (ms) on the binding call and the POST. */
   timeoutMs?: number;
   /** The fetch to use for the POST; defaults to the global one. */
   fetch?: typeof fetch;
