@@ -46,6 +46,9 @@ The tech-lead-reviewer posts one machine-readable verdict per review round:
   Markdown emphasis (`**`, `_`), newlines and a leading heading are tolerated;
   free prose between the prefix and `VERDICT:` is not. `REQUEST CHANGES` with a
   space is folded to `REQUEST_CHANGES`.
+- A lane reviewer's own tag (`[tech-lead-reviewer-apps]`, `-misc`, `-sessions`)
+  never authorizes. A verdict posted under one is refused at post time and
+  counted as unparsed (decision 0296: every reviewer uses the shared tag).
 - An escalation may also be written without `VERDICT:`, as the prefix followed
   directly by `ESCALATE TO A HUMAN` (the form the reviewer actually posts). It
   parses as `ESCALATE`. The bare form is accepted for `ESCALATE` only: an
