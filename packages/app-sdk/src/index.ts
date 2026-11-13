@@ -120,6 +120,8 @@ export type {
 } from './platform-data';
 export { parseActor, actorKey, ownerFromActorKey, CALLER_SURFACES, PERSON_SOURCES } from './actor';
 export type { Actor, InboxOwner, CallerSurface, PersonSource } from './actor';
+export { refuseUnlessConnectionAdminActor, gateConnectionAdminTools, CONNECTION_ADMIN_ROLES } from './connection-admin';
+export type { ConnectionAdminRefusal } from './connection-admin';
 export {
   resolveViewerContext,
   resolveViewerUserId,
