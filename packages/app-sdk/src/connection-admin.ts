@@ -7,10 +7,16 @@
  *
  *   A live person drives the turn  -> their own role (`driverRole`) must be
  *                                     owner or admin.
- *   No person drives the turn      -> the agent's bound user must be set and
- *                                     be owner or admin (a system or event
- *                                     turn, a schedule with no recorded
- *                                     creator: the #15148 ruling).
+ *   No person drives the turn      -> only a turn with no human caller
+ *                                     (surface system, or schedule: a
+ *                                     schedule with a recorded creator
+ *                                     carries a person; the #15148 ruling),
+ *                                     and the agent's bound user must be set
+ *                                     and be owner or admin. A website
+ *                                     visitor, a channel sender, an MCP
+ *                                     client, a webhook, a workflow or
+ *                                     another agent also has no person, and
+ *                                     is refused, as is a missing surface.
  *   Any other person source        -> refused (a schedule's creator, a
  *                                     workflow's saver or starter, a
  *                                     delegation's originator).
@@ -30,6 +36,9 @@ import { parseActor } from './actor';
 
 export const CONNECTION_ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);
 
+/** Surfaces of a turn no person drove that may act as an owner or admin bound user. */
+export const UNATTENDED_ADMIN_SURFACES: ReadonlySet<string> = new Set(['system', 'schedule']);
+
 export interface ConnectionAdminRefusal {
   ok: false;
   error: 'connection_admin_required';
@@ -42,7 +51,7 @@ export function refuseUnlessConnectionAdminActor(args: unknown, opts: { hint: st
   const actor = parseActor(args);
   if (!actor) return refusal;
   const boundAdmin = !!actor.platformUserId && !!actor.role && CONNECTION_ADMIN_ROLES.has(actor.role);
-  if (!actor.personId) return boundAdmin ? null : refusal;
+  if (!actor.personId) return boundAdmin && !!actor.surface && UNATTENDED_ADMIN_SURFACES.has(actor.surface) ? null : refusal;
   if (actor.personSource !== 'live') return refusal;
   if (actor.driverRole) return CONNECTION_ADMIN_ROLES.has(actor.driverRole) ? null : refusal;
   // Compatibility (see above): no driverRole, so only the bound user on their own role.
