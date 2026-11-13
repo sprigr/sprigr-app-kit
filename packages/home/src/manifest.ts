@@ -427,7 +427,8 @@ export function validateHome(manifest: HomeManifestLike, deps: HomeValidationDep
   if (rateErr) return rateErr;
 
   const provides = raw.provides;
-  // sprigr-team decision 0406: identity alone is allowed, so an app can answer the connection read without feeding Home.
+  // Decision 0406 (guided setup decision 62): identity alone is allowed, so an
+  // app can answer the connection read without feeding Home.
   if (!Array.isArray(provides) || (provides.length === 0 && raw.identity === undefined)) {
     return `${F}.provides must be a non-empty array unless ${F}.identity is declared: each entry is one provider of a sprigr/home_* contract`;
   }
