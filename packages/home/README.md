@@ -30,6 +30,7 @@ Every file under `src/` except `index.ts` (extra exports), `display.ts`,
 and the fakes apply the platform's rules, not a restatement of them. That directory imports nothing from outside itself so it can be
 published unchanged. To update this package, copy the directory again and
 bump the version: the platform and the apps must agree on every rule.
+
 From 0.3.0 a `home` block may declare `identity` with `provides: []`: the app
 answers the connection read without feeding Home (sprigr-team decision 0406).
 It still names its routed Home tool, which serves the identity read.
