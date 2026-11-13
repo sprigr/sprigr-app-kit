@@ -57,7 +57,12 @@ export async function reportConnectionLost(env: WfpBridgeEnv, actorKey: string):
  * `env.SPRIGR.connect` exists yet (`connect` itself does, with `lost`). Call it
  * as `env.SPRIGR.connect?.restored?.(key)`. Until it exists, the platform lifts
  * a hold when a probe run succeeds, at most every 6 hours.
+ *
+ * Like every `connect` verb it throws on a failed call rather than resolving
+ * `ok: false`; `cleared` is false when no hold was open for that actor. Wrap
+ * it in the callback's own try/catch: a failed report must not fail the
+ * reconnect itself.
  */
 export interface SprigrConnectApi {
-  restored(actorKey: string): Promise<{ ok: boolean }>;
+  restored(actorKey: string): Promise<{ ok: true; cleared: boolean }>;
 }
