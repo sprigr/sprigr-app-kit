@@ -137,6 +137,8 @@ export type {
   ViewerContextFailure,
   ViewerContextVerification,
 } from './viewer';
+export { isCrossOriginWrite, crossOriginWriteSource } from './same-origin';
+export type { CrossOriginWriteSource } from './same-origin';
 export {
   tool,
   actorTool,
