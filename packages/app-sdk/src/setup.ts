@@ -145,7 +145,8 @@ const PAGE = /^\/[A-Za-z0-9._~\-/]*$/;
 // Matched per word of the name (site_url -> site, url), so "passenger" passes and "access_key" does not.
 const SECRET_WORDS: ReadonlySet<string> = new Set([
   'pass', 'passwd', 'password', 'passphrase', 'pwd', 'pin', 'secret', 'secrets', 'token', 'key', 'apikey',
-  'auth', 'credential', 'credentials', 'otp',
+  'auth', 'authorization', 'credential', 'credentials', 'otp',
+  'privatekey', 'accesskey', 'secretkey', 'passkey', 'passcode', 'pincode',
 ]);
 const SECRET_SUFFIX = /(token|secret|password|apikey)$/;
 
