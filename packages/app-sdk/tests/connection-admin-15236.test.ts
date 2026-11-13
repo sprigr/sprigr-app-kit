@@ -34,10 +34,19 @@ describe('refuseUnlessConnectionAdminActor', () => {
     expect(gate({ platformUserId: 'usr_o', role: 'owner', personId: 'usr_m', personSource: 'live', driverRole: 'member' })).toEqual(REFUSED);
   });
 
-  it('runs a turn no person drove as an owner or admin bound user, and refuses otherwise', () => {
-    expect(gate({ platformUserId: 'usr_o', role: 'owner' })).toBeNull();
-    expect(gate({ platformUserId: 'usr_m', role: 'member' })).toEqual(REFUSED);
-    expect(gate({ agentId: 'agt_s', role: 'owner' })).toEqual(REFUSED);
+  it('runs a system or schedule turn no person drove as an owner or admin bound user, and refuses otherwise', () => {
+    for (const surface of ['system', 'schedule']) {
+      expect(gate({ platformUserId: 'usr_o', role: 'owner', surface })).toBeNull();
+    }
+    expect(gate({ platformUserId: 'usr_m', role: 'member', surface: 'schedule' })).toEqual(REFUSED);
+    expect(gate({ agentId: 'agt_s', role: 'owner', surface: 'schedule' })).toEqual(REFUSED);
+  });
+
+  // These callers carry no person either: an owner-bound agent must not lend them its role.
+  it('refuses a website visitor, a channel sender, an MCP client, a webhook, a workflow, another agent and a missing surface', () => {
+    for (const surface of ['website', 'external_channel', 'mcp', 'webhook', 'workflow', 'delegated', 'portal', undefined]) {
+      expect(gate({ platformUserId: 'usr_o', role: 'owner', ...(surface ? { surface } : {}) })).toEqual(REFUSED);
+    }
   });
 
   it('refuses every person source but live, whatever the roles say', () => {
