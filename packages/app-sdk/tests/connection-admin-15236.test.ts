@@ -34,12 +34,16 @@ describe('refuseUnlessConnectionAdminActor', () => {
     expect(gate({ platformUserId: 'usr_o', role: 'owner', personId: 'usr_m', personSource: 'live', driverRole: 'member' })).toEqual(REFUSED);
   });
 
-  it('runs a system or schedule turn no person drove as an owner or admin bound user, and refuses otherwise', () => {
-    for (const surface of ['system', 'schedule']) {
-      expect(gate({ platformUserId: 'usr_o', role: 'owner', surface })).toBeNull();
-    }
-    expect(gate({ platformUserId: 'usr_m', role: 'member', surface: 'schedule' })).toEqual(REFUSED);
-    expect(gate({ agentId: 'agt_s', role: 'owner', surface: 'schedule' })).toEqual(REFUSED);
+  it('runs a system turn no person drove as an owner or admin bound user, and refuses otherwise', () => {
+    expect(gate({ platformUserId: 'usr_o', role: 'owner', surface: 'system' })).toBeNull();
+    expect(gate({ platformUserId: 'usr_a', role: 'admin', surface: 'system' })).toBeNull();
+    expect(gate({ platformUserId: 'usr_m', role: 'member', surface: 'system' })).toEqual(REFUSED);
+    expect(gate({ agentId: 'agt_s', role: 'owner', surface: 'system' })).toEqual(REFUSED);
+  });
+
+  // A website or channel turn can create a schedule with no recorded creator; its run must not borrow the bound role.
+  it('refuses a schedule run with no person on an owner-bound agent', () => {
+    expect(gate({ platformUserId: 'usr_o', role: 'owner', surface: 'schedule' })).toEqual(REFUSED);
   });
 
   // These callers carry no person either: an owner-bound agent must not lend them its role.
