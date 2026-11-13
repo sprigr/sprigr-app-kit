@@ -7,18 +7,17 @@
  *
  *   A live person drives the turn  -> their own role (`driverRole`) must be
  *                                     owner or admin.
- *   No person drives the turn      -> only surface system, and the agent's
- *                                     bound user must be set and be owner or
- *                                     admin. A website visitor, a channel
- *                                     sender, an MCP client, a webhook, a
- *                                     workflow, another agent and a schedule
- *                                     run also have no person, and are
- *                                     refused, as is a missing surface. A
+ *   No person drives the turn      -> refused on every surface for now. A
  *                                     website or channel turn can create a
- *                                     schedule with no recorded creator, so
- *                                     its run proves no admin asked. Widen
- *                                     once the platform stamps a schedule's
- *                                     origin.
+ *                                     schedule with no recorded creator, and
+ *                                     an expired decision card or a delegation
+ *                                     synthesis in an outsider's conversation
+ *                                     runs as `system` with no person, so no
+ *                                     surface proves an admin asked. Widen
+ *                                     `UNATTENDED_ADMIN_SURFACES` (one line)
+ *                                     once the platform stamps those origins
+ *                                     (sprigr-team#15252); a listed surface
+ *                                     still needs an owner or admin bound user.
  *   Any other person source        -> refused (a schedule's creator, a
  *                                     workflow's saver or starter, a
  *                                     delegation's originator).
@@ -38,8 +37,8 @@ import { parseActor } from './actor';
 
 export const CONNECTION_ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);
 
-/** Surfaces of a turn no person drove that may act as an owner or admin bound user. */
-export const UNATTENDED_ADMIN_SURFACES: ReadonlySet<string> = new Set(['system']);
+/** Surfaces of a turn no person drove that may act as an owner or admin bound user. Empty until sprigr-team#15252. */
+export const UNATTENDED_ADMIN_SURFACES: ReadonlySet<string> = new Set<string>([]);
 
 export interface ConnectionAdminRefusal {
   ok: false;
