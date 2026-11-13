@@ -128,6 +128,22 @@ local-midnight window for the day and zone, daylight saving included.
 rejects with `err.code === 'home_read_only'` and is listed in
 `refusedWrites`.
 
+## Telling Home your data changed
+
+```ts
+import { invalidateHome } from '@sprigr/apps-home';
+
+await invalidateHome(env, { provider: 'money' });
+```
+
+Call it after a write that changes what a provider answers. It uses
+`env.SPRIGR.home.invalidate` when the handler has it, and otherwise POSTs to
+the platform with the install token, so an inline route (a webhook receiver, a
+public API) can call it too. It never throws and gives up on either path after
+2 s: a failure resolves `{ ok: false, error }` and logs one `[home-invalidate]`
+warning (`no_route`, with neither path available, is not logged), and the
+provider's `ttl_seconds` is the backstop.
+
 ## Lower level
 
 ```ts
