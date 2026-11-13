@@ -7,16 +7,18 @@
  *
  *   A live person drives the turn  -> their own role (`driverRole`) must be
  *                                     owner or admin.
- *   No person drives the turn      -> only a turn with no human caller
- *                                     (surface system, or schedule: a
- *                                     schedule with a recorded creator
- *                                     carries a person; the #15148 ruling),
- *                                     and the agent's bound user must be set
- *                                     and be owner or admin. A website
- *                                     visitor, a channel sender, an MCP
- *                                     client, a webhook, a workflow or
- *                                     another agent also has no person, and
- *                                     is refused, as is a missing surface.
+ *   No person drives the turn      -> only surface system, and the agent's
+ *                                     bound user must be set and be owner or
+ *                                     admin. A website visitor, a channel
+ *                                     sender, an MCP client, a webhook, a
+ *                                     workflow, another agent and a schedule
+ *                                     run also have no person, and are
+ *                                     refused, as is a missing surface. A
+ *                                     website or channel turn can create a
+ *                                     schedule with no recorded creator, so
+ *                                     its run proves no admin asked. Widen
+ *                                     once the platform stamps a schedule's
+ *                                     origin.
  *   Any other person source        -> refused (a schedule's creator, a
  *                                     workflow's saver or starter, a
  *                                     delegation's originator).
@@ -37,7 +39,7 @@ import { parseActor } from './actor';
 export const CONNECTION_ADMIN_ROLES: ReadonlySet<string> = new Set(['owner', 'admin']);
 
 /** Surfaces of a turn no person drove that may act as an owner or admin bound user. */
-export const UNATTENDED_ADMIN_SURFACES: ReadonlySet<string> = new Set(['system', 'schedule']);
+export const UNATTENDED_ADMIN_SURFACES: ReadonlySet<string> = new Set(['system']);
 
 export interface ConnectionAdminRefusal {
   ok: false;
