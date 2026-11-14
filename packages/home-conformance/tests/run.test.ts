@@ -196,6 +196,14 @@ describe('runHomeConformance', () => {
     expect(t.refused).toEqual([]);
   });
 
+  it('refuses fulfillment_services.list, retired on the platform (sprigr-team decision 0386)', async () => {
+    let called = false;
+    const t = readOnlySprigr({ fulfillment_services: { list: async () => { called = true; return { services: [] }; } } });
+    await expect(t.sprigr.fulfillment_services.list()).rejects.toMatchObject({ code: 'home_read_only' });
+    expect(called).toBe(false);
+    expect(t.refused).toEqual(['fulfillment_services.list']);
+  });
+
   it('fails an answer over 64 KB', async () => {
     const huge = homeTool<Env>({
       whoami: identity(async (_e, actor) => home.identity({ connection: 'personal', native_person: { vendor_person_id: actor.platformUserId!, display_name: 'Sam' } })),

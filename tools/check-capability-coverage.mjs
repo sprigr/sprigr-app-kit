@@ -29,7 +29,6 @@ const SPRIGR_METHODS = {
   collections: ['define', 'describe', 'history', 'ingest', 'ingestFromTable', 'query', 'reconcile'],
   data: ['get', 'import', 'search'],
   files: ['putStream', 'url'],
-  fulfillment_services: ['delete', 'list', 'register', 'update'],
   grants: ['providers'],
   inbox: ['append'],
   integrations: ['invoke'],
@@ -50,7 +49,7 @@ const MANIFEST_FIELDS = [
   'sprigr_app', 'metadata', 'kind', 'runtime', 'permissions', 'oauth', 'lifecycle',
   'tool_access', 'content_restrictions', 'config_schema', 'data_index', 'agent_config',
   'training_index', 'tools', 'cross_tenant_tools', 'app_dependencies',
-  'integration_dependencies', 'fulfillment_services', 'migrations', 'docs', 'secrets',
+  'integration_dependencies', 'migrations', 'docs', 'secrets',
   'webhooks', 'channels', 'schedules', 'jobs', 'agent_schedules', 'events',
   'workflow_templates', 'decision_points', 'dependencies', 'interfaces',
 ];

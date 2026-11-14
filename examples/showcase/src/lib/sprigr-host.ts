@@ -289,28 +289,6 @@ export interface SprigrHost {
     }): Promise<{ ok: boolean; threadsCreated: number; messagesLinked: number; threadIds: string[] }>;
   };
 
-  fulfillment_services: {
-    register(req: {
-      platform: string;
-      integrationId: string;
-      serviceKey: string;
-      serviceName: string;
-      inventoryManagement?: boolean;
-      trackingSupport?: boolean;
-      requiresShippingMethod?: boolean;
-    }): Promise<{ mfsId: string; shopifyServiceId: string; shopifyLocationId: string; callbackUrl: string; created: boolean }>;
-    list(req?: { platform?: string; integrationId?: string }): Promise<{ services: Array<Record<string, unknown>> }>;
-    update(req: {
-      platform: string;
-      integrationId: string;
-      serviceKey: string;
-      serviceName?: string;
-      inventoryManagement?: boolean;
-      trackingSupport?: boolean;
-      requiresShippingMethod?: boolean;
-    }): Promise<{ mfsId: string; serviceName: string; status: string }>;
-    delete(req: { platform: string; integrationId: string; serviceKey: string }): Promise<{ deleted: boolean; mfsId: string }>;
-  };
 
   files: {
     /** Stream bytes into the app's R2 prefix (no buffering for ReadableStream). */

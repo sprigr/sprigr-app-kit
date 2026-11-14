@@ -1,6 +1,5 @@
 /**
- * Showcase - env.SPRIGR.data.* + env.SPRIGR.collections.* + fulfillment
- * services reference module.
+ * Showcase - env.SPRIGR.data.* + env.SPRIGR.collections.* reference module.
  *
  *   data.import   upsert objects into the app's per-company data index
  *                 (each needs a string objectID; 1000/call cap). Faceting is
@@ -15,10 +14,6 @@
  *                 workers/provisioning/src/wfp-collections.ts). Only define
  *                 takes scope + name_suffix; it returns the full index name,
  *                 and every other op takes that name as `collection`.
- *
- *   fulfillment_services.register  register a Shopify fulfilment location per
- *                 warehouse (requires brand consent — err.code='no_consent'
- *                 otherwise). Declared in manifest fulfillment_services[].
  *
  * All staging-only.
  */
@@ -177,76 +172,6 @@ export async function dealHistory(env: ShowcaseEnv, objectId: string): Promise<H
   return stagingOnly(
     async () => env.SPRIGR.collections.history({ collection: await dealsCollection(env), object_id: objectId, limit: 50 }),
     'dealHistory calls env.SPRIGR.collections.history — publish to staging.',
-  );
-}
-
-// ── fulfillment services (Shopify FO) ────────────────────────────────────────
-export async function registerWarehouse(
-  env: ShowcaseEnv,
-  integrationId: string,
-  warehouse: { key: string; name: string },
-): Promise<HandlerOk | HandlerStagingOnly> {
-  return stagingOnly(
-    () =>
-      env.SPRIGR.fulfillment_services.register({
-        platform: 'shopify',
-        integrationId,
-        serviceKey: warehouse.key,
-        serviceName: warehouse.name,
-        inventoryManagement: true,
-        trackingSupport: true,
-        requiresShippingMethod: false,
-      }),
-    'registerWarehouse calls env.SPRIGR.fulfillment_services.register (requires brand consent) — publish to staging.',
-  );
-}
-
-export async function listWarehouses(env: ShowcaseEnv, integrationId: string): Promise<HandlerOk | HandlerStagingOnly> {
-  return stagingOnly(
-    () => env.SPRIGR.fulfillment_services.list({ platform: 'shopify', integrationId }),
-    'listWarehouses calls env.SPRIGR.fulfillment_services.list — publish to staging.',
-  );
-}
-
-/**
- * Rename a warehouse or change its capability flags, keyed by the same
- * serviceKey you registered with. This is how you correct a service in
- * place; delete-and-re-register would orphan the Shopify Location and any
- * fulfillment orders already routed to it.
- */
-export async function renameWarehouse(
-  env: ShowcaseEnv,
-  integrationId: string,
-  warehouse: { key: string; newName: string; trackingSupport?: boolean },
-): Promise<HandlerOk | HandlerStagingOnly> {
-  return stagingOnly(
-    () =>
-      env.SPRIGR.fulfillment_services.update({
-        platform: 'shopify',
-        integrationId,
-        serviceKey: warehouse.key,
-        serviceName: warehouse.newName,
-        ...(warehouse.trackingSupport === undefined
-          ? {}
-          : { trackingSupport: warehouse.trackingSupport }),
-      }),
-    'renameWarehouse calls env.SPRIGR.fulfillment_services.update — publish to staging.',
-  );
-}
-
-/**
- * Deregister a warehouse. Destructive on the provider side — the Shopify
- * FulfillmentService and its Location go away — so only call it once the
- * location has no open fulfillment orders.
- */
-export async function deregisterWarehouse(
-  env: ShowcaseEnv,
-  integrationId: string,
-  serviceKey: string,
-): Promise<HandlerOk | HandlerStagingOnly> {
-  return stagingOnly(
-    () => env.SPRIGR.fulfillment_services.delete({ platform: 'shopify', integrationId, serviceKey }),
-    'deregisterWarehouse calls env.SPRIGR.fulfillment_services.delete — publish to staging.',
   );
 }
 
