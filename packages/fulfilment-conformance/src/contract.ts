@@ -383,7 +383,8 @@ export const ORDER_SOURCE_OPS: readonly OpSpec[] = [
     ack: true,
     ackStatuses: ORDER_SOURCE_ACK_STATUSES,
     output: { required: SOURCE_ACK, optional: { reason: 'string' } },
-  },  {
+  },
+  {
     /**
      * 1.12.0. The variants whose SKU starts with each prefix, so the hub can
      * tell a parent (colour-level) code on an inbound PO from a product of
