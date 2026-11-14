@@ -383,6 +383,39 @@ export const ORDER_SOURCE_OPS: readonly OpSpec[] = [
     ack: true,
     ackStatuses: ORDER_SOURCE_ACK_STATUSES,
     output: { required: SOURCE_ACK, optional: { reason: 'string' } },
+  },  {
+    /**
+     * 1.12.0. The variants whose SKU starts with each prefix, so the hub can
+     * tell a parent (colour-level) code on an inbound PO from a product of
+     * its own, even for sizes it never sold or stocked (decision 0397).
+     *
+     * `{ prefixes: string[] }`: 1 to 50, each at least 3 characters. Per
+     * prefix, at most 100 variants matched case-insensitively by plain
+     * prefix, with `truncated: true` when there were more. The hub decides
+     * which of them are sizes. A prefix the source could not read is LEFT OUT
+     * of `results`, never answered with an empty list: an empty list reads
+     * as "no sizes", while a missing prefix makes the hub refuse the send.
+     * Read only, no capability flag, no events: the hub calls it only on a
+     * binding that claims the op.
+     */
+    name: 'variants_by_sku_prefix',
+    optionalSince: '1.12.0',
+    effects: 'read',
+    ack: false,
+    ackStatuses: [],
+    output: {
+      required: {
+        results: {
+          array_of: {
+            required: {
+              prefix: 'nonempty_string',
+              variants: { array_of: { required: { sku: 'nonempty_string' }, optional: { title: 'string', barcode: 'string' } } },
+            },
+            optional: { truncated: 'boolean' },
+          },
+        },
+      },
+    },
   },
 ];
 
