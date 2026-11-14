@@ -73,6 +73,23 @@ log({ calls: callsForRow(timing.calls), open: timing.open(), untimed: timing.unt
 
 `callsForRow` keeps the slowest calls within a size cap (default 1,800 chars) and counts the rest in `_omitted`.
 
+A tick the dispatch wall cuts never reaches that log line. `watchLate` writes a
+row at a mark short of the wall instead: once, never after `stop()`, with a
+failing write warned rather than thrown into the tick.
+
+```ts
+const late = watchLate({
+  lateAfterMs: 100_000,                       // the app's own mark
+  onLate: (elapsedMs) => log({ elapsedMs, ...lateTimingFields(timing) }),
+  waitUntil: ctx.waitUntil.bind(ctx),
+  label: '[my-tick]',
+});
+try { await runTick(); } finally { late.stop(); await late.settled(); }
+```
+
+`lateTimingFields` returns `{ calls, open, untimed }` (calls capped at 1,200
+chars by default); the row's category, key names and writer stay with the app.
+
 ## Worked example: a Dropbox adapter
 
 Dropbox's listing is cursor-based like Graph delta: `files/list_folder` (recursive) enumerates everything and ends with a cursor; `files/list_folder/continue` returns changes since a cursor; a `409` with `reset` means the cursor is dead and the app must start over. Principals come from `sharing/list_file_members`, and every file in a shared folder has the same members, so they are cached per shared folder.
