@@ -1,7 +1,7 @@
 {
   "name": "@sprigr/apps-fleet-conventions",
-  "version": "0.2.2",
-  "description": "Sprigr dev-fleet GitHub comment conventions: tech-lead verdict parsing and the odd/even issue shard rule",
+  "version": "0.3.0",
+  "description": "Sprigr dev-fleet GitHub comment conventions: tech-lead verdict parsing and the issue shard rules",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

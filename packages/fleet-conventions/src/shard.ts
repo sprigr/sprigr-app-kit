@@ -90,3 +90,34 @@ export function isInShard(issueNumber: number, parity: ShardParity): boolean {
   const own = issueShardParity(issueNumber);
   return own === null || own === parity;
 }
+
+/**
+ * The FIXER shard: four fixers split by issue number mod 4. The index is the
+ * remainder, so odd numbers stay with `dev-fixer` (1) and `dev-fixer-c` (3)
+ * and even numbers with `dev-fixer-b` (2) and `dev-fixer-d` (0): each of the
+ * two original fixers keeps half of what it owned under the parity rule.
+ *
+ * Fixers only. The diagnosticians still split by parity
+ * (`FLEET_SHARD_OWNERS.diagnostician`), and `FLEET_SHARD_OWNERS.fixer` and
+ * `shardParityForAgentSlug` stay for consumers that have not moved yet.
+ */
+export const FLEET_FIXER_SHARD_SLUGS = ['dev-fixer-d', 'dev-fixer', 'dev-fixer-b', 'dev-fixer-c'] as const;
+
+export type FleetFixerSlug = (typeof FLEET_FIXER_SHARD_SLUGS)[number];
+
+/** Is this agent slug one of the sharded fixers? */
+export function isFleetFixerSlug(slug: string | null | undefined): slug is FleetFixerSlug {
+  return !!slug && (FLEET_FIXER_SHARD_SLUGS as readonly string[]).includes(slug);
+}
+
+/** The fixer that owns an issue number, or `null` for a non-integer (fail open, as `issueShardParity`). */
+export function fixerSlugForIssue(issueNumber: number): FleetFixerSlug | null {
+  if (!Number.isInteger(issueNumber)) return null;
+  return FLEET_FIXER_SHARD_SLUGS[Math.abs(issueNumber) % FLEET_FIXER_SHARD_SLUGS.length]!;
+}
+
+/** Is this issue number inside `slug`'s fixer shard? Unclassifiable numbers answer `true`. */
+export function isInFixerShard(issueNumber: number, slug: FleetFixerSlug): boolean {
+  const owner = fixerSlugForIssue(issueNumber);
+  return owner === null || owner === slug;
+}
