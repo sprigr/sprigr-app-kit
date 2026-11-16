@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-home",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Sprigr Home contracts for marketplace apps: the record types, the manifest home block validator, the fixture checker, the display-text cleaner, the Home SDK (homeTool) and its test fakes, with the platform's own rules.",
   "type": "module",
   "main": "./dist/index.js",
