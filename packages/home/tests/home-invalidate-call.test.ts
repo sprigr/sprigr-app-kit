@@ -75,14 +75,14 @@ describe('invalidateHome', () => {
   });
 
   it('POSTs the body to the platform with the install token on an inline route', async () => {
-    const fetch = vi.fn(async (_url: string, _init: RequestInit) => new Response(null, { status: 204 }));
+    const fetch = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }));
     const res = await invalidateHome(routeEnv, { provider: 'my_day', owner: { platformUserId: 'usr_tom' } }, { fetch });
     expect(res).toEqual({ ok: true });
     const [url, init] = fetch.mock.calls[0]!;
     expect(url).toBe(`https://platform.test${HOME_INVALIDATE_PATH}`);
-    expect(init.method).toBe('POST');
-    expect(init.headers).toMatchObject({ authorization: 'Bearer tok_1', 'content-type': 'application/json' });
-    expect(JSON.parse(String(init.body))).toEqual({ provider: 'my_day', owner_platform_user_id: 'usr_tom' });
+    expect(init?.method).toBe('POST');
+    expect(init?.headers).toMatchObject({ authorization: 'Bearer tok_1', 'content-type': 'application/json' });
+    expect(JSON.parse(String(init?.body))).toEqual({ provider: 'my_day', owner_platform_user_id: 'usr_tom' });
   });
 
   it('resolves http_error with the status on a non-2xx answer', async () => {
@@ -95,9 +95,9 @@ describe('invalidateHome', () => {
   it('aborts a slow POST at the timeout and resolves timeout', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetch = vi.fn(
-      (_url: string, init: RequestInit) =>
+      (_url: RequestInfo | URL, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
-          init.signal!.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+          init!.signal!.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
         }),
     );
     const res = await invalidateHome(routeEnv, { provider: 'money' }, { fetch, timeoutMs: 10 });
@@ -142,9 +142,9 @@ describe('invalidateHome', () => {
     vi.useFakeTimers();
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fetch = vi.fn(
-      (_url: string, init: RequestInit) =>
+      (_url: RequestInfo | URL, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
-          init.signal!.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+          init!.signal!.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
         }),
     );
     let settled: unknown;
