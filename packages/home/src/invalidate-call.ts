@@ -34,13 +34,18 @@ interface HomeInvalidateBinding {
   invalidate(input: HomeInvalidateInput): Promise<HomeInvalidateResult>;
 }
 
-function bindingOf(env: HomeInvalidateEnv): HomeInvalidateBinding | null {
+/**
+ * The binding, `null` when the handler has none, or `'unreadable'` when
+ * reading `env.SPRIGR` threw. A Home dispatch withholds a SPRIGR it did not
+ * build by throwing on read; that is the read-only guard, so the caller must
+ * refuse rather than fall back to the install-token POST.
+ */
+function bindingOf(env: HomeInvalidateEnv): HomeInvalidateBinding | null | 'unreadable' {
   try {
     const home = (env.SPRIGR as { home?: unknown } | undefined)?.home as Partial<HomeInvalidateBinding> | undefined;
     return typeof home?.invalidate === 'function' ? (home as HomeInvalidateBinding) : null;
   } catch {
-    // A Home dispatch withholds a SPRIGR it did not build: reading it throws.
-    return null;
+    return 'unreadable';
   }
 }
 
@@ -54,7 +59,9 @@ function fail(provider: string, error: string, extra: { status?: number; detail?
  * app's Home tool again. Uses `env.SPRIGR.home.invalidate` when the handler
  * has it, otherwise POSTs to the platform with the install token. Resolves
  * `{ ok: false, error }` instead of throwing; `no_route` (not logged) means
- * neither path is available (no binding and no install token).
+ * neither path is available (no binding and no install token), and
+ * `home_read_only` means `env.SPRIGR` threw on read (a Home dispatch), so
+ * nothing was sent.
  */
 export async function invalidateHome(
   env: HomeInvalidateEnv,
@@ -71,6 +78,7 @@ export async function invalidateHome(
 
   const timeoutMs = opts.timeoutMs ?? HOME_INVALIDATE_TIMEOUT_MS;
   const binding = bindingOf(env);
+  if (binding === 'unreadable') return fail(provider, 'home_read_only');
   if (binding) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<'timeout'>((resolve) => {

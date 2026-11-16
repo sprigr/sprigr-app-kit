@@ -40,7 +40,8 @@ describe('invalidateHome', () => {
     expect(res).toMatchObject({ ok: false, error: 'binding_failed', detail: 'boom' });
   });
 
-  it('falls back to the install-token POST when SPRIGR cannot be read', async () => {
+  it('refuses with home_read_only and does not POST when reading SPRIGR throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const env = Object.defineProperty({ ...routeEnv }, 'SPRIGR', {
       get() {
         throw new Error('withheld');
@@ -48,6 +49,27 @@ describe('invalidateHome', () => {
     });
     const fetch = vi.fn(async () => new Response(null, { status: 204 }));
     const res = await invalidateHome(env, { provider: 'money' }, { fetch });
+    expect(res).toEqual({ ok: false, error: 'home_read_only' });
+    expect(fetch).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('[home-invalidate] money: home_read_only'));
+  });
+
+  it('refuses with home_read_only and does not POST when reading SPRIGR.home throws', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const SPRIGR = Object.defineProperty({}, 'home', {
+      get() {
+        throw Object.assign(new Error('home_read_only'), { code: 'home_read_only' });
+      },
+    });
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const res = await invalidateHome({ ...routeEnv, SPRIGR }, { provider: 'money' }, { fetch });
+    expect(res).toEqual({ ok: false, error: 'home_read_only' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('still POSTs when SPRIGR is there but has no home binding', async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const res = await invalidateHome({ ...routeEnv, SPRIGR: {} }, { provider: 'money' }, { fetch });
     expect(res).toEqual({ ok: true });
     expect(fetch).toHaveBeenCalledTimes(1);
   });

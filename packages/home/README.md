@@ -146,7 +146,9 @@ the platform with the install token, so an inline route (a webhook receiver, a
 public API) can call it too. It never throws and gives up on either path after
 2 s: a failure resolves `{ ok: false, error }` and logs one `[home-invalidate]`
 warning (`no_route`, with neither path available, is not logged), and the
-provider's `ttl_seconds` is the backstop.
+provider's `ttl_seconds` is the backstop. On a Home dispatch, where reading
+`env.SPRIGR` throws, it resolves `home_read_only` and sends nothing: the
+install-token POST is not a way around the read-only guard.
 
 ## Lower level
 
