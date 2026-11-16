@@ -88,6 +88,10 @@ within their shard.
 | `shardParityForAgentSlug(slug)` | The parity an agent may work, or `null` for every agent outside the sharded fleet. Deliberately the two fixers only: the diagnosticians' step-0 recovery sweep is parity-exempt. |
 | `isInShard(n, parity)` | Whether an issue number is inside a shard. Unclassifiable numbers answer `true`. |
 | `ShardParity` | The parity type. |
+| `FLEET_FIXER_SHARD_SLUGS` | The four fixer slugs, indexed by issue number mod 4. Fixers only; the diagnosticians still split by parity. |
+| `fixerSlugForIssue(n)` | The fixer that owns an issue number, or `null` for a non-integer. |
+| `isInFixerShard(n, slug)` | Whether an issue number is inside a fixer's shard. Unclassifiable numbers answer `true`. |
+| `isFleetFixerSlug(slug)` | Whether an agent slug is one of the sharded fixers. |
 
 ## Usage
 
