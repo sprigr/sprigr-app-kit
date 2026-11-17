@@ -143,6 +143,16 @@ describe('null is not absent', () => {
     expect(s.ok).toBe(false);
     expect(s.detail).toMatch(/unit_price_minor/);
   });
+
+  it('fails shipping_minor and discount_minor: null, named or not', async () => {
+    for (const field of ['shipping_minor', 'discount_minor']) {
+      for (const named of [[field], []]) {
+        const s = await shapeOf({ ...ORDER, [field]: null, amounts_unreadable: named });
+        expect(s.ok, `${field} ${JSON.stringify(named)}`).toBe(false);
+        expect(s.detail).toContain(field);
+      }
+    }
+  });
 });
 
 describe('amounts_unreadable itself', () => {
