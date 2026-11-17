@@ -35,6 +35,8 @@ export interface DerivePolicyOptions {
   overrides?: Readonly<Record<string, ConfirmRule>>;
   /** Which actions an approval card covers; see `ApprovalCoverage`. */
   approval?: ApprovalCoverage;
+  /** Actions that never deliver a message to a person; see `PolicySource.noMessage`. */
+  noMessage?: Iterable<string>;
 }
 
 export interface DerivedPolicy {

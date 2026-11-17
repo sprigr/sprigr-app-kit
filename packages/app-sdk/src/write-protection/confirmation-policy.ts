@@ -27,6 +27,12 @@ export interface PolicySource {
    * turn (the card) instead of twice.
    */
   approval?: ApprovalCoverage;
+  /**
+   * Actions that never deliver a message to a person (sprigr-team decision
+   * 0414). Each named action's rule comes back as a copy carrying
+   * `deliversMessage: false`; a name with no rule throws.
+   */
+  noMessage?: Iterable<string>;
 }
 
 /**
