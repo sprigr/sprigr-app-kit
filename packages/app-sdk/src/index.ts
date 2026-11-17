@@ -330,6 +330,18 @@ export interface SprigrDataSearchResult {
   index: string;
   /** Multi-index apps: the physical index/shard names this read covered. */
   physical_indexes?: string[];
+  /**
+   * Filter attributes the engine ignored, because the index has not taken
+   * them as facetable yet: the hits are unfiltered on these. Sorted, each
+   * once; a sharded read reports the union. Absent when none was dropped.
+   */
+  dropped_filters?: string[];
+  /**
+   * Facet attributes the engine ignored, so `facetCounts` has no counts for
+   * them. Sorted, each once; a sharded read reports the union. Absent when
+   * none was dropped.
+   */
+  dropped_facets?: string[];
 }
 
 /** Options shared by data methods that can target a logical index. */
