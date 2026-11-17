@@ -5,8 +5,8 @@
   "metadata": {
     "name": "Mock Warehouse",
     "slug": "mock-warehouse",
-    "version": "0.0.4",
-    "description": "Deterministic fulfilment-hub/fulfilment_provider implementer. Accepts every push, holds it until mock_warehouse_advance fires provider.order.accepted then provider.shipment.created, drives the carrier scans and the delivery through provider.shipment.event, and answers get_stock from a fixed fixture. The shakedown fixture for the hub, and the worked reference for a real warehouse adapter.",
+    "version": "0.0.5",
+    "description": "Deterministic fulfilment-hub/fulfilment_provider implementer. Accepts every push, holds it until mock_warehouse_advance fires provider.order.accepted then provider.shipment.created, drives the carrier scans and the delivery through provider.shipment.event, takes inbound purchase orders through create_inbound and answers them on mock_warehouse_inbound_advance, and answers get_stock from a fixed fixture. The shakedown fixture for the hub, and the worked reference for a real warehouse adapter.",
     "author": {
       "name": "Sprigr Company",
       "email": "platform@sprigr.com"
@@ -45,6 +45,11 @@
       "file": "migrations/0003_shipment_ref.sql",
       "version": 3,
       "description": "Adds shipment_ref: the provider_shipment_ref the last ship emitted, which later scans hang off."
+    },
+    {
+      "file": "migrations/0004_inbounds.sql",
+      "version": 4,
+      "description": "Adds mock_warehouse_inbounds: the create_inbound idempotency record, one row per PO with its lines and cumulative counts."
     }
   ],
   "tools": [
@@ -595,6 +600,187 @@
           "ok"
         ]
       }
+    },
+    {
+      "name": "mock_warehouse_create_inbound",
+      "description": "Take an inbound purchase order (1.5.0). Idempotent on inbound_id: the same id again is the same PO. Answers queued; the warehouse's answer arrives as provider.inbound.accepted or provider.inbound.refused, and the count as provider.inbound.received, all fired by mock_warehouse_inbound_advance.",
+      "handler": "src/handlers/provider.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "inbound_id": {
+            "type": "string",
+            "description": "The hub id. The idempotency key."
+          },
+          "po_number": {
+            "type": "string"
+          },
+          "warehouse_key": {
+            "type": "string"
+          },
+          "expected_arrival": {
+            "type": "string",
+            "description": "YYYY-MM-DD"
+          },
+          "supplier": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "line_id": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "integer"
+                },
+                "barcode": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sku",
+                "quantity"
+              ]
+            }
+          }
+        },
+        "required": [
+          "inbound_id",
+          "po_number",
+          "warehouse_key",
+          "lines"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "queued",
+              "rejected"
+            ],
+            "description": "Async ack. The warehouse's answer arrives as provider.inbound.accepted or provider.inbound.refused."
+          },
+          "provider_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      }
+    },
+    {
+      "name": "mock_warehouse_inbound_advance",
+      "description": "Shakedown lever, not part of the interface. Answers an inbound PO the way the warehouse would: to=accept emits provider.inbound.accepted, to=refuse emits provider.inbound.refused with reason, to=receive emits provider.inbound.received with cumulative counts and a delivery number. Pass lines for a partial delivery (omit for the rest of the PO); complete stays false until every line is in unless complete=true. Refuses an unknown PO or SKU, and any delivery after refused or received.",
+      "handler": "src/handlers/provider.ts",
+      "effects": "write",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "inbound_id": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "refuse",
+              "receive"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "description": "refuse only: shown to the brand verbatim."
+          },
+          "note": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "description": "receive only: what THIS delivery brought, by line_id or sku. Omit for the rest of the PO.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "line_id": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "quantity"
+              ]
+            }
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "receive only: settle the PO with this delivery even if lines are short."
+          }
+        },
+        "required": [
+          "inbound_id",
+          "to"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "emitted": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "event": {
+                  "type": "string"
+                },
+                "emitted": {
+                  "type": "boolean"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok"
+        ]
+      }
     }
   ],
   "cross_tenant_tools": [
@@ -1090,6 +1276,99 @@
         "op": "health",
         "version": "1.0.0"
       }
+    },
+    {
+      "tool_name": "mock_warehouse_create_inbound",
+      "resource_type": "fulfilment",
+      "action": "write",
+      "description": "Take an inbound purchase order (1.5.0). Idempotent on inbound_id: the same id again is the same PO. Answers queued; the warehouse's answer arrives as provider.inbound.accepted or provider.inbound.refused, and the count as provider.inbound.received, all fired by mock_warehouse_inbound_advance.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "inbound_id": {
+            "type": "string",
+            "description": "The hub id. The idempotency key."
+          },
+          "po_number": {
+            "type": "string"
+          },
+          "warehouse_key": {
+            "type": "string"
+          },
+          "expected_arrival": {
+            "type": "string",
+            "description": "YYYY-MM-DD"
+          },
+          "supplier": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "line_id": {
+                  "type": "string"
+                },
+                "sku": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "integer"
+                },
+                "barcode": {
+                  "type": "string"
+                },
+                "title": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sku",
+                "quantity"
+              ]
+            }
+          }
+        },
+        "required": [
+          "inbound_id",
+          "po_number",
+          "warehouse_key",
+          "lines"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "accepted",
+              "queued",
+              "rejected"
+            ],
+            "description": "Async ack. The warehouse's answer arrives as provider.inbound.accepted or provider.inbound.refused."
+          },
+          "provider_ref": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Required when status is rejected."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "provides": {
+        "interface": "fulfilment-hub/fulfilment_provider",
+        "op": "create_inbound",
+        "version": "1.5.0"
+      }
     }
   ],
   "events": {
@@ -1303,6 +1582,129 @@
             "stage",
             "occurred_at",
             "provider_event_ref"
+          ]
+        }
+      },
+      {
+        "name": "provider.inbound.accepted",
+        "description": "The mock warehouse approved an inbound PO. Fired by mock_warehouse_inbound_advance to=accept.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "inbound_id": {
+              "type": "string"
+            },
+            "provider_ref": {
+              "type": "string"
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "inbound_id",
+            "provider_ref"
+          ]
+        }
+      },
+      {
+        "name": "provider.inbound.refused",
+        "description": "The mock warehouse will not take an inbound PO. Fired by mock_warehouse_inbound_advance to=refuse.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "inbound_id": {
+              "type": "string"
+            },
+            "provider_ref": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "inbound_id",
+            "provider_ref",
+            "reason"
+          ]
+        }
+      },
+      {
+        "name": "provider.inbound.received",
+        "description": "The mock warehouse counted a delivery of an inbound PO. Fired by mock_warehouse_inbound_advance to=receive. Counts are cumulative; complete is false until the last delivery, and delivery_count numbers them.",
+        "scope": "per_install",
+        "schema": {
+          "type": "object",
+          "properties": {
+            "adapter_slug": {
+              "type": "string"
+            },
+            "inbound_id": {
+              "type": "string"
+            },
+            "provider_ref": {
+              "type": "string"
+            },
+            "received_at": {
+              "type": "string",
+              "description": "ISO 8601 UTC."
+            },
+            "complete": {
+              "type": "boolean"
+            },
+            "delivery_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "note": {
+              "type": "string"
+            },
+            "lines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "line_id": {
+                    "type": "string"
+                  },
+                  "sku": {
+                    "type": "string"
+                  },
+                  "expected_quantity": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "received_quantity": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                },
+                "required": [
+                  "line_id",
+                  "sku",
+                  "expected_quantity",
+                  "received_quantity"
+                ]
+              }
+            }
+          },
+          "required": [
+            "adapter_slug",
+            "inbound_id",
+            "provider_ref",
+            "received_at",
+            "lines"
           ]
         }
       }

@@ -14,6 +14,8 @@
  *   x-sprigr-actor-person-id          : the person the call is made for
  *   x-sprigr-actor-person-source      : live | schedule_creator | workflow_saver |
  *                                       workflow_starter | delegation_originator
+ *   x-sprigr-actor-driver-role        : the live person's company role, from
+ *                                       their verified portal chat sign-in
  *
  * The sprigr-wrapper parses these and surfaces an `Actor` via `args.actor`
  * to handler code. Apps that need per-user scoping (per-actor OAuth tokens,
@@ -51,6 +53,12 @@ export interface Actor {
    *  treats the last two as it treats `workflow_saver`. Present only with
    *  `personId`. */
   personSource?: PersonSource;
+  /** The live person's company role (`owner`, `admin`, `member`, ...), from
+   *  their verified portal chat sign-in (sprigr-team#15236). Present only with
+   *  `personSource` `live`; absent on a channel such as Slack, a schedule, a
+   *  workflow, a delegated turn, and on a platform older than this field.
+   *  Gate connection changes on it with `refuseUnlessConnectionAdminActor`. */
+  driverRole?: string;
 }
 
 /**
@@ -111,6 +119,10 @@ export function parseActor(args: unknown): Actor | undefined {
     out.personId = obj.personId;
     if (typeof obj.personSource === 'string' && (PERSON_SOURCES as readonly string[]).includes(obj.personSource)) {
       out.personSource = obj.personSource as PersonSource;
+      // A role belongs to the person chatting now; never to a stamped or absent person.
+      if (out.personSource === 'live' && typeof obj.driverRole === 'string' && obj.driverRole.length > 0) {
+        out.driverRole = obj.driverRole;
+      }
     }
   }
   return Object.keys(out).length > 0 ? out : undefined;

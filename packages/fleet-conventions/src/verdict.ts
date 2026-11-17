@@ -286,9 +286,18 @@ function withoutMarkdownCode(body: string): string {
  * reviewer-anchored body with a `VERDICT:` ANYWHERE: that re-introduces the
  * deep-quote regression the window was added to prevent. The marker clause
  * catches every observed #12926 case without it.)
+ *
+ * A body that OPENS with the machine marker (`VERDICT_MARKER_STRIP_RE`, the
+ * position the CI gate re-derives) is refused without the reviewer anchor:
+ * only a verdict starts that way, so failing the form there means invisible.
+ * sprigr-apps#5281: sprigr-app-kit#299 comment 6907882728 put the receipt
+ * between the marker and `[tech-lead-reviewer] VERDICT:`, missed the anchor,
+ * posted, and the review-gate then found "no verdict". The readers stay
+ * literal (sprigr-team#14736); this only refuses the post.
  */
 export function wouldPostInvisibleVerdict(body: string): boolean {
   if (TECH_LEAD_VERDICT_FORM_RE.test(body)) return false;
+  if (VERDICT_MARKER_STRIP_RE.test(body)) return true;
   if (!REVIEWER_ANCHOR_RE.test(body)) return false;
   if (VERDICT_MARKER_RE.test(withoutMarkdownCode(body))) return true;
   return isMalformedVerdictPost(body);

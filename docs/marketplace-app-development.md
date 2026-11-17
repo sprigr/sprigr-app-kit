@@ -646,6 +646,7 @@ Every per-install WFP script gets these bindings stamped at upload time:
 | `KV` | KV namespace | per-install, allocated on first build | Cache / settings KV (optional, only emitted if used) |
 | `IMAGES` | Workers Images binding | platform | Image transforms |
 | `INSTALL_ID` | plain_text | the install id | OAuth state, webhook URLs, audit row stamping |
+| `SPRIGR_INSTALL_URL` | plain_text | `<portal>/dashboard/apps/installed/<INSTALL_ID>`, no trailing slash | The install's page in the Sprigr portal; the link to give a person who must fix something. Optional: absent when the uploader has no portal URL. Details in `platform-reference.md` |
 | `COMPANY_ID` | plain_text | the installing company id | Stamp on outbound requests |
 | `APP_SLUG` | plain_text | your app slug | Self-identification in logs |
 | `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for `env.SPRIGR.*` calls back to platform |

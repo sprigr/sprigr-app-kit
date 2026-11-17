@@ -39,6 +39,31 @@ export interface RequestRecord {
 export type RequestPatch = Pick<RequestRecord, 'stage' | 'carrier' | 'tracking_number' | 'updated_at'> &
   Partial<Pick<RequestRecord, 'scans_json' | 'delivered_at' | 'shipment_ref'>>;
 
+export type InboundStage = 'queued' | 'accepted' | 'partially_received' | 'received' | 'refused';
+
+export interface InboundLine {
+  line_id: string;
+  sku: string;
+  quantity: number;
+  /** Cumulative count across every delivery so far. */
+  received_quantity: number;
+}
+
+export interface InboundRecord {
+  inbound_id: string;
+  provider_ref: string;
+  po_number: string;
+  warehouse_key: string;
+  /** JSON array of InboundLine. */
+  lines_json: string;
+  stage: InboundStage;
+  delivery_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type InboundPatch = Pick<InboundRecord, 'stage' | 'lines_json' | 'delivery_count' | 'updated_at'>;
+
 export interface WarehouseStore {
   get(fulfilmentRequestId: string): Promise<RequestRecord | null>;
   /**
@@ -50,6 +75,10 @@ export interface WarehouseStore {
   /** The winner's vendor call returned: record its ref and move the row to 'queued'. */
   setPushed(fulfilmentRequestId: string, providerRef: string, updatedAt: string): Promise<void>;
   update(fulfilmentRequestId: string, patch: RequestPatch): Promise<void>;
+  getInbound(inboundId: string): Promise<InboundRecord | null>;
+  /** The create_inbound latch: true only for the call that wrote the PO. */
+  claimInbound(record: InboundRecord): Promise<boolean>;
+  updateInbound(inboundId: string, patch: InboundPatch): Promise<void>;
 }
 
 export function d1Store(db: D1Like): WarehouseStore {
@@ -131,11 +160,56 @@ export function d1Store(db: D1Like): WarehouseStore {
         )
         .run();
     },
+    async getInbound(id) {
+      return db
+        .prepare(
+          `SELECT inbound_id, provider_ref, po_number, warehouse_key, lines_json, stage, delivery_count, created_at, updated_at
+             FROM mock_warehouse_inbounds WHERE inbound_id = ?`,
+        )
+        .bind(id)
+        .first<InboundRecord>();
+    },
+    async claimInbound(record) {
+      const result = await db
+        .prepare(
+          `INSERT INTO mock_warehouse_inbounds
+             (inbound_id, provider_ref, po_number, warehouse_key, lines_json, stage, delivery_count, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(inbound_id) DO NOTHING`,
+        )
+        .bind(
+          record.inbound_id,
+          record.provider_ref,
+          record.po_number,
+          record.warehouse_key,
+          record.lines_json,
+          record.stage,
+          record.delivery_count,
+          record.created_at,
+          record.updated_at,
+        )
+        .run();
+      const changes = (result as { meta?: { changes?: unknown } } | null)?.meta?.changes;
+      if (typeof changes !== 'number') {
+        throw new Error('D1 run() reported no meta.changes, so the create_inbound claim cannot tell whether it won');
+      }
+      return changes === 1;
+    },
+    async updateInbound(id, patch) {
+      await db
+        .prepare(
+          `UPDATE mock_warehouse_inbounds SET stage = ?, lines_json = ?, delivery_count = ?, updated_at = ?
+            WHERE inbound_id = ?`,
+        )
+        .bind(patch.stage, patch.lines_json, patch.delivery_count, patch.updated_at, id)
+        .run();
+    },
   };
 }
 
 export function memoryStore(): WarehouseStore {
   const rows = new Map<string, RequestRecord>();
+  const inbounds = new Map<string, InboundRecord>();
   return {
     async get(id) {
       return rows.get(id) ?? null;
@@ -158,6 +232,18 @@ export function memoryStore(): WarehouseStore {
       if (patch.delivered_at === undefined) next.delivered_at = row.delivered_at;
       if (patch.shipment_ref === undefined) next.shipment_ref = row.shipment_ref;
       rows.set(id, next);
+    },
+    async getInbound(id) {
+      return inbounds.get(id) ?? null;
+    },
+    async claimInbound(record) {
+      if (inbounds.has(record.inbound_id)) return false;
+      inbounds.set(record.inbound_id, { ...record });
+      return true;
+    },
+    async updateInbound(id, patch) {
+      const row = inbounds.get(id);
+      if (row) inbounds.set(id, { ...row, ...patch });
     },
   };
 }

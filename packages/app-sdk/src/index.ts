@@ -120,6 +120,8 @@ export type {
 } from './platform-data';
 export { parseActor, actorKey, ownerFromActorKey, CALLER_SURFACES, PERSON_SOURCES } from './actor';
 export type { Actor, InboxOwner, CallerSurface, PersonSource } from './actor';
+export { refuseUnlessConnectionAdminActor, gateConnectionAdminTools, CONNECTION_ADMIN_ROLES } from './connection-admin';
+export type { ConnectionAdminRefusal } from './connection-admin';
 export {
   resolveViewerContext,
   resolveViewerUserId,
@@ -137,6 +139,8 @@ export type {
   ViewerContextFailure,
   ViewerContextVerification,
 } from './viewer';
+export { isCrossOriginWrite, crossOriginWriteSource } from './same-origin';
+export type { CrossOriginWriteSource } from './same-origin';
 export {
   tool,
   actorTool,
@@ -145,6 +149,8 @@ export {
   isNotConnectedError,
 } from './tool-wrappers';
 export type { ToolResult, ToolWrapperOptions } from './tool-wrappers';
+export { isConnectionLostError, reportConnectionLost } from './connection-lost';
+export type { SprigrConnectApi } from './connection-lost';
 export {
   actorRetiredHook,
   parseActorRetiredArgs,
@@ -1022,3 +1028,10 @@ export type { PruneAuditTableOpts, PruneAuditTableResult } from './audit-retenti
 // Durable jobs (env.SPRIGR.jobs) types and liveness helper (#176).
 export { jobIsLive, listedJobs, LIVE_JOB_STATUSES } from './jobs';
 export type { JobDirective, JobStepArgs, SprigrJobsApi, SprigrJobsListResult, SprigrJobRecord, SprigrJobStatus } from './jobs';
+
+// sprigr-team decision 0408: the manifest `setup` block for the guided setup on Home.
+export { SETUP_SLOTS, validateSetup } from './setup';
+export type {
+  SetupBlock, SetupConnect, SetupConnectInput, SetupConnectPage, SetupConnectTool, SetupSlot,
+  SetupStarterBuild, SetupStarterQuestion, SetupStarterRoutine,
+} from './setup';

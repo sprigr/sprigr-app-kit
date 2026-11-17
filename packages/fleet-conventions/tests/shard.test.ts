@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  FLEET_FIXER_SHARD_SLUGS,
   FLEET_SHARD_OWNERS,
+  fixerSlugForIssue,
+  isFleetFixerSlug,
+  isInFixerShard,
   isInShard,
   issueShardParity,
   shardParityForAgentSlug,
@@ -57,5 +61,39 @@ describe('fleet shard parity', () => {
   it('does NOT filter the diagnosticians, whose step-0 recovery sweep is parity-exempt', () => {
     expect(shardParityForAgentSlug(FLEET_SHARD_OWNERS.diagnostician.odd)).toBeNull();
     expect(shardParityForAgentSlug(FLEET_SHARD_OWNERS.diagnostician.even)).toBeNull();
+  });
+});
+
+describe('fleet fixer shard (four fixers)', () => {
+  it('gives each remainder mod 4 to one fixer', () => {
+    expect(fixerSlugForIssue(15541)).toBe('dev-fixer');
+    expect(fixerSlugForIssue(15542)).toBe('dev-fixer-b');
+    expect(fixerSlugForIssue(15543)).toBe('dev-fixer-c');
+    expect(fixerSlugForIssue(15544)).toBe('dev-fixer-d');
+  });
+
+  it('keeps every issue with a fixer of the parity that owned it before', () => {
+    for (let n = 1; n <= 40; n++) {
+      const odd = ['dev-fixer', 'dev-fixer-c'];
+      expect(odd.includes(fixerSlugForIssue(n)!)).toBe(issueShardParity(n) === 'odd');
+    }
+  });
+
+  it('puts each issue in exactly one fixer shard', () => {
+    for (let n = 1; n <= 40; n++) {
+      expect(FLEET_FIXER_SHARD_SLUGS.filter((s) => isInFixerShard(n, s))).toEqual([fixerSlugForIssue(n)]);
+    }
+  });
+
+  it('hides nothing on a number it cannot classify', () => {
+    expect(fixerSlugForIssue(6.5)).toBeNull();
+    for (const s of FLEET_FIXER_SHARD_SLUGS) expect(isInFixerShard(Number.NaN, s)).toBe(true);
+  });
+
+  it('recognises the four fixer slugs and no other agent', () => {
+    for (const s of FLEET_FIXER_SHARD_SLUGS) expect(isFleetFixerSlug(s)).toBe(true);
+    expect(isFleetFixerSlug('tech-lead-reviewer')).toBe(false);
+    expect(isFleetFixerSlug(FLEET_SHARD_OWNERS.diagnostician.odd)).toBe(false);
+    expect(isFleetFixerSlug(undefined)).toBe(false);
   });
 });
