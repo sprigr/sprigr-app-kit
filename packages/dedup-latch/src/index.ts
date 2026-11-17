@@ -17,4 +17,4 @@ export { makeDedupLatch } from './dedup-latch';
 export type { DedupLatch, MakeDedupLatchOpts, SweepOpts } from './dedup-latch';
 export type { D1Like, D1PreparedStatementLike, D1RunResult } from './types';
 export { makeIdempotentWrite, idempotentToolResult } from './idempotent-write';
-export type { IdempotentWrite, IdempotentWriteOutcome, IdempotentWriteRefusal, MakeIdempotentWriteOpts, StoredResultTooLarge } from './idempotent-write';
+export type { IdempotentWrite, IdempotentWriteOutcome, IdempotentWriteRefusal, MakeIdempotentWriteOpts, StoredResultTooLarge, WriteContext } from './idempotent-write';

@@ -17,7 +17,8 @@
  *   - repeat after the first call died mid-write (claim older than
  *     `staleRunningSec` and never finished): refused ONCE with
  *     `outcome_unknown`, telling the agent to check upstream; the next
- *     identical attempt runs;
+ *     identical attempt runs, and the write is called with
+ *     `{ takeover: true }` so it can read back first;
  *   - the write throws: the claim is released, so a real retry can run.
  *     When the error means the write MAY have landed (a timeout after the
  *     request went out), `releaseOnError` returns false and the claim turns
@@ -78,13 +79,22 @@ export interface StoredResultTooLarge {
   note: string;
 }
 
+/**
+ * What run() tells the write. `takeover` is true only for the run that takes
+ * over a claim after `outcome_unknown`: the earlier attempt may have landed,
+ * so a write that cannot be keyed upstream reads back before writing again.
+ */
+export interface WriteContext {
+  takeover: boolean;
+}
+
 export interface IdempotentWrite {
   /**
    * Run `fn` at most once per `key` within the TTL. A missing key (an older
    * platform, a tool that did not opt in, a call with no turn) runs `fn`
    * directly, exactly as without the helper.
    */
-  run<R>(key: string | null | undefined, fn: () => Promise<R>): Promise<IdempotentWriteOutcome<R>>;
+  run<R>(key: string | null | undefined, fn: (ctx: WriteContext) => Promise<R>): Promise<IdempotentWriteOutcome<R>>;
   /** Delete claims past `expires_at`. Safe to call any time. */
   sweep(opts?: SweepOpts): Promise<{ deleted: number; more: boolean }>;
 }
@@ -141,10 +151,10 @@ export function makeIdempotentWrite(opts: MakeIdempotentWriteOpts): IdempotentWr
     return changes(raw) === 1;
   }
 
-  async function execute<R>(key: string, fn: () => Promise<R>): Promise<IdempotentWriteOutcome<R>> {
+  async function execute<R>(key: string, fn: (ctx: WriteContext) => Promise<R>, takeover: boolean): Promise<IdempotentWriteOutcome<R>> {
     let result: R;
     try {
-      result = await fn();
+      result = await fn({ takeover });
     } catch (err) {
       // Only a claim still `running` is touched, never another call's finished one.
       if (releaseOnError(err)) {
@@ -166,10 +176,10 @@ export function makeIdempotentWrite(opts: MakeIdempotentWriteOpts): IdempotentWr
   }
 
   return {
-    async run<R>(key: string | null | undefined, fn: () => Promise<R>): Promise<IdempotentWriteOutcome<R>> {
-      if (!key) return { status: 'ran', result: await fn() };
+    async run<R>(key: string | null | undefined, fn: (ctx: WriteContext) => Promise<R>): Promise<IdempotentWriteOutcome<R>> {
+      if (!key) return { status: 'ran', result: await fn({ takeover: false }) };
       for (let attempt = 0; attempt < 2; attempt++) {
-        if (await claim(key)) return execute(key, fn);
+        if (await claim(key)) return execute(key, fn, false);
         const row = await db
           .prepare(`SELECT state, result, claimed_at, expires_at FROM ${table} WHERE id = ?`)
           .bind(key)
@@ -193,7 +203,7 @@ export function makeIdempotentWrite(opts: MakeIdempotentWriteOpts): IdempotentWr
             .prepare(`UPDATE ${table} SET state = 'running', claimed_at = ? WHERE id = ? AND state = 'unknown'`)
             .bind(nowIso, key)
             .run();
-          return changes(took) === 1 ? execute(key, fn) : { status: 'in_progress' };
+          return changes(took) === 1 ? execute(key, fn, true) : { status: 'in_progress' };
         }
         if (row.state === 'interrupted') {
           // The write threw in a way that may have landed. Tell this repeat
