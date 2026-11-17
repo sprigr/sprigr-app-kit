@@ -38,6 +38,29 @@ export interface FetchWithRetryOptions {
   idempotent?: boolean;
   /** Called with each attempt's failure metadata; useful for logging. */
   onRetry?: (info: { attempt: number; status: number | null; waitMs: number; reason: string }) => void;
+  /** Absolute deadline in epoch ms (sprigr-app-kit#309). Not read yet. */
+  deadlineMs?: number;
+}
+
+/** Thrown when `deadlineMs` ends the call (sprigr-app-kit#309). */
+export class FetchDeadlineError extends Error {
+  override name = 'FetchDeadlineError';
+  constructor(
+    readonly deadlineMs: number,
+    readonly attempts: number,
+    /** Status of the last response received, else null. */
+    readonly lastStatus: number | null,
+    /** The retry wait that did not fit before the deadline, else null. */
+    readonly waitMs: number | null,
+    options?: { cause?: unknown },
+  ) {
+    super(`fetch deadline reached after ${attempts} attempt(s)`, options);
+  }
+}
+
+/** True for a FetchDeadlineError, checked by name so two bundled copies of app-sdk still match. */
+export function isFetchDeadlineError(err: unknown): err is FetchDeadlineError {
+  return (err as { name?: unknown } | null)?.name === 'FetchDeadlineError';
 }
 
 const DEFAULT_OPTS: Required<Pick<FetchWithRetryOptions, 'maxAttempts' | 'baseBackoffMs' | 'maxTotalWaitMs'>> = {
