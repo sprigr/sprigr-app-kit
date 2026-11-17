@@ -11,16 +11,16 @@ import { fetchWithRetry, isFetchDeadlineError, type FetchDeadlineError } from '.
 const T0 = 1_800_000_000_000;
 const URL_ = 'https://api.example.test/things';
 
-type Step = number | Error | Response | ((init?: RequestInit) => Promise<Response>);
+type Step = number | Error | Response | ((init?: RequestInit, input?: unknown) => Promise<Response>);
 
 /** A fetch that answers each call with the next step. */
 function scripted(...steps: Step[]) {
   let n = 0;
-  const fn = vi.fn(async (_input: unknown, init?: RequestInit) => {
+  const fn = vi.fn(async (input: unknown, init?: RequestInit) => {
     const step = steps[Math.min(n++, steps.length - 1)]!;
     if (step instanceof Error) throw step;
     if (step instanceof Response) return step;
-    if (typeof step === 'function') return step(init);
+    if (typeof step === 'function') return step(init, input);
     return new Response(`body ${step}`, { status: step });
   });
   vi.stubGlobal('fetch', fn);
@@ -216,5 +216,64 @@ describe('fetchWithRetry deadlineMs (#309)', () => {
     const res = await fetchWithRetry(URL_, init);
     expect(res.status).toBe(200);
     expect(fn.mock.calls[0]![1]).toBe(init);
+  });
+});
+
+/**
+ * Like real fetch: init.signal replaces the Request's own signal, else the
+ * Request's signal is used. Settles only when that signal aborts.
+ */
+function hangOnEffectiveSignal(init?: RequestInit, input?: unknown): Promise<Response> {
+  const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+  return hangUntilAborted(signal ? { signal } : undefined);
+}
+
+describe('fetchWithRetry deadlineMs: a Request carrying its own signal (#309)', () => {
+  it("14. ends with the Request signal's reason when that signal aborts", async () => {
+    scripted(hangOnEffectiveSignal);
+    const own = new AbortController();
+    const reason = new Error('request signal stopped');
+    const req = new Request(URL_, { signal: own.signal });
+    const call = track(fetchWithRetry(req, undefined, { deadlineMs: T0 + 5000 }));
+    await vi.advanceTimersByTimeAsync(200);
+    own.abort(reason);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(call.settled).toBe(true);
+    expect(call.error).toBe(reason);
+    expect(isFetchDeadlineError(call.error)).toBe(false);
+  });
+
+  it("15. with init.signal too, the Request signal aborting first ends the call with its reason", async () => {
+    scripted(hangOnEffectiveSignal);
+    const own = new AbortController();
+    const viaInit = new AbortController();
+    const reason = new Error('request signal stopped');
+    const req = new Request(URL_, { signal: own.signal });
+    const call = track(fetchWithRetry(req, { signal: viaInit.signal }, { deadlineMs: T0 + 5000 }));
+    await vi.advanceTimersByTimeAsync(200);
+    own.abort(reason);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(call.settled).toBe(true);
+    expect(call.error).toBe(reason);
+    viaInit.abort(new Error('init signal stopped later'));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(call.error).toBe(reason);
+  });
+
+  it("16. with init.signal too, init.signal aborting first ends the call with its reason", async () => {
+    scripted(hangOnEffectiveSignal);
+    const own = new AbortController();
+    const viaInit = new AbortController();
+    const reason = new Error('init signal stopped');
+    const req = new Request(URL_, { signal: own.signal });
+    const call = track(fetchWithRetry(req, { signal: viaInit.signal }, { deadlineMs: T0 + 5000 }));
+    await vi.advanceTimersByTimeAsync(200);
+    viaInit.abort(reason);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(call.settled).toBe(true);
+    expect(call.error).toBe(reason);
+    own.abort(new Error('request signal stopped later'));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(call.error).toBe(reason);
   });
 });
