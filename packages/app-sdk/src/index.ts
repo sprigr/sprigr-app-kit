@@ -1009,8 +1009,8 @@ export type {
   PurgeResult,
 } from './data-purge';
 
-export { getCompanyTimezone } from './company';
-export type { CompanyTimezoneEnv } from './company';
+export { getCompanyTimezone, localDate, startOfLocalDay, addDays, companyToday } from './company';
+export type { CompanyTimezoneEnv, CompanyToday, DayZoneSource } from './company';
 
 export { emailBodyHtml, hasHtmlMarkup } from './email-body';
 

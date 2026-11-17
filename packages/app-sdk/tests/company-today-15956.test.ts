@@ -7,24 +7,7 @@
  * arithmetic, and the provider, company, UTC precedence.
  */
 import { describe, expect, it } from 'vitest';
-import * as company from '../src/company';
-
-// Read through the namespace so a red-first run against a base without these
-// exports fails on the assertions rather than on the import.
-type Mod = {
-  localDate?: (ms: number, zone: string | undefined) => string;
-  startOfLocalDay?: (ms: number, zone: string | undefined) => number;
-  addDays?: (date: string, n: number) => string;
-  companyToday?: (
-    env: { COMPANY_TIMEZONE?: string } | null | undefined,
-    opts?: { providerZone?: string | null; nowMs?: number },
-  ) => { date: string; zone: string; source: string };
-};
-const m = company as unknown as Mod;
-const localDate = m.localDate ?? (() => '');
-const startOfLocalDay = m.startOfLocalDay ?? (() => Number.NaN);
-const addDays = m.addDays ?? (() => '');
-const companyToday = m.companyToday ?? (() => ({ date: '', zone: '', source: '' }));
+import { addDays, companyToday, localDate, startOfLocalDay } from '../src/index';
 
 const at = (iso: string) => Date.parse(iso);
 
