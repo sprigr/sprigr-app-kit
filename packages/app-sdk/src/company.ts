@@ -61,7 +61,8 @@ function zoneOffsetMs(ms: number, zone: string): number {
     second: '2-digit',
   }).formatToParts(new Date(ms));
   const n = (t: string) => Number(parts.find((p) => p.type === t)?.value);
-  return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) - (ms - (ms % 1000));
+  // Floor to the second Intl shows; a plain `ms % 1000` is negative before 1970 and would round up.
+  return Date.UTC(n('year'), n('month') - 1, n('day'), n('hour'), n('minute'), n('second')) - (ms - (((ms % 1000) + 1000) % 1000));
 }
 
 /**

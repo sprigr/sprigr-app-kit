@@ -59,6 +59,12 @@ describe('startOfLocalDay: local midnight as unix ms, across DST (#15956)', () =
     expect(startOfLocalDay(at('2026-11-17T13:00:01Z'), 'Australia/Sydney')).toBe(at('2026-11-17T13:00:00Z'));
   });
 
+  it('floors a fractional second before 1970 the way Intl does', () => {
+    // 1969-12-31 00:00:00.500 JST (+9). A truncating % rounds this up a second,
+    // shifting the offset so the instant lands in the previous local day.
+    expect(startOfLocalDay(at('1969-12-30T15:00:00.500Z'), 'Asia/Tokyo')).toBe(at('1969-12-30T15:00:00Z'));
+  });
+
   it('is UTC midnight when there is no zone', () => {
     expect(startOfLocalDay(at('2026-11-17T18:45:12.345Z'), undefined)).toBe(at('2026-11-17T00:00:00Z'));
   });
