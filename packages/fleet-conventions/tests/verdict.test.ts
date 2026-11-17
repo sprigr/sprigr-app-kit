@@ -358,3 +358,52 @@ describe('#12926 — wouldPostInvisibleVerdict', () => {
     expect(wouldPostInvisibleVerdict(body)).toBe(false);
   });
 });
+
+// ─── sprigr-apps#5281: a marker-first body that misses the reviewer anchor ──
+// Both shapes posted as invisible verdicts because the guard returned false
+// whenever REVIEWER_ANCHOR_RE failed: the review-gate then refused "the PR has
+// no verdict". The fix refuses them at post time; the readers stay literal
+// (sprigr-team#14736), so neither shape may ever parse.
+describe('sprigr-apps#5281: marker-first verdict that fails the anchored form', () => {
+  // sprigr-app-kit#299 comment 6907882728, verbatim: marker, receipt first, the
+  // VERDICT line deep in the body.
+  const RECEIPT_FIRST = readFileSync(new URL('./fixtures/comment-6907882728.md', import.meta.url), 'utf8');
+
+  // Marker first, then a lane tag. (The live sprigr-apps#5278 bodies put the
+  // lane tag ABOVE the marker; that shape is sprigr-app-kit#279's anchor case.)
+  const LANE_TAGGED = '<!-- verdict sha=abc1234 -->\n[tech-lead-reviewer-apps] VERDICT: APPROVE | x';
+
+  const CANONICAL = '<!-- verdict sha=f9b7736 -->\n[tech-lead-reviewer] VERDICT: APPROVE | x';
+
+  it('refuses the receipt-first body (comment 6907882728), whose ruling the anchored reader cannot see', () => {
+    expect(RECEIPT_FIRST.startsWith('<!-- verdict sha=f9b7736 -->\n\nOPENED:')).toBe(true);
+    expect(RECEIPT_FIRST.indexOf('VERDICT:')).toBeGreaterThan(800);
+    expect(parseTechLeadVerdict(RECEIPT_FIRST)).toBe('APPROVE');
+    expect(parseAnchoredVerdictRuling(RECEIPT_FIRST)).toBeNull();
+    expect(wouldPostInvisibleVerdict(RECEIPT_FIRST)).toBe(true);
+  });
+
+  it('refuses a marker-first lane-tagged verdict', () => {
+    expect(parseAnchoredVerdictRuling(LANE_TAGGED)).toBeNull();
+    expect(wouldPostInvisibleVerdict(LANE_TAGGED)).toBe(true);
+  });
+
+  it('posts the canonical marker-first verdict', () => {
+    expect(parseAnchoredVerdictRuling(CANONICAL)).toBe('APPROVE');
+    expect(wouldPostInvisibleVerdict(CANONICAL)).toBe(false);
+  });
+
+  it('keeps the readers literal: neither refused shape parses as a ruling', () => {
+    for (const body of [RECEIPT_FIRST, LANE_TAGGED]) {
+      expect(TECH_LEAD_VERDICT_FORM_RE.test(body)).toBe(false);
+      expect(isUnactionableRuling(body)).toBe(false);
+    }
+  });
+
+  it('still posts a note that quotes a marker mid-body or inside code', () => {
+    const quotedMarkerMidBody = '[dev-fixer] see the earlier note: <!-- verdict sha=abc1234 -->\n[tech-lead-reviewer] VERDICT: APPROVE';
+    const quotedInCode = '`<!-- verdict sha=abc1234 -->` is the marker the reviewer writes first.';
+    expect(wouldPostInvisibleVerdict(quotedMarkerMidBody)).toBe(false);
+    expect(wouldPostInvisibleVerdict(quotedInCode)).toBe(false);
+  });
+});
