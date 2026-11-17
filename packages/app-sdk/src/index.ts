@@ -1014,6 +1014,9 @@ export type { CompanyTimezoneEnv } from './company';
 
 export { emailBodyHtml, hasHtmlMarkup } from './email-body';
 
+// sprigr-team#15974: a calendar create a year out, close to this year's date, names the year.
+export { yearAheadNote } from './year-ahead-note';
+
 // sprigr-team decision 0255: the sender's Inbox signature on app-sent mail.
 export { withSenderSignature } from './sender-signature';
 
