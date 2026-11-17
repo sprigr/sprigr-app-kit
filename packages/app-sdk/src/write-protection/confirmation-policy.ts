@@ -84,6 +84,13 @@ export function buildConfirmationPolicy(src: PolicySource): ConfirmationPolicy {
   for (const name of cov?.covered ?? []) {
     if (actions[name] && !cov?.conditional.has(name)) actions[name] = { ...actions[name], attended: 'approval_card' };
   }
+  // A copy, so a `rules` entry the caller still holds is left as it was.
+  for (const name of new Set(src.noMessage ?? [])) {
+    const rule = actions[name];
+    if (!rule) throw new Error(`buildConfirmationPolicy: noMessage names "${name}", which has no rule`);
+    if (rule.deliversMessage === true) throw new Error(`buildConfirmationPolicy: noMessage names "${name}", whose rule says deliversMessage: true`);
+    actions[name] = { ...rule, deliversMessage: false };
+  }
   return { actions: Object.fromEntries(Object.entries(actions).sort(([a], [b]) => a.localeCompare(b))) };
 }
 
@@ -192,9 +199,14 @@ export function checkConfirmationPolicy(input: PolicyCheckInput): string[] {
   for (const name of cov?.conditional ?? []) {
     if (!cov?.covered.has(name)) out.push(`approval.conditional: "${name}" has no approval spec (not in covered)`);
   }
+  if ((input.policy as { deliversMessage?: unknown }).deliversMessage !== undefined) {
+    out.push(`deliversMessage on the tool-level rule: publish rejects it there; use noMessage for action rules, delivers_message for a whole tool`);
+  }
 
   for (const [name, rule] of Object.entries(actions)) {
     out.push(...attendedFindings(name, rule, input.approval ?? null));
+    const dm = (rule as { deliversMessage?: unknown }).deliversMessage;
+    if (dm !== undefined && typeof dm !== 'boolean') out.push(`${name}: deliversMessage must be a boolean (got ${JSON.stringify(dm)}); publish rejects anything else`);
     if (!registry.has(name)) out.push(`dead rule: "${name}" is not in the registry, so it gates nothing`);
     if (!rule.always && conditions(rule).length === 0) out.push(`${name}: rule says nothing (no always, no when)`);
     if (!rule.describe || !rule.describe.trim()) out.push(`${name}: describe missing`);

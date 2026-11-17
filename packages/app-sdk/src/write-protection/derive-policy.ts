@@ -79,7 +79,7 @@ export function deriveConfirmationPolicy(registry: Iterable<string>, opts: Deriv
     }
     if (!hit) unmatched.push(name);
   }
-  const policy = buildConfirmationPolicy({ irreversible, always, rules: overrides, approval: opts.approval }) as ConfirmationPolicy & {
+  const policy = buildConfirmationPolicy({ irreversible, always, rules: overrides, approval: opts.approval, noMessage: opts.noMessage }) as ConfirmationPolicy & {
     actions: Record<string, ConfirmRule>;
   };
   return { policy, ungated, unmatched };
