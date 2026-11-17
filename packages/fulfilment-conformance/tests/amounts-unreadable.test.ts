@@ -129,6 +129,22 @@ describe('order shipping_minor and discount_minor (optional since 1.2.0)', () =>
   });
 });
 
+describe('null is not absent', () => {
+  // A 1.12.0 hub reads null as 0 (Number(null)), so null would put back the
+  // very 0 this field exists to stop. Unreadable means the key is left out.
+  it('fails total_minor: null even when named', async () => {
+    const s = await shapeOf({ ...ORDER, total_minor: null, amounts_unreadable: ['total_minor'] });
+    expect(s.ok).toBe(false);
+    expect(s.detail).toMatch(/total_minor/);
+  });
+
+  it("fails a line's unit_price_minor: null even when named", async () => {
+    const s = await shapeOf({ ...ORDER, amounts_unreadable: ['lines.ln_1.unit_price_minor'] }, [{ ...LINE, unit_price_minor: null }]);
+    expect(s.ok).toBe(false);
+    expect(s.detail).toMatch(/unit_price_minor/);
+  });
+});
+
 describe('amounts_unreadable itself', () => {
   it('is optional, and [] on a fully read order passes', async () => {
     expect((await shapeOf({ ...ORDER, amounts_unreadable: [] })).failed).toEqual([]);
