@@ -38,7 +38,11 @@ export interface FetchWithRetryOptions {
   idempotent?: boolean;
   /** Called with each attempt's failure metadata; useful for logging. */
   onRetry?: (info: { attempt: number; status: number | null; waitMs: number; reason: string }) => void;
-  /** Absolute deadline in epoch ms (sprigr-app-kit#309). Not read yet. */
+  /**
+   * Absolute deadline in epoch ms (sprigr-app-kit#309). No attempt starts and
+   * no retry wait sleeps past it; the call then throws FetchDeadlineError. The
+   * returned response stays bound to it, so its body read is bounded too.
+   */
   deadlineMs?: number;
 }
 
@@ -74,33 +78,63 @@ export async function fetchWithRetry(
   init?: RequestInit,
   opts: FetchWithRetryOptions = {},
 ): Promise<Response> {
+  const deadline = opts.deadlineMs;
+  if (deadline !== undefined) assertDeadline(deadline);
   const cfg = { ...DEFAULT_OPTS, ...opts };
   const request = typeof Request !== 'undefined' && input instanceof Request ? input : null;
-  const signal = init?.signal ?? request?.signal ?? null;
+  // With a deadline, fetch gets this call's own signal, which would drop the
+  // Request's signal beside init.signal; follow both, first reason wins.
+  const signal = deadline === undefined
+    ? init?.signal ?? request?.signal ?? null
+    : firstToAbort(init?.signal ?? null, request?.signal ?? null);
   const idempotent = opts.idempotent ?? isIdempotentRequest(init, request);
   let totalWait = 0;
   let lastError: unknown = null;
+  let lastStatus: number | null = null;
 
   for (let attempt = 1; attempt <= cfg.maxAttempts; attempt++) {
+    if (deadline !== undefined && Date.now() >= deadline) {
+      throw new FetchDeadlineError(deadline, attempt - 1, lastStatus, null);
+    }
+    const bound = deadline === undefined
+      ? null
+      : boundAttempt(deadline, signal, () => new FetchDeadlineError(deadline, attempt, lastStatus, null));
     let resp: Response;
     try {
-      resp = await fetch(input, init);
+      resp = await fetch(input, bound ? { ...init, signal: bound.signal } : init);
     } catch (err) {
+      bound?.release();
       lastError = err;
+      if (bound) {
+        // The caller's reason wins even when the deadline fired in the same tick.
+        if (signal?.aborted) throw signal.reason;
+        if (bound.fired()) throw new FetchDeadlineError(deadline!, attempt, lastStatus, null);
+      }
       // Thrown after the request may have been sent: only an idempotent
       // request goes again, and never one the caller's signal stopped.
       if (!idempotent || isAbort(err, signal) || attempt === cfg.maxAttempts) throw err;
       const wait = expBackoff(attempt, cfg.baseBackoffMs);
+      if (deadline !== undefined && Date.now() + wait >= deadline) {
+        throw new FetchDeadlineError(deadline, attempt, lastStatus, wait, { cause: err });
+      }
       if (totalWait + wait > cfg.maxTotalWaitMs) throw err;
       opts.onRetry?.({ attempt, status: null, waitMs: wait, reason: 'network_error' });
       await sleep(wait, signal);
       totalWait += wait;
       continue;
     }
+    lastStatus = resp.status;
     const retryable = resp.status === 429 || (resp.status >= 500 && idempotent);
+    // A returned response keeps its deadline armed, so its body read is bounded too.
     if (!retryable || attempt === cfg.maxAttempts) return resp;
     const wait = waitForResponse(resp, attempt, cfg);
+    if (deadline !== undefined && Date.now() + wait >= deadline) {
+      bound?.release();
+      await discardBody(resp);
+      throw new FetchDeadlineError(deadline, attempt, resp.status, wait);
+    }
     if (totalWait + wait > cfg.maxTotalWaitMs) return resp;
+    bound?.release();
     opts.onRetry?.({ attempt, status: resp.status, waitMs: wait, reason: resp.status === 429 ? 'rate_limited' : 'server_error' });
     await discardBody(resp);
     await sleep(wait, signal);
@@ -109,6 +143,56 @@ export async function fetchWithRetry(
 
   // Should not reach here, but type narrowing.
   throw lastError ?? new Error('fetchWithRetry exhausted');
+}
+
+/** Epoch ms of 1973-03-03: anything smaller is a duration passed by mistake. */
+const MIN_EPOCH_DEADLINE_MS = 1e11;
+
+function assertDeadline(deadline: number): void {
+  if (typeof deadline !== 'number' || !Number.isFinite(deadline)) {
+    throw new TypeError('deadlineMs must be a finite epoch time in ms');
+  }
+  if (deadline < MIN_EPOCH_DEADLINE_MS) {
+    throw new TypeError('deadlineMs is an absolute epoch time in ms, not a duration');
+  }
+}
+
+/** One signal that aborts with the reason of whichever of `a` and `b` aborts first. */
+function firstToAbort(a: AbortSignal | null, b: AbortSignal | null): AbortSignal | null {
+  if (!a || !b || a === b) return a ?? b;
+  if (a.aborted) return a;
+  if (b.aborted) return b;
+  const controller = new AbortController();
+  const onA = () => { b.removeEventListener('abort', onB); controller.abort(a.reason); };
+  const onB = () => { a.removeEventListener('abort', onA); controller.abort(b.reason); };
+  a.addEventListener('abort', onA, { once: true });
+  b.addEventListener('abort', onB, { once: true });
+  return controller.signal;
+}
+
+/**
+ * One attempt's signal: aborted at the deadline, or with the caller's reason
+ * when the caller's signal fires. `release` drops both once the attempt's
+ * response is not handed back.
+ */
+function boundAttempt(deadline: number, caller: AbortSignal | null, reason: () => FetchDeadlineError) {
+  const controller = new AbortController();
+  let fired = false;
+  const onCaller = () => controller.abort(caller!.reason);
+  if (caller?.aborted) controller.abort(caller.reason);
+  else caller?.addEventListener('abort', onCaller, { once: true });
+  const timer = setTimeout(() => {
+    fired = true;
+    controller.abort(reason());
+  }, Math.max(0, deadline - Date.now()));
+  return {
+    signal: controller.signal,
+    fired: () => fired,
+    release: () => {
+      clearTimeout(timer);
+      caller?.removeEventListener('abort', onCaller);
+    },
+  };
 }
 
 const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
