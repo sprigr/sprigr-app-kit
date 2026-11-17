@@ -43,7 +43,10 @@ All on the decision 0030 field types (`string | number | date | boolean`). The h
 | `status` | string | `received`, `routing`, `pushed`, `accepted`, `shipped`, `delivered`, `cancelled`, `failed`, `held` |
 | `placed_at` | date | |
 | `currency` | string | ISO 4217 |
-| `total_minor` | number | |
+| `total_minor` | number | absent only when named in `amounts_unreadable` (1.13.0) |
+| `shipping_minor` | number, optional | absent when unknown; may be named in `amounts_unreadable` (1.13.0) |
+| `discount_minor` | number, optional | absent when unknown; may be named in `amounts_unreadable` (1.13.0) |
+| `amounts_unreadable` | string[], optional | money fields the source could not read (1.13.0) |
 | `customer_email` | string | sensitivity `pii` |
 | `ship_to_json` | string | JSON of the `address` shape below |
 | `tags_json` | string | JSON string[] |
@@ -59,11 +62,13 @@ All on the decision 0030 field types (`string | number | date | boolean`). The h
 | `sku` | string |
 | `title` | string |
 | `quantity` | number |
-| `unit_price_minor` | number |
+| `unit_price_minor` | number, absent only when the order names it in `amounts_unreadable` (1.13.0) |
 | `currency` | string |
 | `requires_shipping` | boolean |
 | `customs_value_minor` | number, optional (clarification 19) |
 | `customs_currency` | string, optional (clarification 19) |
+
+**1.13.0 adds `amounts_unreadable`.** A source that cannot read a money field leaves it out of the record and names it here, instead of sending 0. The names are `total_minor`, `shipping_minor`, `discount_minor`, and `lines.<line_id>.unit_price_minor` for a line in the same answer. A field that carries a value is never named, a real 0 is sent as 0, and `[]` (or no list) means every amount was read. `total_minor` and `unit_price_minor` stay required unless named. `null` is not a way to say unreadable: a 1.12.0 consumer that reads amounts through `Number()` turns null into 0, so null fails conformance for all four fields, named or not. A consumer keeps its own stored value for a named field and does not count the absence as a change.
 
 ### `fulfilment_request` (a routing of some lines of an order to one provider warehouse)
 | field | type | notes |

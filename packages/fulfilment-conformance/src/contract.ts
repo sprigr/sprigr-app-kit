@@ -12,6 +12,7 @@
  * this file is fixed.
  */
 
+import { checkOrderAmounts } from './amounts';
 import type { ObjectSpec } from './shape';
 
 export const INTERFACE_VERSION = '1.0.0';
@@ -96,6 +97,8 @@ export const EXCEPTION_SEVERITIES = ['info', 'warning', 'critical'] as const;
 // interchangeable with one that fills it, which is the whole point of the
 // interface. Empty strings are allowed where the contract says a value may be
 // absent (`hold_reason` when not held, `order_id` before the hub assigns it).
+// The one exception is a money field the source could not read (1.13.0):
+// it is left out and named in `amounts_unreadable`, checked by checkOrderAmounts.
 // ---------------------------------------------------------------------------
 
 export const ADDRESS_SPEC: ObjectSpec = {
@@ -121,12 +124,17 @@ export const ORDER_SPEC: ObjectSpec = {
     status: { enum: ORDER_STATUSES },
     placed_at: 'iso_utc',
     currency: 'currency_code',
-    total_minor: 'integer',
     customer_email: 'string',
     ship_to_json: 'string',
     tags_json: 'string',
     hold_reason: 'string',
     updated_at: 'iso_utc',
+  },
+  optional: {
+    total_minor: 'integer',
+    shipping_minor: 'integer',
+    discount_minor: 'integer',
+    amounts_unreadable: 'string_array',
   },
 };
 
@@ -138,9 +146,11 @@ export const ORDER_LINE_SPEC: ObjectSpec = {
     sku: 'nonempty_string',
     title: 'string',
     quantity: 'integer',
-    unit_price_minor: 'integer',
     currency: 'currency_code',
     requires_shipping: 'boolean',
+  },
+  optional: {
+    unit_price_minor: 'integer',
   },
 };
 
@@ -175,6 +185,8 @@ export interface OpSpec {
   readonly ackStatuses: readonly string[];
   /** Output field that must be a non-empty string when the ack is not `rejected`. */
   readonly ackRefField?: string;
+  /** Cross-field rules a field-by-field shape cannot express; issues join output_shape. */
+  readonly outputCheck?: (value: Record<string, unknown>) => string[];
   /**
    * Set on an op added AFTER 1.0.0, naming the version that added it.
    *
@@ -292,6 +304,7 @@ export const ORDER_SOURCE_OPS: readonly OpSpec[] = [
       required: { found: 'boolean' },
       optional: { order: { object: ORDER_SPEC }, lines: { array_of: ORDER_LINE_SPEC } },
     },
+    outputCheck: (value) => checkOrderAmounts(value, 'get_order'),
   },
   {
     name: 'accept_request',

@@ -47,6 +47,7 @@ export async function driveOp(
   ctx.checks.pass(`${spec.name}.within_budget`, `${call.ms}ms of a ${ctx.budgetMs}ms budget`);
 
   const issues = checkShape(call.value, spec.output, spec.name);
+  if (spec.outputCheck && isPlainObject(call.value)) issues.push(...spec.outputCheck(call.value));
   ctx.checks.issues(`${spec.name}.output_shape`, issues, 'matches the contract output shape');
 
   if (spec.ack) {

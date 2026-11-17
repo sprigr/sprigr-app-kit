@@ -21,6 +21,7 @@ export { CheckCollector, formatReport } from './report';
 export type { ConformanceCheck, ConformanceReport } from './report';
 export type { AdapterHandler, AdapterHandlers, ConformanceOptions } from './types';
 export { checkShape, isIsoUtc, isPlainObject } from './shape';
+export { checkOrderAmounts } from './amounts';
 export type { FieldKind, ObjectSpec } from './shape';
 export {
   ACK_STATUSES_NEEDING_REASON,
