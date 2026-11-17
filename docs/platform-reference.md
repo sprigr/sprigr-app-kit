@@ -344,7 +344,7 @@ const { env } = await getCloudflareContext<ProcoreEnv>();
 
 Your worker runs in UTC. `new Date().toISOString().slice(0, 10)` is the UTC day: in Sydney that is yesterday until 10 or 11am, and on the US west coast it is tomorrow from the afternoon. Use the UTC day for anything a person sees or a provider stores (a default payment date, a timecard, "days overdue", a daily sales bucket, a "today" range) and the customer gets the wrong day (sprigr-team#15956).
 
-Resolve the day with `companyToday` from `@sprigr/apps-app-sdk` (0.62.0):
+Resolve the day with `companyToday` from `@sprigr/apps-app-sdk` (0.63.0):
 
 ```ts
 import { addDays, companyToday, startOfLocalDay } from '@sprigr/apps-app-sdk';
