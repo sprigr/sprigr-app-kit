@@ -66,7 +66,7 @@ const supplier = (name: string): SupplierScore => ({
   total_cost: 100,
   margin: 50,
   sell_through_pct: 80,
-  avg_gmroi: 0.5,
+  avg_margin_per_landed_cost: 0.5,
   dead_stock_units: 0,
   otif_pct: 100,
   avg_slip_days: 0,

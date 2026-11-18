@@ -210,7 +210,7 @@ describe('rollupSuppliers', () => {
     ),
   ];
 
-  it('groups by supplier with weighted sell-through, avg GMROI, dead-stock units and tier', () => {
+  it('groups by supplier with weighted sell-through, avg margin per landed cost, dead-stock units and tier', () => {
     const suppliers = rollupSuppliers(scored);
     // Sorted by total cost desc: Brand F Supply (14000) before Brand D Supply (9000).
     expect(suppliers.map((s) => s.supplier)).toEqual(['Brand F Supply', 'Brand D Supply']);
@@ -222,8 +222,9 @@ describe('rollupSuppliers', () => {
     expect(brandF.units_received).toBe(106);
     expect(brandF.units_sold).toBe(94);
     expect(brandF.sell_through_pct).toBeCloseTo(88.68, 1);
-    // avg GMROI = (0.88 + 0.06) / 2 = 0.47.
-    expect(brandF.avg_gmroi).toBeCloseTo(0.47, 2);
+    // avg margin per landed cost = (0.88 + 0.06) / 2 = 0.47.
+    expect(brandF.avg_margin_per_landed_cost).toBeCloseTo(0.47, 2);
+    expect(Object.keys(brandF)).not.toContain('avg_gmroi');
     expect(brandF.dead_stock_units).toBe(0);
     // grades A(4) + D(1) → avg 2.5 → Acceptable.
     expect(brandF.tier).toBe('Acceptable');
