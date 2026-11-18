@@ -761,7 +761,7 @@ describe('applyEoqLineQty', () => {
     const noLabels = run();
     expect(noLabels.applied).toBe(true);
     expect(noLabels.qty).toBe(15);
-    for (const ctx of [
+    const cases: NonNullable<Parameters<typeof applyEoqLineQty>[0]['ctx']>[] = [
       {},
       { label: null },
       { label: 'LABEL_RUNDOWN' },
@@ -769,7 +769,8 @@ describe('applyEoqLineQty', () => {
       { label: 'LABEL_OTHER', label_roles: { LABEL_RUNDOWN: 'run_down' as const } },
       { label: 'LABEL_TOP', label_roles: { LABEL_TOP: 'priority' as const, LABEL_RUNDOWN: 'run_down' as const } },
       { label_roles: { LABEL_RUNDOWN: 'run_down' as const } },
-    ]) {
+    ];
+    for (const ctx of cases) {
       expect(run(ctx)).toEqual(noLabels);
     }
   });
