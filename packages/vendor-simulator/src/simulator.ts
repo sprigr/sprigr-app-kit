@@ -246,6 +246,23 @@ function envelopeOf(route: PlainRoute, view: ListPage): Record<string, unknown> 
 export function createSimulator({ seed, dialect, store }: SimulatorOptions): Simulator {
   const rules: Readonly<Record<string, ResourceRules>> = dialect.resources ?? {};
 
+  // The store keys objects by String(id): an unusable id is unreachable or answered wrong, and a repeat hides the earlier object.
+  for (const [resource, source] of Object.entries(seed)) {
+    const seen = new Map<string, number>();
+    source.items.forEach((item, i) => {
+      const id = item[source.idField];
+      if (!usableId(id)) {
+        const shown = typeof id === 'number' ? String(id) : (JSON.stringify(id) ?? String(id));
+        throw new TypeError(`vendor-simulator: resource ${JSON.stringify(resource)}: seed object ${i} has ${source.idField} ${shown}, which is not a usable id`);
+      }
+      const earlier = seen.get(String(id));
+      if (earlier !== undefined) {
+        throw new TypeError(`vendor-simulator: resource ${JSON.stringify(resource)}: seed objects ${earlier} and ${i} have the same ${source.idField} ${JSON.stringify(String(id))}`);
+      }
+      seen.set(String(id), i);
+    });
+  }
+
   // What every answered object must carry: each key every seed object of its resource
   // has as an own property (null included), plus the declared computed fields. Once, at build.
   const required = new Map<string, string[]>();
