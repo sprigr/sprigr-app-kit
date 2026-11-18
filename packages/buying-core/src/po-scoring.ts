@@ -63,11 +63,9 @@ export interface PoScored extends PurchaseOrderRow {
    * Margin returned per 1.00 of landed cost, in store currency
    * (margin / total_cost); null when no cost. NOTE: this is NOT classic GMROI
    * (margin over AVERAGE inventory investment, annualized) - do not compare it
-   * to the industry 1.0/2.0/3.0 bands. `gmroi` remains as a deprecated alias.
+   * to the industry 1.0/2.0/3.0 bands.
    */
-  margin_per_landed_dollar: number | null;
-  /** @deprecated alias of margin_per_landed_dollar (kept one minor version). */
-  gmroi: number | null;
+  margin_per_landed_cost: number | null;
   /** unsold_over_90d / units_in_stock * 100; 0 when nothing is in stock. */
   aged_over_90_pct: number;
   /** Any units aged past 180 days unsold. */
@@ -97,7 +95,7 @@ export interface SupplierScore {
   /** Weighted sell-through: Σsold / Σreceived * 100; null when nothing received. */
   sell_through_pct: number | null;
   /** Mean margin per 1.00 landed across the supplier's POs that have one. */
-  avg_gmroi: number | null;
+  avg_margin_per_landed_cost: number | null;
   /** Units still in stock aged past 180 days across the supplier's POs. */
   dead_stock_units: number;
   /** Share of POs delivered by the original ETA, % (POs with both ETAs only); null when none. */
@@ -226,7 +224,7 @@ function isTooEarlyToJudge(row: Pick<PurchaseOrderRow, 'oldest_unsold_days'>, t:
 /**
  * Score one purchase order. Every branch is total: sell-through is null only
  * when nothing has been received; margin coerces null money to 0; the
- * ratios (margin_pct, gmroi) guard their denominators to null; aged_over_90_pct
+ * ratios (margin_pct, margin_per_landed_cost) guard their denominators to null; aged_over_90_pct
  * is 0 when nothing is in stock. Grade / RAG / signal and the reason text read
  * `thresholds` merged over DEFAULT_PO_SCORING_THRESHOLDS.
  */
@@ -244,7 +242,7 @@ export function scorePo(row: PurchaseOrderRow, thresholds?: Partial<PoScoringThr
   const margin = r2(soldRevenue - soldCost);
 
   const marginPct = soldRevenue > 0 ? r2((margin / soldRevenue) * 100) : null;
-  const gmroi = totalCost > 0 ? r2(margin / totalCost) : null;
+  const perLanded = totalCost > 0 ? r2(margin / totalCost) : null;
 
   const agedOver90Pct = unitsInStock > 0 ? r2((num(row.unsold_over_90d) / unitsInStock) * 100) : 0;
   const hasDeadStock = num(row.unsold_over_180d) > 0;
@@ -257,9 +255,9 @@ export function scorePo(row: PurchaseOrderRow, thresholds?: Partial<PoScoringThr
   // markdown. An unknown landing age is still judged, never exempted by a
   // missing value.
   const tooEarly = received === 0 || isTooEarlyToJudge(row, t);
-  const grade: Grade = tooEarly ? 'C' : gradeFor(sellThrough, gmroi, hasDeadStock, t);
+  const grade: Grade = tooEarly ? 'C' : gradeFor(sellThrough, perLanded, hasDeadStock, t);
   const rag = ragFor(grade);
-  const signal: Signal = tooEarly ? 'watch' : signalFor(sellThrough, gmroi, unitsInStock, agedOver90Pct, hasDeadStock, t);
+  const signal: Signal = tooEarly ? 'watch' : signalFor(sellThrough, perLanded, unitsInStock, agedOver90Pct, hasDeadStock, t);
 
   const etaSlip = daysBetween(row.original_eta, row.latest_eta);
   const scored: PoScored = {
@@ -278,8 +276,7 @@ export function scorePo(row: PurchaseOrderRow, thresholds?: Partial<PoScoringThr
     sell_through_pct: sellThrough,
     margin,
     margin_pct: marginPct,
-    margin_per_landed_dollar: gmroi,
-    gmroi,
+    margin_per_landed_cost: perLanded,
     aged_over_90_pct: agedOver90Pct,
     has_dead_stock: hasDeadStock,
     eta_slip_days: etaSlip,
@@ -301,7 +298,7 @@ export function scorePo(row: PurchaseOrderRow, thresholds?: Partial<PoScoringThr
 function poReasons(po: PoScored, t: PoScoringThresholds): Reason[] {
   const out: Reason[] = [];
   const st = po.sell_through_pct;
-  const gm = po.margin_per_landed_dollar;
+  const gm = po.margin_per_landed_cost;
 
   if (po.received === 0) {
     out.push(reason('STILL_INCOMING', 'nothing received yet - no sell-through to judge'));
@@ -323,7 +320,7 @@ function poReasons(po: PoScored, t: PoScoringThresholds): Reason[] {
     if (gm != null && gm < t.low_margin_per_landed) {
       out.push(
         reason(
-          'MARGIN_PER_DOLLAR_LOW',
+          'MARGIN_PER_LANDED_LOW',
           `margin ${gm.toFixed(2)} per 1.00 landed < ${t.low_margin_per_landed.toFixed(2)}`,
           gm,
         ),
@@ -414,12 +411,12 @@ export function agedValueBuckets(scored: PoScored[]): AgedValueBuckets {
  */
 function gradeFor(
   sellThrough: number | null,
-  gmroi: number | null,
+  perLanded: number | null,
   hasDeadStock: boolean,
   t: PoScoringThresholds,
 ): Grade {
   const st = sellThrough;
-  const gm = gmroi;
+  const gm = perLanded;
 
   // D / red first when a hard failure is present, so a dead-stock or
   // deeply-underselling PO can never grade higher.
@@ -450,14 +447,14 @@ function ragFor(grade: Grade): Rag {
  */
 function signalFor(
   sellThrough: number | null,
-  gmroi: number | null,
+  perLanded: number | null,
   unitsInStock: number,
   agedOver90Pct: number,
   hasDeadStock: boolean,
   t: PoScoringThresholds,
 ): Signal {
   const st = sellThrough;
-  const gm = gmroi;
+  const gm = perLanded;
 
   if (
     st != null &&
@@ -481,7 +478,7 @@ function signalFor(
 
 /**
  * Group scored POs by supplier into a scorecard. Sell-through is WEIGHTED
- * (Σsold / Σreceived), GMROI is the simple mean over the POs that have one, and
+ * (Σsold / Σreceived), margin per landed cost is the simple mean over the POs that have one, and
  * the tier comes from the supplier's average grade points (A=4 … D=1) against
  * the tier cut-offs in `thresholds`. The grades are the ones already on the
  * rows; pass the same thresholds to scorePo to change them. Sorted by total
@@ -498,8 +495,8 @@ export function rollupSuppliers(scored: PoScored[], thresholds?: Partial<PoScori
     total_cost: number;
     margin: number;
     dead_stock_units: number;
-    gmroiSum: number;
-    gmroiCount: number;
+    perLandedSum: number;
+    perLandedCount: number;
     gradePoints: number;
     onTimeCount: number;
     etaKnownCount: number;
@@ -522,8 +519,8 @@ export function rollupSuppliers(scored: PoScored[], thresholds?: Partial<PoScori
         total_cost: 0,
         margin: 0,
         dead_stock_units: 0,
-        gmroiSum: 0,
-        gmroiCount: 0,
+        perLandedSum: 0,
+        perLandedCount: 0,
         gradePoints: 0,
         onTimeCount: 0,
         etaKnownCount: 0,
@@ -538,9 +535,9 @@ export function rollupSuppliers(scored: PoScored[], thresholds?: Partial<PoScori
     a.total_cost += num(po.total_cost);
     a.margin += po.margin;
     a.dead_stock_units += po.unsold_over_180d;
-    if (po.gmroi != null) {
-      a.gmroiSum += po.gmroi;
-      a.gmroiCount += 1;
+    if (po.margin_per_landed_cost != null) {
+      a.perLandedSum += po.margin_per_landed_cost;
+      a.perLandedCount += 1;
     }
     a.gradePoints += GRADE_POINTS[po.grade];
     if (po.on_time != null && po.eta_slip_days != null) {
@@ -560,7 +557,7 @@ export function rollupSuppliers(scored: PoScored[], thresholds?: Partial<PoScori
   const out: SupplierScore[] = [];
   for (const a of acc.values()) {
     const sellThrough = a.units_received > 0 ? r2((a.units_sold / a.units_received) * 100) : null;
-    const avgGmroi = a.gmroiCount > 0 ? r2(a.gmroiSum / a.gmroiCount) : null;
+    const avgPerLanded = a.perLandedCount > 0 ? r2(a.perLandedSum / a.perLandedCount) : null;
     const avgGradePoints = a.po_count > 0 ? a.gradePoints / a.po_count : 0;
     out.push({
       supplier: a.supplier,
@@ -571,7 +568,7 @@ export function rollupSuppliers(scored: PoScored[], thresholds?: Partial<PoScori
       total_cost: r2(a.total_cost),
       margin: r2(a.margin),
       sell_through_pct: sellThrough,
-      avg_gmroi: avgGmroi,
+      avg_margin_per_landed_cost: avgPerLanded,
       dead_stock_units: a.dead_stock_units,
       otif_pct: a.etaKnownCount > 0 ? r2((a.onTimeCount / a.etaKnownCount) * 100) : null,
       avg_slip_days: a.etaKnownCount > 0 ? r2(a.slipSum / a.etaKnownCount) : null,

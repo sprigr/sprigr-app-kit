@@ -1436,8 +1436,8 @@ export function skuReasons(
   const age = stats.age_of_oldest_item_days;
   // The codes name the two buckets; settings.aged_days sets where they start.
   const [agedFirst, agedSecond] = settings.aged_days;
-  if (age != null && age > agedSecond) out.push(reason('AGED_180', `oldest item ${Math.round(age)}d old`, age));
-  else if (age != null && age > agedFirst) out.push(reason('AGED_90', `oldest item ${Math.round(age)}d old`, age));
+  if (age != null && age > agedSecond) out.push(reason('AGED_SECOND', `oldest item ${Math.round(age)}d old`, age));
+  else if (age != null && age > agedFirst) out.push(reason('AGED_FIRST', `oldest item ${Math.round(age)}d old`, age));
 
   const adj = profitabilityAdjust(settings.profitability_coverage_adjust, stats.profitability_level);
   if (adj < 0) {

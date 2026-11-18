@@ -1,6 +1,6 @@
 {
   "name": "@sprigr/apps-buying-core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Pure buying maths for inventory apps: demand forecast tournament, cover and risk tiers, buy quantity, buy plan, open-to-buy, markdown candidates, purchase-order and supplier scoring.",
   "type": "module",
   "main": "./dist/index.js",
