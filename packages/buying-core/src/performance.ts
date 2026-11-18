@@ -85,7 +85,8 @@ export const DEFAULT_PERFORMANCE_OPTIONS: PerformanceOptions = {
   priority_percentile: 0.8,
   tested_exposure: 0,
   exposure_kind: 'exposure',
-  velocity_weights: DEFAULT_BUYER_SETTINGS.velocity_weights,
+  // A copy: a caller changing one default must not change the other.
+  velocity_weights: [...DEFAULT_BUYER_SETTINGS.velocity_weights],
   new_sku_window_days: DEFAULT_BUY_RULE_SETTINGS.new_sku_window_days,
 };
 
@@ -98,7 +99,10 @@ export interface PerformanceMetrics {
   stock_cost: number | null;
   /** Gross profit per unit of ad spend; null in rank mode. */
   return_on_ad_spend: number | null;
-  /** Share of the other rows in the class this row out-earns, 0..1; 1 when it is alone. */
+  /**
+   * Share of the other rows in the class this row out-earns, 0..1, with a row
+   * it ties counted as half (mid-rank); 1 when it is alone.
+   */
   class_percentile: number;
   velocity: number;
 }
@@ -113,6 +117,14 @@ export interface PerformanceResult {
 }
 
 const r2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** 1st, 2nd, 3rd, 4th, 11th, 21st. */
+const ordinal = (n: number): string => {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) return `${n}th`;
+  const unit = n % 10;
+  return `${n}${unit === 1 ? 'st' : unit === 2 ? 'nd' : unit === 3 ? 'rd' : 'th'}`;
+};
 
 const TIER_ROLE: Record<PerformanceTier, LabelRole | null> = {
   run_down: 'run_down',
@@ -151,9 +163,14 @@ export function classifyPerformance(
   const percentileOf = (row: PerformanceRow): number => {
     const peers = byClass.get(row.class_1 ?? '') ?? [];
     if (peers.length <= 1) return 1;
+    // Mid-rank: a tie counts as half, so rows tied at the top are both near it.
     let lower = 0;
-    for (const gp of peers) if (gp < row.gross_profit) lower++;
-    return lower / (peers.length - 1);
+    let equal = 0;
+    for (const gp of peers) {
+      if (gp < row.gross_profit) lower++;
+      else if (gp === row.gross_profit) equal++;
+    }
+    return (lower + (equal - 1) / 2) / (peers.length - 1);
   };
 
   return rows.map((row) => {
@@ -199,7 +216,7 @@ export function classifyPerformance(
     const strongText =
       ret != null
         ? `gross profit ${ret} per 1.00 of ad spend (bar ${opt.min_return_on_ad_spend})`
-        : `gross profit ${r2(row.gross_profit)} at the ${pct}th percentile of its class`;
+        : `gross profit ${r2(row.gross_profit)} at the ${ordinal(pct)} percentile of its class`;
     const strongValue = ret != null ? ret : pct;
 
     if (enough && strong) {
@@ -241,6 +258,13 @@ export function classifyPerformance(
     ) {
       return done('tested_no_sale', [
         reason('PERF_TESTED_NO_SALE', `${row.lifetime_exposure} ${opt.exposure_kind} and no sale`, row.lifetime_exposure),
+      ]);
+    }
+    if (enough && ret == null) {
+      // Enough units, profitable, but under the class bar: say that, not "too few units".
+      const bar = ordinal(Math.round(opt.priority_percentile * 100));
+      return done('no_evidence', [
+        reason('PERF_NO_EVIDENCE', `${strongText}, under the ${bar} that counts as strong; ${row.units_sold} units`),
       ]);
     }
     return done('no_evidence', [reason('PERF_NO_EVIDENCE', `not enough to judge: ${row.units_sold} units`)]);
