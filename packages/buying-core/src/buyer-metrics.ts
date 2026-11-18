@@ -49,6 +49,13 @@ export interface SkuStats {
    * profitable). 0 / absent = no tier assigned → no coverage adjustment.
    */
   profitability_level?: number;
+  // ── Lead time inputs (resolveLeadTimeDetail); absent means unknown ──
+  supplier_ref?: string | null;
+  stock_lead_time_days?: number | null;
+  supplier_lead_time_days?: number | null;
+  lead_time_realised_median_days?: number | null;
+  lead_time_realised_p90_days?: number | null;
+  lead_time_receipt_count?: number | null;
   // ── Marketplace saleability ─────────────────────────────────────
   /**
    * Live marketplace / dropship stock on hand (units). The stats feed may
@@ -193,6 +200,12 @@ export interface BuyerSettings extends BuyRuleSettings {
   class_coverage_overrides: Record<string, number>;
   /** Per-class lead-time overrides in days. */
   class_lead_time_overrides: Record<string, number>;
+  /** Per-supplier lead-time overrides in days, keyed by supplier_ref. The most specific override. */
+  supplier_lead_time_overrides?: Record<string, number>;
+  /** Kept receipts a supplier needs before its realised lead time is used. Default 20. */
+  lead_time_min_receipts?: number;
+  /** Which realised figure sizes a buy: the median (0.5, default) or the 90th percentile (0.9). */
+  lead_time_planning_quantile?: 0.5 | 0.9;
   /**
    * Profitability coverage-adjust curve: level → fractional adjustment to the
    * coverage target. Defaults: 1 → -15%, 2 → -30%, 3 → -50%, >=4 → -100%
@@ -559,17 +572,86 @@ export function resolveCoverageTarget(
   return Math.max(0, base * (1 + adj));
 }
 
+/** What a SKU's lead time can be resolved from besides the settings. All optional; absent means unknown. */
+export interface LeadTimeFacts {
+  brand: string;
+  class_1?: string;
+  sku?: string;
+  supplier_ref?: string | null;
+  /** The source's lead time for this SKU (buy_stock.lead_time_days). */
+  stock_lead_time_days?: number | null;
+  /** The source's lead time for the supplier (buy_supplier.lead_time_days). */
+  supplier_lead_time_days?: number | null;
+  /** Realised figures for the SKU's supplier, as the build stores them (realisedLeadTimes). */
+  lead_time_realised_median_days?: number | null;
+  lead_time_realised_p90_days?: number | null;
+  lead_time_receipt_count?: number | null;
+}
+
+/** Which step supplied a resolved lead time. */
+export type LeadTimeSource =
+  | 'supplier_override'
+  | 'brand_override'
+  | 'class_override'
+  | 'stock'
+  | 'supplier'
+  | 'realised'
+  | 'default';
+
+export interface ResolvedLeadTime {
+  days: number;
+  source: LeadTimeSource;
+  /** Kept receipts behind a realised figure; only on source 'realised'. */
+  receipt_count?: number;
+}
+
+export const DEFAULT_LEAD_TIME_MIN_RECEIPTS = 20;
+
 /**
- * The effective resupply lead time for a SKU: per-brand override, else
- * per-class override, else the default. Same precedence as coverage.
+ * The resupply lead time for a SKU, and where it came from. A person's
+ * override first (supplier, then brand, then class), so a known disruption
+ * is not overruled by last year's receipts; then the source's SKU and
+ * supplier lead times; then the supplier's realised figure when it rests on
+ * at least lead_time_min_receipts lines; then lead_time_default_days.
+ * Values of 0 or less count as not set.
  */
-export function resolveLeadTime(settings: BuyerSettings, brand: string, classKey?: string, sku?: string): number {
-  return (
-    firstPositive(
-      brandOverride(settings.brand_lead_time_overrides, brand, sku),
-      classKey ? settings.class_lead_time_overrides[classKey] : undefined,
-    ) ?? settings.lead_time_default_days
-  );
+export function resolveLeadTimeDetail(settings: BuyerSettings, facts: LeadTimeFacts): ResolvedLeadTime {
+  const pick = (source: LeadTimeSource, v: number | null | undefined): ResolvedLeadTime | undefined => {
+    const days = firstPositive(v ?? undefined);
+    return days === undefined ? undefined : { days, source };
+  };
+  const supplierOverride = facts.supplier_ref ? settings.supplier_lead_time_overrides?.[facts.supplier_ref] : undefined;
+  const found =
+    pick('supplier_override', supplierOverride) ??
+    pick('brand_override', brandOverride(settings.brand_lead_time_overrides, facts.brand, facts.sku)) ??
+    pick('class_override', facts.class_1 ? settings.class_lead_time_overrides[facts.class_1] : undefined) ??
+    pick('stock', facts.stock_lead_time_days) ??
+    pick('supplier', facts.supplier_lead_time_days);
+  if (found) return found;
+
+  const count = facts.lead_time_receipt_count ?? 0;
+  if (count >= (settings.lead_time_min_receipts ?? DEFAULT_LEAD_TIME_MIN_RECEIPTS)) {
+    const figure =
+      settings.lead_time_planning_quantile === 0.9 ? facts.lead_time_realised_p90_days : facts.lead_time_realised_median_days;
+    const realised = pick('realised', figure);
+    if (realised) return { ...realised, receipt_count: count };
+  }
+  return { days: settings.lead_time_default_days, source: 'default' };
+}
+
+/**
+ * The effective resupply lead time for a SKU, in days. With only brand,
+ * class and SKU this is today's precedence (brand override, class override,
+ * default); `facts` adds the supplier override and the data steps.
+ */
+export function resolveLeadTime(
+  settings: BuyerSettings,
+  brand: string,
+  classKey?: string,
+  sku?: string,
+  facts?: Omit<LeadTimeFacts, 'brand' | 'class_1' | 'sku'>,
+): number {
+  return resolveLeadTimeDetail(settings, { ...facts, brand, class_1: classKey, sku }).days;
 }
 
 /** coverage_gap = coverage_target - coverage_days; null when coverage is null. */
@@ -993,7 +1075,7 @@ export function deriveSkuMetrics(
   const velocity = weightedVelocity(stats);
   const coverage = coverageDays(stats.qty, velocity);
   const target = resolveCoverageTarget(settings, stats.brand, stats.profitability_level, stats.class_1, stats.sku);
-  const lead = resolveLeadTime(settings, stats.brand, stats.class_1, stats.sku);
+  const lead = resolveLeadTime(settings, stats.brand, stats.class_1, stats.sku, stats);
 
   // Only trust the forecast for a SKU that has genuinely sold at some point
   // (recent windows OR all-time). A flat forecast on a never-sold SKU is noise,

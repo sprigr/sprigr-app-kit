@@ -5,6 +5,7 @@ export * from './backtest';
 export * from './buy-rules';
 export * from './buyer-metrics';
 export * from './po-scoring';
+export * from './lead-time';
 export * from './buy-plan';
 export * from './markdown';
 export * from './otb';
