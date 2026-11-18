@@ -22,6 +22,7 @@ export type {
   DeriveFunction,
   Dialect,
   EnvelopeValue,
+  NewIdFunction,
   ParentRelation,
   PlainDialectOptions,
   PlainRoute,
