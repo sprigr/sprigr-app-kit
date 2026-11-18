@@ -15,13 +15,14 @@
  *          the cross-series tournament metric;
  *  - bias  (sum e / sum actual): positive = over-forecast.
  * Winner per cell: lowest WAPE with a simplicity tiebreak (earlier entry in
- * the roster wins ties within EPSILON) - a complex method must EARN its
+ * the roster wins ties within `winner_epsilon_pts`) - a complex method must EARN its
  * keep. `seasonal_naive` is the baseline (a same-month-last-year repeater), so
- * `vs_feed_pts` reads directly as "how much better than the baseline".
+ * `vs_baseline_pts` reads directly as "how much better than the baseline".
  */
 
 import {
   type Forecaster,
+  type ForecastParams,
   type SkuSeries,
   type SeasonalIndex,
   type DemandClass,
@@ -60,8 +61,8 @@ export interface CellBacktest {
   scores: MethodScore[];
   /** Method key with the lowest WAPE (simplicity tiebreak). */
   winner: string;
-  /** Winner WAPE minus feed-equivalent (seasonal_naive) WAPE, in points; negative = winner better. */
-  vs_feed_pts: number | null;
+  /** Winner WAPE minus baseline (seasonal_naive) WAPE, in points; negative = winner better. */
+  vs_baseline_pts: number | null;
 }
 
 export interface BacktestResult {
@@ -75,11 +76,31 @@ export interface BacktestResult {
   overall: MethodScore[];
 }
 
-/** Ties within this many WAPE points go to the earlier (simpler) entry. */
-export const WINNER_EPSILON_PTS = 0.5;
+export interface BacktestOptions {
+  /** Closed months held out at the end of each series and scored. */
+  holdout: number;
+  /** Horizons scored per origin (1..horizons months ahead). */
+  horizons: number;
+  /**
+   * A later roster entry replaces the current best only when its WAPE is
+   * lower by more than this many points, so near-ties go to the earlier
+   * (simpler) entry. 0 lets any improvement win. Default 0.5.
+   */
+  winner_epsilon_pts?: number;
+  /**
+   * Training months required before an origin is scored; a series with
+   * fewer than this plus one closed months is skipped. Default 6.
+   */
+  min_train_months?: number;
+  /** Forecast tuning handed to every forecaster; see ForecastParams for the defaults. */
+  params?: Partial<ForecastParams>;
+}
 
-/** Minimum training months before an origin is scoreable. */
-export const MIN_TRAIN_MONTHS = 6;
+/** The defaults rollingBacktest uses for the optional BacktestOptions fields. */
+export const DEFAULT_BACKTEST_OPTIONS = {
+  winner_epsilon_pts: 0.5,
+  min_train_months: 6,
+} as const;
 
 interface Acc {
   abs: number;
@@ -118,14 +139,25 @@ function naiveMae(train: number[]): number {
  * Rolling-origin evaluation over tournament cells. Callers doing a strict
  * evaluation pass class indices computed from pre-holdout data only
  * (see trainSeries) so the backtest never peeks at the months it scores.
+ * `classIndices` is used as given: build it with the same `params` as
+ * `opts.params` when the index damping is tuned.
  */
 export function rollingBacktest(
   series: SkuSeries[],
   forecasters: Forecaster[],
   classIndices: Map<string, SeasonalIndex>,
-  opts: { holdout: number; horizons: number },
+  opts: BacktestOptions,
 ): BacktestResult {
   const { holdout, horizons } = opts;
+  const eps = opts.winner_epsilon_pts;
+  const winnerEpsilonPts =
+    typeof eps === 'number' && Number.isFinite(eps) && eps >= 0 ? eps : DEFAULT_BACKTEST_OPTIONS.winner_epsilon_pts;
+  const minTrain = opts.min_train_months;
+  // At least one training month, so every forecaster has something to read.
+  const minTrainMonths =
+    typeof minTrain === 'number' && Number.isFinite(minTrain) && minTrain >= 1
+      ? Math.floor(minTrain)
+      : DEFAULT_BACKTEST_OPTIONS.min_train_months;
   interface CellBox {
     class_1: string;
     band: 'fast' | 'slow';
@@ -141,11 +173,11 @@ export function rollingBacktest(
 
   for (const s of series) {
     const n = s.units.length;
-    if (n < MIN_TRAIN_MONTHS + 1) {
+    if (n < minTrainMonths + 1) {
       skippedSkus++;
       continue;
     }
-    const firstCut = Math.max(MIN_TRAIN_MONTHS, n - holdout);
+    const firstCut = Math.max(minTrainMonths, n - holdout);
     if (firstCut >= n) {
       skippedSkus++;
       continue;
@@ -178,7 +210,7 @@ export function rollingBacktest(
       const h = Math.min(horizons, n - cut);
       const ctx = { seasonalIndex: index, firstTargetCalMonth: (startCal + cut) % 12 };
       for (const f of forecasters) {
-        const fc = f.forecast(train, startCal, h, ctx);
+        const fc = f.forecast(train, startCal, h, ctx, opts.params);
         const box = cbox.scores.get(f.key) ?? acc();
         const obox = overall.get(f.key) ?? acc();
         for (let i = 0; i < h; i++) {
@@ -212,11 +244,11 @@ export function rollingBacktest(
     if (scoreable.length > 0) {
       let best = scoreable[0]!;
       for (const sc of scoreable) {
-        if (sc.wape_pct! < best.wape_pct! - WINNER_EPSILON_PTS) best = sc;
+        if (sc.wape_pct! < best.wape_pct! - winnerEpsilonPts) best = sc;
       }
       winner = best.method;
     }
-    const feed = scores.find((sc) => sc.method === 'seasonal_naive');
+    const baseline = scores.find((sc) => sc.method === 'seasonal_naive');
     const win = scores.find((sc) => sc.method === winner);
     classes.push({
       class_1: cbox.class_1,
@@ -226,9 +258,9 @@ export function rollingBacktest(
       demand_mix: cbox.mix,
       scores,
       winner,
-      vs_feed_pts:
-        feed?.wape_pct != null && win?.wape_pct != null
-          ? Math.round((win.wape_pct - feed.wape_pct) * 100) / 100
+      vs_baseline_pts:
+        baseline?.wape_pct != null && win?.wape_pct != null
+          ? Math.round((win.wape_pct - baseline.wape_pct) * 100) / 100
           : null,
     });
   }

@@ -1,11 +1,11 @@
 /**
  * buying-core - the buy plan + what-if simulation (pure).
  *
- * buildBuyPlan turns the derived workbench into ONE decision surface: every
+ * buildBuyPlan turns derived SKU rows into ONE decision surface: every
  * line that wants ordering, priced, reasoned, and (optionally) trimmed to the
  * stock-value budget headroom per brand. simulateBuy answers "what happens if
- * I buy these quantities" without side effects. Both are pure - the handlers
- * feed them the same derived rows the queue uses, so plan numbers can never
+ * I buy these quantities" without side effects. Both are pure: pass them the
+ * same derived rows the reorder queue uses, so plan numbers can never
  * disagree with queue numbers.
  *
  * Budget model: headroom = stock-value budget
@@ -15,7 +15,7 @@
  * the payload so the semantics are honest.
  */
 
-import type { DerivedSkuMetrics, SkuStats } from './buyer-metrics';
+import type { DerivedSkuMetrics, LabelRole, SkuStats } from './buyer-metrics';
 import type { Reason } from './reason-codes';
 import { reason } from './reason-codes';
 import { brandLookup } from './brand-key';
@@ -26,7 +26,8 @@ export type BuyAction = 'order' | 'expedite' | 'skip' | 'review';
 export interface BuyPlanRowInput {
   sku: string;
   name: string;
-  status: string;
+  /** False drops the row from the plan; absent counts as active. */
+  is_active?: boolean;
   stats: Pick<SkuStats, 'unit_cost' | 'rrp' | 'qty' | 'class_1'>;
   derived: Pick<
     DerivedSkuMetrics,
@@ -49,9 +50,10 @@ export interface BuyPlanRowInput {
     | 'pack_qty'
     | 'pack_applied'
   >;
+  /** The product's brand attribute; empty when it has none (then no brand budget applies). */
   brand: string;
   reasons: Reason[];
-  /** performance label, when a cached label exists. */
+  /** The SKU's performance label (caller-defined), when it has one. */
   label?: string | null;
   /** Whether ads are running on this SKU (any recent window spend). */
   has_ad_spend?: boolean;
@@ -75,7 +77,7 @@ export interface BuyPlanLine {
   min_order_qty: number | null;
   /** True when the minimum order quantity floor lifted suggested_qty. */
   min_applied: boolean;
-  /** The effective pack size in force (buyer override or feed reorder qty); null when none. */
+  /** The effective pack size in force (buyer override or the row's reorder qty); null when none. */
   pack_qty: number | null;
   /** True when pack rounding lifted suggested_qty above pre_pack_qty. */
   pack_applied: boolean;
@@ -88,10 +90,10 @@ export interface BuyPlanLine {
   lead_time_days: number;
   supplier: { supplier: string; otif_pct: number | null; lead_time_p50_days: number | null } | null;
   reasons: Reason[];
-  /** performance label, when known. */
+  /** The SKU's performance label (caller-defined), when known. */
   label: string | null;
-  /** A stocked-out Hero: the top-priority buy (surfaced + prioritised). */
-  is_hero: boolean;
+  /** Stocked out and its label maps to the 'priority' role: the top-priority buy. */
+  is_priority: boolean;
 }
 
 export interface BuyPlanBudgetRow {
@@ -167,13 +169,13 @@ export const CONSOLIDATION_METHODOLOGY =
   'h = holding rate x unit cost) whenever a bigger batch is cheaper than paying the ' +
   'fixed receiving/unpacking/binning labour on repeated tiny orders. It only ever ' +
   'RAISES a line and is capped at eoq_max_cover_days of forward cover; dead, ' +
-  'clearance/discontinued SKUs and SKUs carrying a dead label are never escalated. ' +
+  'clearance/discontinued SKUs and SKUs whose label the caller marks run-down are never escalated. ' +
   'Trips avoided per year = sum over raised lines of (D/base_qty - D/new_qty); ' +
   'the labour saving values each avoided trip at the handling cost per line. ' +
   'After the EOQ, two supplier order constraints apply in order: the minimum ' +
   'order quantity (a floor, buyer per-SKU min override) lifts a line up to at ' +
   'least the minimum, then pack rounding lifts it to a whole number of supplier ' +
-  'packs (buyer per-SKU pack override first, else the feed reorder quantity). ' +
+  'packs (buyer per-SKU pack override first, else the reorder quantity on the row). ' +
   'The units and cost each adds are reported separately (mins_applied / ' +
   'min_extra_* and packs_applied / pack_extra_*) and are excluded from the EOQ ' +
   'trips/labour figures. A zero suggestion is never lifted - neither a minimum ' +
@@ -281,25 +283,38 @@ const RISK_ORDER: Record<string, number> = { STOCKOUT: 0, High: 1, Medium: 2, Lo
  */
 export function buildBuyPlan(args: {
   rows: BuyPlanRowInput[];
-  /** Stored under brandKey; looked up case-insensitively by the row's feed label. */
+  /** Stored under brandKey; looked up case-insensitively by the row's brand. */
   brandBudgets: Record<string, number>;
   brandStockValue: Record<string, number>;
   /** Supplier stats keyed by SKU (built from the incoming-PO lines). */
   supplierBySku: Map<string, SupplierScore>;
   budget_aware: boolean;
-  /** K per line for the consolidation labour-saving math. */
-  handling_cost_per_line: number;
+  /**
+   * K per line for the consolidation labour-saving math, in store currency.
+   * No default: absent means no labour saving is claimed (reported as 0).
+   */
+  handling_cost_per_line?: number;
+  /**
+   * Maps the caller's own label values to a role. A STOCKOUT row whose label
+   * maps to 'priority' leads the plan. No default: without it (or without
+   * labels on the rows) no row is prioritised and the order is risk, then qty.
+   */
+  label_roles?: Readonly<Record<string, LabelRole>>;
 }): BuyPlan {
-  // A stocked-out Hero (performance label) is the single most urgent
-  // thing a buyer can act on: a proven winner with nothing to sell. It sorts
-  // ABOVE the ordinary STOCKOUT tier so it leads the plan.
-  const isHero = (r: BuyPlanRowInput): boolean =>
-    r.label === 'Heroes' && r.derived.stockout_risk === 'STOCKOUT';
+  const roles = args.label_roles;
+  // A stocked-out priority SKU is the most urgent thing a buyer can act on,
+  // so it sorts ABOVE the ordinary STOCKOUT tier.
+  const isPriority = (r: BuyPlanRowInput): boolean =>
+    roles != null &&
+    r.label != null &&
+    Object.prototype.hasOwnProperty.call(roles, r.label) &&
+    roles[r.label] === 'priority' &&
+    r.derived.stockout_risk === 'STOCKOUT';
   const candidates = args.rows
-    .filter((r) => r.status === 'active' && r.derived.reorder)
+    .filter((r) => r.is_active !== false && r.derived.reorder)
     .sort(
       (a, b) =>
-        (isHero(b) ? 1 : 0) - (isHero(a) ? 1 : 0) ||
+        (isPriority(b) ? 1 : 0) - (isPriority(a) ? 1 : 0) ||
         (RISK_ORDER[a.derived.stockout_risk] ?? 9) - (RISK_ORDER[b.derived.stockout_risk] ?? 9) ||
         b.derived.suggested_buy_qty - a.derived.suggested_buy_qty,
     );
@@ -307,9 +322,12 @@ export function buildBuyPlan(args: {
   const headroom = new Map<string, number | null>();
   const committed = new Map<string, number>();
   const stockValueOf = (brand: string) => args.brandStockValue[brand] ?? 0;
+  // A row with no brand matches no budget, so its line is unconstrained.
+  const budgetOf = (brand: string): number | undefined =>
+    brand.trim() === '' ? undefined : brandLookup(args.brandBudgets, brand);
   const headroomOf = (brand: string): number | null => {
     if (!headroom.has(brand)) {
-      const budget = brandLookup(args.brandBudgets, brand);
+      const budget = budgetOf(brand);
       headroom.set(brand, typeof budget === 'number' && budget > 0 ? Math.max(0, budget - stockValueOf(brand)) : null);
     }
     return headroom.get(brand) ?? null;
@@ -326,9 +344,10 @@ export function buildBuyPlan(args: {
     const orderCost = cost != null ? r2(qty * cost) : null;
     const supplier = args.supplierBySku.get(row.sku) ?? null;
     const reasons = [...row.reasons];
-    const hero = isHero(row);
-    // A stocked-out Hero leads the plan - call it out explicitly.
-    if (hero) reasons.unshift(reason('HERO_SKU', 'top-selling Hero stocked out - buy first', undefined));
+    const priority = isPriority(row);
+    if (priority) {
+      reasons.unshift(reason('PRIORITY_STOCKOUT', `stocked out, labelled priority (${row.label}) - buy first`, undefined));
+    }
     // Ad spend running on a stocked-out SKU is money burning with nothing to
     // sell: flag it as waste so the buyer chases stock (or pauses the ad).
     if (row.has_ad_spend && row.derived.stockout_risk === 'STOCKOUT') {
@@ -393,14 +412,14 @@ export function buildBuyPlan(args: {
         : null,
       reasons,
       label: row.label ?? null,
-      is_hero: hero,
+      is_priority: priority,
     });
   }
 
   const budgets: BuyPlanBudgetRow[] = [];
   const brands = new Set(lines.map((l) => l.brand));
   for (const brand of [...brands].sort()) {
-    const budget = brandLookup(args.brandBudgets, brand);
+    const budget = budgetOf(brand);
     const hasBudget = typeof budget === 'number' && budget > 0;
     const before = hasBudget ? Math.max(0, budget - stockValueOf(brand)) : null;
     const spent = committed.get(brand) ?? 0;
@@ -436,7 +455,7 @@ export function buildBuyPlan(args: {
         final_qty: l.suggested_qty,
         pack_applied: l.pack_applied,
       })),
-    args.handling_cost_per_line,
+    args.handling_cost_per_line ?? 0,
   );
 
   return {
@@ -478,7 +497,7 @@ export interface SimulatedLine {
  * Simulate buying the given quantities: recompute cover + risk per line with
  * the stock added, and total the cash commitment. Forward cover after a buy
  * is approximated by scaling trailing math when no forecast walk is available
- * to the caller - the handler passes a recompute callback so both bases use
+ * to the caller - pass a recompute callback (withExtraUnits) so both bases use
  * the real derivation. Pure: callers supply everything.
  */
 export function simulateBuy(args: {

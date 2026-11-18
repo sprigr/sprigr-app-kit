@@ -8,13 +8,13 @@
  *
  * Design:
  *  - A SkuSeries is a contiguous, gap-filled calendar series of CLOSED
- *    months. The upstream feed drops all-zero months (activity filter), so
- *    gap-filling with zeros is essential - a missing month IS a zero-sales
- *    month for any SKU that has already had activity.
- *  - Seasonality is POOLED per class: per-SKU monthly data is
- *    far too sparse to fit 12 indices per SKU, but consumable and apparel classes
- *    have strong, stable seasonal shapes. Indices are damped toward 1 by
- *    sample size so a thin class doesn't get a wild curve.
+ *    months. The caller's input may omit all-zero months, so gap-filling
+ *    with zeros is essential - a missing month IS a zero-sales month for
+ *    any SKU that has already had activity.
+ *  - Seasonality is POOLED per class: per-SKU monthly data is far too
+ *    sparse to fit 12 indices per SKU, while a class pools enough
+ *    SKU-months to show a stable seasonal shape. Indices are damped toward
+ *    1 by sample size so a thin class doesn't get a wild curve.
  *  - Forecasters implement one interface and are selected empirically per
  *    class by the backtest harness (backtest.ts) - a tournament, not
  *    a bet on one method. `seasonal_naive` (same month last year, repeated)
@@ -84,8 +84,8 @@ export function buildSeries(
   const lastClosed = monthAdd(nowMonth, -1);
   const out: SkuSeries[] = [];
   for (const [sku, months] of bySku) {
-    // Start at the first month with any recorded row (the feed only emits
-    // active months, so the first row is the SKU's first activity).
+    // Start at the first month with any recorded row: the SKU's first
+    // activity in the caller's input.
     const keys = [...months.keys()].sort();
     const start = keys[0]!;
     const n = monthDiff(start, lastClosed) + 1;
@@ -108,22 +108,84 @@ export function buildSeries(
 export type SeasonalIndex = number[];
 
 /**
- * Damping constant: an index estimated from n SKU-months is shrunk toward 1
- * by n/(n+K). K=12 means a calendar-month bucket needs a full year of
- * SKU-month observations to earn half its raw seasonal swing - a thin class
- * (one young SKU) stays near flat, while a real class (dozens of SKUs over
- * 3 years, n in the hundreds) keeps nearly its full curve.
+ * Tuning for the seasonal index and the smoothing forecasters. Every field
+ * is optional at the call site: pass a partial and the rest keep the
+ * defaults in DEFAULT_FORECAST_PARAMS.
  */
-export const INDEX_DAMPING_K = 12;
+export interface ForecastParams {
+  /**
+   * Seasonal-index damping K: an index estimated from n SKU-months is
+   * shrunk toward 1 by n/(n+K). At 12 a calendar-month bucket needs 12
+   * observations to keep half its raw swing; 0 turns damping off.
+   * Default 12.
+   */
+  index_damping_k: number;
+  /**
+   * A seasonal index at or below this is treated as 1 when dividing it out,
+   * so a near-zero index cannot blow a level up. Default 0.05.
+   */
+  index_floor: number;
+  /** SBA demand-size smoothing. Default 0.15. */
+  sba_alpha: number;
+  /** SBA inter-demand-interval smoothing; also sets the (1 - beta/2) debias. Default 0.15. */
+  sba_beta: number;
+  /** TSB demand-size smoothing. Default 0.15. */
+  tsb_alpha: number;
+  /**
+   * TSB occurrence-probability smoothing. Kept small so an off-season gap
+   * does not drive the probability to zero. Default 0.05.
+   */
+  tsb_beta: number;
+  /** Damped-trend level smoothing. Default 0.2. */
+  damped_alpha: number;
+  /** Damped-trend trend smoothing. Default 0.05. */
+  damped_beta: number;
+  /** Damped-trend damping factor phi; below 1 flattens the trend over the horizon. Default 0.9. */
+  damped_phi: number;
+  /** ADIDA smoothing of the quarterly totals. Default 0.2. */
+  adida_alpha: number;
+}
+
+/**
+ * Defaults for ForecastParams. The smoothing constants sit in the 0.05-0.3
+ * range the intermittent-demand literature uses for short series.
+ */
+export const DEFAULT_FORECAST_PARAMS: ForecastParams = {
+  index_damping_k: 12,
+  index_floor: 0.05,
+  sba_alpha: 0.15,
+  sba_beta: 0.15,
+  tsb_alpha: 0.15,
+  tsb_beta: 0.05,
+  damped_alpha: 0.2,
+  damped_beta: 0.05,
+  damped_phi: 0.9,
+  adida_alpha: 0.2,
+};
+
+/** Merge caller params over the defaults; a missing or non-finite field keeps its default. */
+function resolveParams(params?: Partial<ForecastParams>): ForecastParams {
+  if (!params) return DEFAULT_FORECAST_PARAMS;
+  const out: ForecastParams = { ...DEFAULT_FORECAST_PARAMS };
+  for (const k of Object.keys(DEFAULT_FORECAST_PARAMS) as (keyof ForecastParams)[]) {
+    const v = params[k];
+    if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+  }
+  return out;
+}
 
 /**
  * Pooled seasonal indices per class. For each class and calendar
  * month: index = (mean units across that class's SKU-months landing on that
  * calendar month) / (class's overall mean). Damped toward 1 with weight
- * n/(n+K) so classes with little data get a nearly flat curve. Classes with
- * zero total sales get a flat curve.
+ * n/(n+K), K = params.index_damping_k, so classes with little data get a
+ * nearly flat curve. Classes with zero total sales get a flat curve.
  */
-export function classSeasonalIndices(series: SkuSeries[]): Map<string, SeasonalIndex> {
+export function classSeasonalIndices(
+  series: SkuSeries[],
+  params?: Partial<ForecastParams>,
+): Map<string, SeasonalIndex> {
+  const dampingK = resolveParams(params).index_damping_k;
   interface Acc {
     sum: number[];
     n: number[];
@@ -149,7 +211,8 @@ export function classSeasonalIndices(series: SkuSeries[]): Map<string, SeasonalI
         const n = acc.n[m]!;
         const monthMean = n > 0 ? acc.sum[m]! / n : overallMean;
         const raw = monthMean / overallMean;
-        const w = n / (n + INDEX_DAMPING_K);
+        // n = 0 with K = 0 would be 0/0; an empty bucket carries no weight.
+        const w = n > 0 ? n / (n + dampingK) : 0;
         idx[m] = 1 + w * (raw - 1);
       }
       // Renormalize to mean 1 so the index reshapes, never inflates, a level.
@@ -175,9 +238,16 @@ export interface Forecaster {
   /**
    * Forecast `horizon` months from the end of `units` (closed months,
    * oldest -> newest, startCalMonth = calendar month of units[0]).
-   * Returns non-negative unit forecasts, length `horizon`.
+   * Returns non-negative unit forecasts, length `horizon`. `params` is
+   * merged over DEFAULT_FORECAST_PARAMS; a method reads only its own fields.
    */
-  forecast(units: number[], startCalMonth: number, horizon: number, ctx: ForecastContext): number[];
+  forecast(
+    units: number[],
+    startCalMonth: number,
+    horizon: number,
+    ctx: ForecastContext,
+    params?: Partial<ForecastParams>,
+  ): number[];
 }
 
 export const FLAT_INDEX: SeasonalIndex = new Array(12).fill(1);
@@ -194,7 +264,7 @@ function tailMean(units: number[], n: number): number {
 }
 
 /**
- * Feed-equivalent baseline: same calendar month last year; falls back to the
+ * The baseline: same calendar month last year; falls back to the
  * trailing 3-month mean when the series is too short to look back 12.
  */
 export const seasonalNaive: Forecaster = {
@@ -225,15 +295,16 @@ export const runRate3m: Forecaster = {
  */
 export const runRateIndex: Forecaster = {
   key: 'run_rate_index',
-  forecast(units, startCalMonth, horizon, ctx) {
+  forecast(units, startCalMonth, horizon, ctx, params) {
     const idx = ctx.seasonalIndex;
+    const floor = resolveParams(params).index_floor;
     const k = Math.min(3, units.length);
     let level = 0;
     if (k > 0) {
       let s = 0;
       for (let i = units.length - k; i < units.length; i++) {
         const cm = (startCalMonth + i) % 12;
-        const si = idx[cm]! > 0.05 ? idx[cm]! : 1;
+        const si = idx[cm]! > floor ? idx[cm]! : 1;
         s += units[i]! / si;
       }
       level = s / k;
@@ -249,9 +320,9 @@ export const runRateIndex: Forecaster = {
 /** Equal-weight combination of seasonal-naive and index-reshaped run-rate. */
 export const blendNaiveIndex: Forecaster = {
   key: 'blend_naive_index',
-  forecast(units, startCalMonth, horizon, ctx) {
-    const a = seasonalNaive.forecast(units, startCalMonth, horizon, ctx);
-    const b = runRateIndex.forecast(units, startCalMonth, horizon, ctx);
+  forecast(units, startCalMonth, horizon, ctx, params) {
+    const a = seasonalNaive.forecast(units, startCalMonth, horizon, ctx, params);
+    const b = runRateIndex.forecast(units, startCalMonth, horizon, ctx, params);
     return a.map((v, i) => (v + b[i]!) / 2);
   },
 };
@@ -261,21 +332,21 @@ export const blendNaiveIndex: Forecaster = {
 // SBA (Syntetos-Boylan Approximation) and TSB (Teunter-Syntetos-Babai) are
 // the literature's intermittent-demand standard: Croston-style separation of
 // demand size and timing, with SBA debiasing the rate and TSB decaying the
-// occurrence probability every zero month (obsolescence-aware - right for
-// model-year churn). Damped-trend exponential smoothing (Gardner) is the
+// occurrence probability every zero month (obsolescence-aware, for ranges
+// that turn over). Damped-trend exponential smoothing (Gardner) is the
 // classic hard-to-beat benchmark for the fast movers. ADIDA aggregates the
 // lumpiest series to quarters, forecasts the aggregate, and disaggregates by
 // the class seasonal shape. All operate on the DESEASONALIZED series (class
 // index divided out) and reseasonalize on the way back, per the pooled-index
 // evidence (Chen-Boylan): seasonality lives at class level, level at SKU
-// level. Fixed smoothing constants per the intermittent literature (0.05-0.3;
-// optimizing them buys little on short series).
+// level. Smoothing constants are not fitted per series (optimizing them buys
+// little on short series); they come from ForecastParams.
 
 /** Divide out the class index so level estimation is season-free. */
-function deseasonalize(units: number[], startCalMonth: number, idx: SeasonalIndex): number[] {
+function deseasonalize(units: number[], startCalMonth: number, idx: SeasonalIndex, floor: number): number[] {
   return units.map((u, i) => {
     const si = idx[(startCalMonth + i) % 12]!;
-    return u / (si > 0.05 ? si : 1);
+    return u / (si > floor ? si : 1);
   });
 }
 
@@ -284,58 +355,51 @@ function reseasonalize(path: number[], firstTargetCalMonth: number, idx: Seasona
   return path.map((v, h) => nonNeg(v * idx[(firstTargetCalMonth + h) % 12]!));
 }
 
-const SBA_ALPHA = 0.15; // demand-size smoothing
-const SBA_BETA = 0.15; // inter-demand-interval smoothing
-const TSB_ALPHA = 0.15; // demand-size smoothing
-const TSB_BETA = 0.05; // occurrence-probability smoothing (small: off-season gaps must not kill it)
-
 /**
  * SBA: Croston's size/interval decomposition with the (1 - beta/2) debias.
  * Returns a flat demand-rate path (deseasonalized), reseasonalized by ctx.
  */
 export const sba: Forecaster = {
   key: 'sba',
-  forecast(units, startCalMonth, horizon, ctx) {
-    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex);
+  forecast(units, startCalMonth, horizon, ctx, params) {
+    const p = resolveParams(params);
+    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex, p.index_floor);
     let size: number | null = null;
     let interval: number | null = null;
     let sinceLast = 0;
     for (const u of d) {
       sinceLast += 1;
       if (u > 0) {
-        size = size == null ? u : size + SBA_ALPHA * (u - size);
-        interval = interval == null ? sinceLast : interval + SBA_BETA * (sinceLast - interval);
+        size = size == null ? u : size + p.sba_alpha * (u - size);
+        interval = interval == null ? sinceLast : interval + p.sba_beta * (sinceLast - interval);
         sinceLast = 0;
       }
     }
-    const rate = size != null && interval != null && interval > 0 ? (1 - SBA_BETA / 2) * (size / interval) : 0;
+    const rate = size != null && interval != null && interval > 0 ? (1 - p.sba_beta / 2) * (size / interval) : 0;
     return reseasonalize(new Array(horizon).fill(rate), ctx.firstTargetCalMonth, ctx.seasonalIndex);
   },
 };
 
 /**
  * TSB: smooths occurrence probability EVERY month (decays through zero runs,
- * so a dying model-year SKU glides to zero instead of freezing).
+ * so a SKU that has stopped selling glides to zero instead of freezing).
  */
 export const tsb: Forecaster = {
   key: 'tsb',
-  forecast(units, startCalMonth, horizon, ctx) {
-    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex);
+  forecast(units, startCalMonth, horizon, ctx, params) {
+    const p = resolveParams(params);
+    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex, p.index_floor);
     let prob: number | null = null;
     let size: number | null = null;
     for (const u of d) {
       const occurred = u > 0 ? 1 : 0;
-      prob = prob == null ? occurred : prob + TSB_BETA * (occurred - prob);
-      if (u > 0) size = size == null ? u : size + TSB_ALPHA * (u - size);
+      prob = prob == null ? occurred : prob + p.tsb_beta * (occurred - prob);
+      if (u > 0) size = size == null ? u : size + p.tsb_alpha * (u - size);
     }
     const rate = prob != null && size != null ? prob * size : 0;
     return reseasonalize(new Array(horizon).fill(rate), ctx.firstTargetCalMonth, ctx.seasonalIndex);
   },
 };
-
-const DAMPED_ALPHA = 0.2;
-const DAMPED_BETA = 0.05;
-const DAMPED_PHI = 0.9;
 
 /**
  * Damped-trend exponential smoothing (Gardner-McKenzie) on the
@@ -344,27 +408,26 @@ const DAMPED_PHI = 0.9;
  */
 export const dampedTrendIndex: Forecaster = {
   key: 'damped_trend_index',
-  forecast(units, startCalMonth, horizon, ctx) {
-    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex);
+  forecast(units, startCalMonth, horizon, ctx, params) {
+    const p = resolveParams(params);
+    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex, p.index_floor);
     if (d.length === 0) return new Array(horizon).fill(0);
     let level = d[0]!;
     let trend = 0;
     for (let i = 1; i < d.length; i++) {
       const prevLevel = level;
-      level = DAMPED_ALPHA * d[i]! + (1 - DAMPED_ALPHA) * (level + DAMPED_PHI * trend);
-      trend = DAMPED_BETA * (level - prevLevel) + (1 - DAMPED_BETA) * DAMPED_PHI * trend;
+      level = p.damped_alpha * d[i]! + (1 - p.damped_alpha) * (level + p.damped_phi * trend);
+      trend = p.damped_beta * (level - prevLevel) + (1 - p.damped_beta) * p.damped_phi * trend;
     }
     const path: number[] = new Array(horizon);
     let phiSum = 0;
     for (let h = 0; h < horizon; h++) {
-      phiSum += Math.pow(DAMPED_PHI, h + 1);
+      phiSum += Math.pow(p.damped_phi, h + 1);
       path[h] = level + phiSum * trend;
     }
     return reseasonalize(path, ctx.firstTargetCalMonth, ctx.seasonalIndex);
   },
 };
-
-const ADIDA_ALPHA = 0.2;
 
 /**
  * ADIDA: aggregate the deseasonalized series into quarters (from the end),
@@ -374,15 +437,16 @@ const ADIDA_ALPHA = 0.2;
  */
 export const adida: Forecaster = {
   key: 'adida',
-  forecast(units, startCalMonth, horizon, ctx) {
-    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex);
+  forecast(units, startCalMonth, horizon, ctx, params) {
+    const p = resolveParams(params);
+    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex, p.index_floor);
     // Quarter boundaries anchored to the END so the latest quarter is complete.
     const drop = d.length % 3;
     const q: number[] = [];
     for (let i = drop; i + 3 <= d.length; i += 3) q.push(d[i]! + d[i + 1]! + d[i + 2]!);
-    if (q.length === 0) return runRateIndex.forecast(units, startCalMonth, horizon, ctx);
+    if (q.length === 0) return runRateIndex.forecast(units, startCalMonth, horizon, ctx, params);
     let level = q[0]!;
-    for (let i = 1; i < q.length; i++) level = level + ADIDA_ALPHA * (q[i]! - level);
+    for (let i = 1; i < q.length; i++) level = level + p.adida_alpha * (q[i]! - level);
     const monthlyRate = level / 3;
     return reseasonalize(new Array(horizon).fill(monthlyRate), ctx.firstTargetCalMonth, ctx.seasonalIndex);
   },
@@ -391,8 +455,8 @@ export const adida: Forecaster = {
 /** Long-run mean rate (all months), reseasonalized - the second floor. */
 export const meanRateIndex: Forecaster = {
   key: 'mean_rate_index',
-  forecast(units, startCalMonth, horizon, ctx) {
-    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex);
+  forecast(units, startCalMonth, horizon, ctx, params) {
+    const d = deseasonalize(units, startCalMonth, ctx.seasonalIndex, resolveParams(params).index_floor);
     const level = d.length > 0 ? d.reduce((a, b) => a + b, 0) / d.length : 0;
     return reseasonalize(new Array(horizon).fill(level), ctx.firstTargetCalMonth, ctx.seasonalIndex);
   },
@@ -404,8 +468,10 @@ export const meanRateIndex: Forecaster = {
  */
 export const combo: Forecaster = {
   key: 'combo',
-  forecast(units, startCalMonth, horizon, ctx) {
-    const parts = [sba, tsb, dampedTrendIndex, adida].map((f) => f.forecast(units, startCalMonth, horizon, ctx));
+  forecast(units, startCalMonth, horizon, ctx, params) {
+    const parts = [sba, tsb, dampedTrendIndex, adida].map((f) =>
+      f.forecast(units, startCalMonth, horizon, ctx, params),
+    );
     const out: number[] = new Array(horizon).fill(0);
     for (const p of parts) for (let h = 0; h < horizon; h++) out[h]! += p[h]! / parts.length;
     return out;
@@ -416,7 +482,7 @@ export const combo: Forecaster = {
 
 export type DemandClass = 'smooth' | 'erratic' | 'intermittent' | 'lumpy' | 'dead';
 
-/** Syntetos-Boylan cutoffs. */
+/** Fixed cut-offs from the Syntetos-Boylan-Croston demand classification (Syntetos, Boylan and Croston 2005), not tuning. */
 export const SBC_ADI_CUTOFF = 1.32;
 export const SBC_CV2_CUTOFF = 0.49;
 
@@ -465,13 +531,13 @@ export const FORECASTERS: Forecaster[] = [
 
 // ── Live-path assembly ───────────────────────────────────────────
 
-/** Lookup by key for routing a SKU through its cell's persisted winner. */
+/** Lookup by key for routing a SKU through its cell's winner. */
 export const FORECASTER_BY_KEY: Map<string, Forecaster> = new Map(FORECASTERS.map((f) => [f.key, f]));
 
-/** The safe global fallback when a cell has no persisted winner. */
+/** The safe global fallback when a cell has no winner. */
 export const FALLBACK_FORECASTER = tsb;
 
-/** Rebuild a gap-filled SkuSeries from a scratch month-map ({YYYY-MM: units}). */
+/** Rebuild a gap-filled SkuSeries from a month map ({YYYY-MM: units}). */
 export function seriesFromMonthMap(
   sku: string,
   classKey: string,
@@ -501,9 +567,12 @@ export interface LiveForecastRun {
     winner: string;
     raw_winner: string;
     demoted: boolean;
+    /** The raw winner's WAPE on this run. */
     wape_pct: number | null;
-    feed_wape_pct: number | null;
-    vs_feed_pts: number | null;
+    /** The baseline (seasonal_naive) WAPE on this run. */
+    baseline_wape_pct: number | null;
+    /** Raw winner WAPE minus baseline (seasonal_naive) WAPE, in points; negative = winner better. */
+    vs_baseline_pts: number | null;
     bias_pct: number | null;
     sku_count: number;
     holdout_actual_units: number;
@@ -516,35 +585,39 @@ export interface LiveForecastRun {
 /**
  * Finish a tournament run: backtest -> FVA demotion -> per-SKU 12-month
  * forecasts from each cell's in-force winner. Demotion rule: a winner that
- * does not beat seasonal_naive (the feed-equivalent) on this run is demoted
- * TO seasonal_naive - the forecast then matches feed behavior, so flipping
- * forecast_source can never do worse than the feed on a demoted cell.
+ * does not beat the baseline (seasonal_naive) on this run is demoted TO
+ * seasonal_naive, so a cell's in-force method never scores worse than the
+ * baseline. `params` tunes the seasonal index and the forecasters; pass the
+ * same value the backtest was run with.
  */
 export function runLiveForecast(
   series: SkuSeries[],
   backtest: import('./backtest').BacktestResult,
   nowMonth: string,
   horizon = 12,
+  params?: Partial<ForecastParams>,
 ): LiveForecastRun {
-  const indices = classSeasonalIndices(series);
+  const indices = classSeasonalIndices(series, params);
   const winnerByCell = new Map<string, string>();
   const cells: LiveForecastRun['cells'] = [];
   for (const c of backtest.classes) {
-    const feed = c.scores.find((s) => s.method === 'seasonal_naive');
+    const baseline = c.scores.find((s) => s.method === 'seasonal_naive');
     const win = c.scores.find((s) => s.method === c.winner);
-    const beatsFeed =
-      win?.wape_pct != null && feed?.wape_pct != null ? win.wape_pct <= feed.wape_pct : win?.wape_pct != null;
-    const inForce = beatsFeed ? c.winner : 'seasonal_naive';
+    const beatsBaseline =
+      win?.wape_pct != null && baseline?.wape_pct != null
+        ? win.wape_pct <= baseline.wape_pct
+        : win?.wape_pct != null;
+    const inForce = beatsBaseline ? c.winner : 'seasonal_naive';
     winnerByCell.set(`${c.class_1}|${c.band}`, inForce);
     cells.push({
       class_1: c.class_1,
       band: c.band,
       winner: inForce,
       raw_winner: c.winner,
-      demoted: !beatsFeed,
+      demoted: !beatsBaseline,
       wape_pct: win?.wape_pct ?? null,
-      feed_wape_pct: feed?.wape_pct ?? null,
-      vs_feed_pts: c.vs_feed_pts,
+      baseline_wape_pct: baseline?.wape_pct ?? null,
+      vs_baseline_pts: c.vs_baseline_pts,
       bias_pct: win?.bias_pct ?? null,
       sku_count: c.sku_count,
       holdout_actual_units: c.holdout_actual_units,
@@ -557,7 +630,9 @@ export function runLiveForecast(
     const key = winnerByCell.get(`${s.class_1}|${band}`);
     const f = (key ? FORECASTER_BY_KEY.get(key) : undefined) ?? FALLBACK_FORECASTER;
     const ctx = { seasonalIndex: indices.get(s.class_1) ?? FLAT_INDEX, firstTargetCalMonth };
-    const fc = f.forecast(s.units, calMonth(s.startMonth), horizon, ctx).map((v) => Math.round(v * 100) / 100);
+    const fc = f
+      .forecast(s.units, calMonth(s.startMonth), horizon, ctx, params)
+      .map((v) => Math.round(v * 100) / 100);
     forecasts.push({ sku: s.sku, forecast: fc, method: f.key });
   }
   return { cells, forecasts, scored_skus: backtest.scored_skus, skipped_skus: backtest.skipped_skus };

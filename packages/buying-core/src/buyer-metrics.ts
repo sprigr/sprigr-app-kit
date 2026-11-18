@@ -1,10 +1,10 @@
 /**
  * buying-core - the single source of truth for every derived buyer metric.
  *
- * Pure functions only: no I/O, no database, no Date.now(). The SAME functions are
- * used by every tool and screen that shows a figure, so a number on a tab and the same
- * number from a tool can never disagree. Derived figures are computed AT READ
- * TIME from raw inputs and are never persisted.
+ * Pure functions only: no I/O, no database, no Date.now(). Every caller that
+ * shows a figure runs the SAME functions, so two readers of one SKU can never
+ * disagree. Derived figures are computed AT READ TIME from raw inputs and are
+ * never persisted.
  *
  * Every formula below is an approximation of a buyer's manual ordering method
  * and is documented at the definition. Change a formula HERE and nowhere else.
@@ -17,12 +17,12 @@ import { applyBuyRules, DEFAULT_BUY_RULE_SETTINGS, type BuyRuleSettings } from '
 // ── Input shapes ─────────────────────────────────────────────────────────
 
 /**
- * Per-SKU stats as the caller supplies them. AvgDailySales windows are rolling
- * units/day figures.
+ * Per-SKU stats as the caller supplies them. The avg_daily_sales_* windows are
+ * rolling units/day figures.
  */
 export interface SkuStats {
   sku: string;
-  /** Brand code or label. */
+  /** The product's brand attribute; empty when it has none. */
   brand: string;
   class_1: string;
   category: string;
@@ -51,28 +51,27 @@ export interface SkuStats {
   profitability_level?: number;
   // ── Marketplace saleability ─────────────────────────────────────
   /**
-   * Live marketplace / dropship stock on hand (units). The stats feed may
-   * carry this; NULL when the
-   * feed predates it. When null, the workbench falls back to the latest month's
-   * marketplace_soh_end from the bounded monthly-history cache. `qty` above is
+   * Current marketplace / dropship stock on hand (units); null when the
+   * caller's input does not carry it. When null, resolveSaleability uses the
+   * fallback marketplace stock figure the caller may pass. `qty` above is
    * OWN stock only, so own-stock 0 does NOT mean the SKU is unsaleable.
    */
   marketplace_soh?: number | null;
   /**
-   * Live "is this SKU sellable right now" flag from the stats feed. 1 =
-   * saleable, 0 = not, null when the feed predates it. An explicit 0 is
+   * Current "is this SKU sellable right now" flag. 1 = saleable, 0 = not,
+   * null when the caller's input does not carry it. An explicit 0 is
    * AUTHORITATIVE unsaleable: with no own stock it resolves TRULY_OUT and is
-   * never outvoted by the (up to ~4 weeks stale) monthly-history fallback. An
+   * never outvoted by the (possibly stale) fallback figure. An
    * explicit 1 with own stock 0 is MARKETPLACE_ONLY even when marketplace_soh
    * is unknown.
    */
   is_saleable?: number | null;
   // ── Pack / minimum order quantities ─────────────────────────────
   /**
-   * The per-SKU reorder quantity from the stats feed:
-   * the supplier pack / minimum the store has
-   * always ordered in. NULL-tolerant - null or 0 = unset. A buyer-set per-SKU
-   * pack_qty override always beats this feed value; see resolveEffectivePack.
+   * The row's per-SKU reorder quantity: the supplier pack / minimum the store
+   * has always ordered in. NULL-tolerant - null or 0 = unset. A buyer-set
+   * per-SKU pack_qty override always beats this value; see
+   * resolveEffectivePack.
    */
   reorder_qty?: number | null;
 }
@@ -80,10 +79,10 @@ export interface SkuStats {
 // ── Three-state saleability ──────────────────────────────────────
 //
 // Own-stock qty 0 does NOT mean a SKU is unsaleable: marketplace / dropship
-// stock may still be selling it. Today's flat STOCKOUT flag (qty<=0 && selling)
+// stock may still be selling it. A flat STOCKOUT flag (qty<=0 && selling)
 // mislabels those, overstating revenue-loss and ad-waste and mis-prioritising
 // buys. This resolves ONE saleability state per SKU that every downstream
-// surface reads, so a badge, a revenue-loss line and a buy reason can never
+// reader uses, so a risk tier, a revenue-loss line and a buy reason can never
 // disagree about whether a SKU is really out.
 
 export type SaleabilityState =
@@ -99,52 +98,51 @@ export interface Saleability {
   state: SaleabilityState;
   /**
    * True when NO marketplace evidence exists at all (marketplace_soh AND
-   * is_saleable AND the monthly-history fallback are ALL null). In this case
+   * is_saleable AND the fallback figure are ALL null). In this case
    * the resolution degrades to exact own-stock-only semantics
    * (state TRULY_OUT when own qty<=0, IN_STOCK otherwise) so the feature is a
-   * no-op wherever the marketplace feed hasn't landed.
+   * no-op for a caller that supplies no marketplace data.
    */
   no_marketplace_evidence: boolean;
-  /** The marketplace SOH actually used (live feed, else monthly fallback, else null). */
+  /** The marketplace SOH actually used (the row's current figure, else the fallback, else null). */
   marketplace_soh: number | null;
 }
 
 /**
  * Resolve the three-state saleability for one SKU from its own stock plus the
  * available marketplace evidence. Evidence precedence:
- *   1. a live is_saleable=0 from the stats feed is AUTHORITATIVE unsaleable:
- *      with own stock 0 the SKU is TRULY_OUT, and neither the (stale) monthly
- *      fallback nor a live marketplace SOH reading outvotes it;
- *   2. live marketplace_soh from the stats feed (when present) decides
+ *   1. a current is_saleable=0 on the row is AUTHORITATIVE unsaleable:
+ *      with own stock 0 the SKU is TRULY_OUT, and neither the fallback figure
+ *      nor a current marketplace SOH reading outvotes it;
+ *   2. the row's current marketplace_soh (when present) decides
  *      marketplace stock; an explicit is_saleable=1 also means the SKU IS
  *      sellable (MARKETPLACE_ONLY when own stock is 0 even with no soh number);
- *   3. the latest month's marketplace_soh_end from the monthly-history cache
- *      (fallbackMarketplaceSoh, sourced bounded - see the handler) is consulted
- *      ONLY when the live feed gave nothing at all (marketplace_soh AND
- *      is_saleable both null) - it can be ~4 weeks stale, so any live signal
- *      beats it.
+ *   3. a fallback marketplace stock figure the caller may pass
+ *      (fallback_marketplace_soh) is consulted ONLY when the row gave nothing
+ *      at all (marketplace_soh AND is_saleable both null) - it may be stale,
+ *      so any current signal beats it.
  *
- * When ALL three are null there is NO marketplace evidence: preserve today's
- * behaviour exactly (own-stock-only) and flag no_marketplace_evidence so the
- * caller knows this SKU degraded to own-stock-only semantics.
+ * When ALL three are null there is NO marketplace evidence: the result is
+ * exact own-stock-only semantics, and no_marketplace_evidence is set so the
+ * caller knows this SKU degraded to them.
  */
 export function resolveSaleability(args: {
   own_qty: number;
-  /** Live marketplace SOH from the stats feed; null when the feed predates it. */
+  /** Current marketplace SOH on the row; null when the caller's input does not carry it. */
   marketplace_soh?: number | null;
-  /** Live saleability flag from the stats feed; null when absent. */
+  /** Current saleability flag on the row; null when absent. */
   is_saleable?: number | null;
-  /** Latest month's marketplace_soh_end from the bounded monthly cache; null when unknown. */
+  /** A fallback marketplace stock figure the caller may pass (possibly stale); null when unknown. */
   fallback_marketplace_soh?: number | null;
 }): Saleability {
   const liveMp = args.marketplace_soh ?? null;
   const isSaleable = args.is_saleable ?? null;
   const fallbackMp = args.fallback_marketplace_soh ?? null;
 
-  // The marketplace SOH we actually trust: the live feed first. The monthly
-  // fallback (up to ~4 weeks stale) is consulted ONLY when the live feed gave
-  // us nothing at all - neither a live SOH nor a live saleability flag. An
-  // explicit live is_saleable=0 is authoritative "unsaleable": a stale positive
+  // The marketplace SOH we actually trust: the row's current figure first. The
+  // fallback (possibly stale) is consulted ONLY when the row gave us nothing
+  // at all - neither a current SOH nor a current saleability flag. An
+  // explicit is_saleable=0 is authoritative "unsaleable": a stale positive
   // fallback must never outvote it (or a genuinely-out SKU loses its STOCKOUT
   // urgency, drops off revenue-loss, and misses the censoring fix).
   const mpSoh = liveMp != null ? liveMp : isSaleable == null ? fallbackMp : null;
@@ -161,9 +159,9 @@ export function resolveSaleability(args: {
     return { state: 'TRULY_OUT', no_marketplace_evidence: true, marketplace_soh: null };
   }
 
-  // Own stock 0, some marketplace evidence exists. A live is_saleable=0 is
-  // authoritative unsaleable; otherwise marketplace stock (live, or the
-  // fallback when no live signal exists) or an explicit is_saleable=1 means
+  // Own stock 0, some marketplace evidence exists. A current is_saleable=0 is
+  // authoritative unsaleable; otherwise marketplace stock (current, or the
+  // fallback when no current signal exists) or an explicit is_saleable=1 means
   // sales continue via the marketplace.
   const marketplaceSelling = isSaleable === 0 ? false : (mpSoh != null && mpSoh > 0) || isSaleable === 1;
   return {
@@ -185,7 +183,7 @@ export type RiskBasis = 'forward_auto' | 'trailing';
 export interface BuyerSettings extends BuyRuleSettings {
   coverage_target_default_days: number;
   lead_time_default_days: number;
-  /** Per-brand coverage-target overrides in days, keyed by brandKey(label or 3-char SKU code). */
+  /** Per-brand coverage-target overrides in days, keyed by brandKey(the row's brand). */
   brand_coverage_overrides: Record<string, number>;
   /** Per-brand lead-time overrides in days (an overseas maker is months, a local distributor days). */
   brand_lead_time_overrides: Record<string, number>;
@@ -195,32 +193,65 @@ export interface BuyerSettings extends BuyRuleSettings {
   class_lead_time_overrides: Record<string, number>;
   /**
    * Profitability coverage-adjust curve: level → fractional adjustment to the
-   * coverage target. Defaults: 1 → -15%, 2 → -30%, 3 → -50%, >=4 → -100%
-   * (a level-4 product's effective coverage target is 0 → never re-buy).
+   * coverage target, on the caller's own level scale (for example
+   * { '1': -0.15, '4': -1 }: an entry of -1 targets 0 days, so that level is
+   * never re-bought). Default {} (no adjustment).
    */
   profitability_coverage_adjust: Record<string, number>;
   risk_basis: RiskBasis;
   /**
-   * Class names bought seasonally / prebook (seasonal lines) rather
-   * than continuously replenished. SKUs in these classes are kept OUT of the
-   * reorder queue (bought via the seasonal-buy panel instead), so a flat
-   * off-season forecast can't push a winter seasonal line onto the buy list.
+   * Class names bought seasonally / prebook rather than continuously
+   * replenished. SKUs in these classes are kept OUT of the reorder queue
+   * (bought outside it), so a flat off-season forecast can't push a seasonal
+   * line onto the buy list. Default [] (no class is seasonal).
    */
   seasonal_classes: string[];
+  /**
+   * Weights of the blended velocity over the three trailing windows
+   * [avg_daily_sales_30d, avg_daily_sales_30_90d, avg_daily_sales_90_180d].
+   * Default [0.5, 0.3, 0.2].
+   */
+  velocity_weights: [number, number, number];
+  /** |trend_pct| at or past this fraction is called out as a reason. Default 0.25. */
+  trend_reason_threshold: number;
+  /**
+   * Forward cover below this fraction of trailing cover is called out as a
+   * peak ahead (SEASON_PEAK_AHEAD). Default 0.75.
+   */
+  season_peak_ratio: number;
+  /**
+   * Forward cover above this multiple of trailing cover is called out as a
+   * slowdown ahead (SEASON_SLOWDOWN_AHEAD). Default 1.33.
+   */
+  season_slowdown_ratio: number;
+  /**
+   * Aged-stock thresholds in days, [first, second]: an oldest item past the
+   * first is aged, past the second is in the oldest bucket. Default [90, 180].
+   */
+  aged_days: [number, number];
   // ── EOQ line quantities ────────────────────────────────────────
   /**
    * Master switch for the economic-order-quantity top-up. When false the
    * suggested buy is exactly the coverage-fill figure;
    * when true a nonzero base suggestion is raised to the EOQ where the EOQ is
    * larger, so the buyer stops paying fixed receiving labour on qty-1 lines.
+   * Default true; the top-up also needs handling_cost_per_line.
    */
   eoq_enabled: boolean;
   /**
    * K in the EOQ formula: the fixed handling cost of putting ONE order line
    * away - receiving, unpacking, binning, the paperwork. In store currency.
-   * Bigger K => bigger economic batch (fewer, larger buys). Default 4.00.
+   * Bigger K => bigger economic batch (fewer, larger buys). No default: it is
+   * the caller's own cost, and absent means no EOQ top-up.
    */
-  handling_cost_per_line: number;
+  handling_cost_per_line?: number;
+  /**
+   * Unit cost (store currency) used ONLY for the EOQ holding term when a SKU
+   * has no recorded cost. It never feeds order_cost or any money figure, only
+   * the batch size. No default: absent means an unpriced SKU gets no EOQ
+   * top-up.
+   */
+  eoq_fallback_unit_cost?: number;
   /**
    * h_rate in the EOQ formula: the ANNUAL holding cost as a fraction of a
    * unit's landed cost (capital + storage + obsolescence). h = h_rate x
@@ -232,7 +263,7 @@ export interface BuyerSettings extends BuyRuleSettings {
    * The EOQ top-up may never push a line past this many days of FORWARD cover.
    * A cheap-slow SKU has a huge raw EOQ (sqrt blows up as h -> 0); this caps
    * the raise at "units covering eoq_max_cover_days of demand" so the buyer
-   * never ends up with three years of a 2-dollar accessory. Default 180.
+   * never ends up with years of stock in a low-cost line. Default 180.
    */
   eoq_max_cover_days: number;
 }
@@ -245,27 +276,19 @@ export const DEFAULT_BUYER_SETTINGS: BuyerSettings = {
   brand_lead_time_overrides: {},
   class_coverage_overrides: {},
   class_lead_time_overrides: {},
-  profitability_coverage_adjust: { '1': -0.15, '2': -0.3, '3': -0.5, '4': -1 },
+  profitability_coverage_adjust: {},
   risk_basis: 'forward_auto',
-  // These classes are seasonal/prebook, not continuous replenishment.
-  seasonal_classes: ['CLASS_P', 'CLASS_S'],
+  seasonal_classes: [],
+  velocity_weights: [0.5, 0.3, 0.2],
+  trend_reason_threshold: 0.25,
+  season_peak_ratio: 0.75,
+  season_slowdown_ratio: 1.33,
+  aged_days: [90, 180],
   eoq_enabled: true,
-  handling_cost_per_line: 4.0,
   holding_rate_annual: 0.25,
   eoq_max_cover_days: 180,
   ...DEFAULT_BUY_RULE_SETTINGS,
 };
-
-/**
- * Fallback unit cost (store currency) used ONLY for the EOQ holding term when a
- * SKU has no recorded cost. EOQ needs h = holding_rate x cost; with cost
- * unknown we assume a modest accessory-grade landed cost so the SKU still gets
- * a sensible economic batch rather than being skipped. This value NEVER feeds
- * order_cost or any dollar figure the buyer sees - it is a sizing assumption
- * for the batch math alone. Deliberately low so an unpriced SKU can't be
- * escalated into a giant expensive order.
- */
-export const EOQ_FALLBACK_UNIT_COST = 20;
 
 export type StockoutRisk = 'STOCKOUT' | 'High' | 'Medium' | 'Low';
 
@@ -276,13 +299,13 @@ export type StockoutRisk = 'STOCKOUT' | 'High' | 'Medium' | 'Low';
  * stays clock-free.
  */
 export interface ForwardInput {
-  /** F0..F11 forecast unit sales, F0 = the current calendar month. */
+  /** Forecast unit sales, forecast[0..11], index 0 = the current month. */
   forecast: number[];
   /** Fraction of the current month still ahead, (0, 1]. */
   month0_fraction: number;
 }
 
-/** Everything the buyer surface derives for one SKU. Never persisted. */
+/** Everything derived for one SKU. Never persisted. */
 export interface DerivedSkuMetrics {
   sku: string;
   brand: string;
@@ -290,7 +313,7 @@ export interface DerivedSkuMetrics {
   /** Days of cover at the blended velocity; null when velocity is 0. */
   coverage_days: number | null;
   /**
-   * Days of cover against the FORWARD forecast (walking F0..F11); null when
+   * Days of cover against the FORWARD forecast (walking forecast[0..11]); null when
    * no forecast demand exists in the horizon. Values at the horizon cap
    * (~365) mean "at least this much".
    */
@@ -308,15 +331,15 @@ export interface DerivedSkuMetrics {
    * Three-state saleability: TRULY_OUT | MARKETPLACE_ONLY | IN_STOCK. STOCKOUT
    * risk is reserved for TRULY_OUT-and-selling; a MARKETPLACE_ONLY-and-selling
    * SKU is at risk of the same tier but is fulfilled from marketplace stock, so
-   * it must NOT count in the STOCKOUT tile/counts (mp_only surfaces instead).
+   * it must NOT count as a STOCKOUT (mp_only_selling is set instead).
    */
   saleability: SaleabilityState;
-  /** The marketplace SOH used for the resolution (live feed or monthly fallback); null when unknown. */
+  /** The marketplace SOH used for the resolution (the row's current figure or the fallback); null when unknown. */
   marketplace_soh: number | null;
   /**
    * True when the SKU is out of own stock, still selling, but fulfilled from
-   * marketplace/dropship stock (state MARKETPLACE_ONLY with demand). Distinct
-   * badge/tier: NOT a true stockout.
+   * marketplace/dropship stock (state MARKETPLACE_ONLY with demand). A
+   * distinct tier: NOT a true stockout.
    */
   mp_only_selling: boolean;
   /** No recent sales but stock still sitting - excluded from the reorder queue. */
@@ -334,7 +357,7 @@ export interface DerivedSkuMetrics {
   eoq_base_qty: number;
   /**
    * The economic order quantity the line was raised TO (equals eoq_base_qty
-   * when EOQ didn't fire). Lets a surface show "1 -> 4" without re-deriving.
+   * when EOQ didn't fire). Lets a reader show "1 -> 4" without re-deriving.
    * 0 when there is no base suggestion. This is the PRE-pack
    * figure: pack rounding (below) may lift suggested_buy_qty further.
    */
@@ -346,22 +369,22 @@ export interface DerivedSkuMetrics {
    * The effective minimum order quantity (floor) in force for this SKU (the
    * buyer's per-SKU override); null when unset. A nonzero suggestion is lifted
    * to at least this before pack rounding. Exposed even when the suggestion is 0
-   * so a surface can show "min order N".
+   * so a reader can show "min order N".
    */
   min_order_qty: number | null;
   /**
    * The effective pack size (the multiple) in force for this SKU (buyer override
-   * first, else the stats feed's reorder_qty); null when neither is set. Exposed
-   * even when the suggestion is 0 so a surface can show "orders in packs of N".
+   * first, else the row's reorder_qty); null when neither is set. Exposed
+   * even when the suggestion is 0 so a reader can show "orders in packs of N".
    */
   pack_qty: number | null;
-  /** Where the effective pack came from: the buyer's per-SKU override or the feed. */
-  pack_source: 'override' | 'feed' | null;
+  /** Where the effective pack came from: the buyer's per-SKU override or the row's reorder_qty. */
+  pack_source: 'override' | 'input' | null;
   /** True when the minimum order quantity floor lifted the line quantity. */
   min_applied: boolean;
   /**
    * The line quantity BEFORE pack rounding but AFTER the min floor (the
-   * post-EOQ, post-min figure). Lets a surface show "10 -> 15 (pack of 5)"
+   * post-EOQ, post-min figure). Lets a reader show "10 -> 15 (pack of 5)"
    * without re-deriving.
    */
   pre_pack_qty: number;
@@ -383,7 +406,7 @@ export interface DerivedSkuMetrics {
   demand_uncensored: boolean;
   /** Incoming units with an ETA inside the next ~2 months (input, echoed). */
   incoming_next_2m: number;
-  /** Seasonal/prebook class (seasonal lines): kept out of the reorder queue. */
+  /** Seasonal/prebook class: kept out of the reorder queue. */
   seasonal_class: boolean;
   /** Forecast shows demand but the SKU has never sold - the buy was suppressed. */
   forecast_only: boolean;
@@ -395,7 +418,7 @@ export interface DerivedSkuMetrics {
   rule_qty: number;
   /** Slow seller (under slow_seller_monthly_units a month): kept at slow_seller_stock_target, reorder on sale. */
   slow_seller: boolean;
-  /** New or re-launched SKU (no sales 90-360 days ago, stock all arrived inside 180 days). */
+  /** New or re-launched SKU (no sales 90-360 days ago, stock all arrived inside new_sku_window_days). */
   new_sku: boolean;
   /** The new-SKU trial cap lowered the line. */
   trial_capped: boolean;
@@ -408,21 +431,39 @@ export interface DerivedSkuMetrics {
 /**
  * Blended sales velocity in units/day.
  *
- * Approximation: recent windows carry the most weight when
- * sizing orders. We blend AvgDailySales_30Days (weight 0.5), 30_90Days (0.3)
- * and 90_180Days (0.2) so one hot or dead month doesn't whipsaw the buy
- * suggestion. Weights are a calibration point.
+ * Approximation: recent windows carry the most weight when sizing orders. We
+ * blend avg_daily_sales_30d, avg_daily_sales_30_90d and
+ * avg_daily_sales_90_180d by `weights` (in that order) so one hot or dead
+ * month doesn't whipsaw the buy suggestion. Callers with settings pass
+ * settings.velocity_weights; absent, the default [0.5, 0.3, 0.2] applies.
  */
-export function weightedVelocity(s: {
-  avg_daily_sales_30d: number;
-  avg_daily_sales_30_90d: number;
-  avg_daily_sales_90_180d: number;
-}): number {
+export function weightedVelocity(
+  s: {
+    avg_daily_sales_30d: number;
+    avg_daily_sales_30_90d: number;
+    avg_daily_sales_90_180d: number;
+  },
+  weights: readonly [number, number, number] = DEFAULT_BUYER_SETTINGS.velocity_weights,
+): number {
   const v =
-    0.5 * (s.avg_daily_sales_30d || 0) +
-    0.3 * (s.avg_daily_sales_30_90d || 0) +
-    0.2 * (s.avg_daily_sales_90_180d || 0);
+    weights[0] * (s.avg_daily_sales_30d || 0) +
+    weights[1] * (s.avg_daily_sales_30_90d || 0) +
+    weights[2] * (s.avg_daily_sales_90_180d || 0);
   return v > 0 ? v : 0;
+}
+
+/** Last day covered by each trailing velocity window, in velocity_weights order. */
+const VELOCITY_WINDOW_END_DAYS = [30, 90, 180] as const;
+
+/**
+ * Days of sales history the blended velocity looks back over: the end of the
+ * furthest window carrying a positive weight (all windows when none does).
+ */
+function velocityLookbackDays(weights: readonly [number, number, number]): number {
+  for (let i = VELOCITY_WINDOW_END_DAYS.length - 1; i >= 0; i--) {
+    if ((weights[i] ?? 0) > 0) return VELOCITY_WINDOW_END_DAYS[i]!;
+  }
+  return VELOCITY_WINDOW_END_DAYS[VELOCITY_WINDOW_END_DAYS.length - 1]!;
 }
 
 /**
@@ -435,7 +476,7 @@ export function coverageDays(qty: number, velocity: number): number | null {
   return Math.max(0, qty) / velocity;
 }
 
-/** Month length convention for the forecast walk (F columns are month buckets). */
+/** Month length convention for the forecast walk (forecast entries are month buckets). */
 export const FORECAST_MONTH_DAYS = 30;
 
 /**
@@ -496,8 +537,9 @@ export function forecastUnitsWindow(fwd: ForwardInput, windowDays: number): numb
 
 /**
  * Profitability coverage adjustment for a level, from the curve.
- * Resolution: the largest defined level <= the SKU's level (so a level-6
- * product uses the ">=4" entry of the default curve). Level 0 / unset → 0.
+ * Resolution: the largest defined level <= the SKU's level (so a level above
+ * the curve's last entry uses that entry). Level 0 / unset, or an empty
+ * curve → 0.
  * Returned fraction is clamped to [-1, 0]: the curve can only REDUCE coverage.
  */
 export function profitabilityAdjust(curve: Record<string, number>, level: number | undefined): number {
@@ -525,20 +567,19 @@ function firstPositive(...values: Array<number | undefined>): number | undefined
 }
 
 /**
- * A brand override for one SKU: keys are stored under brandKey, so match the
- * feed label case-insensitively ("Brand B" -> "BRAND B"), then the SKU's
- * 3-char code ("BBB"), which consolidated rows
- * no longer carry as their brand. The label beats the code.
+ * A brand override for one row: keys are stored under brandKey, so match the
+ * row's brand attribute case-insensitively ("Brand B" -> "BRAND B"). An empty
+ * brand matches no override.
  */
-function brandOverride(map: Record<string, number>, brand: string, sku: string | undefined): number | undefined {
-  return firstPositive(brandLookup(map, brand), sku ? brandLookup(map, sku.slice(0, 3)) : undefined);
+function brandOverride(map: Record<string, number>, brand: string): number | undefined {
+  return brand ? firstPositive(brandLookup(map, brand)) : undefined;
 }
 
 /**
  * The effective coverage target for a SKU:
  *   base  = per-brand override, else per-class override, else default
  *   final = base * (1 + profitability adjustment), floored at 0.
- * A level->=4 product (default curve: -100%) targets 0 days of cover, i.e. it
+ * A level whose curve entry is -100% targets 0 days of cover, i.e. it
  * is never suggested for re-buy. Brand beats class: the brand override
  * is the sharper (supplier-shaped) knob, the class override the class
  * default.
@@ -548,11 +589,10 @@ export function resolveCoverageTarget(
   brand: string,
   profitabilityLevel: number | undefined,
   classKey?: string,
-  sku?: string,
 ): number {
   const base =
     firstPositive(
-      brandOverride(settings.brand_coverage_overrides, brand, sku),
+      brandOverride(settings.brand_coverage_overrides, brand),
       classKey ? settings.class_coverage_overrides[classKey] : undefined,
     ) ?? settings.coverage_target_default_days;
   const adj = profitabilityAdjust(settings.profitability_coverage_adjust, profitabilityLevel);
@@ -563,10 +603,10 @@ export function resolveCoverageTarget(
  * The effective resupply lead time for a SKU: per-brand override, else
  * per-class override, else the default. Same precedence as coverage.
  */
-export function resolveLeadTime(settings: BuyerSettings, brand: string, classKey?: string, sku?: string): number {
+export function resolveLeadTime(settings: BuyerSettings, brand: string, classKey?: string): number {
   return (
     firstPositive(
-      brandOverride(settings.brand_lead_time_overrides, brand, sku),
+      brandOverride(settings.brand_lead_time_overrides, brand),
       classKey ? settings.class_lead_time_overrides[classKey] : undefined,
     ) ?? settings.lead_time_default_days
   );
@@ -580,7 +620,7 @@ export function coverageGap(coverageTargetDays: number, coverage: number | null)
 
 /**
  * Dead stock: units on hand but no sales across the
- * blended windows (30 / 30-90 / 90-180d), i.e. weighted velocity is 0. A SKU
+ * blended velocity windows, i.e. weighted velocity is 0. A SKU
  * with neither stock nor sales is merely inactive, not dead.
  */
 export function isDead(qty: number, velocity: number): boolean {
@@ -598,7 +638,7 @@ export function reorderFlag(risk: StockoutRisk, dead: boolean): boolean {
 }
 
 /**
- * trend = (AvgDailySales_30Days - AvgDailySales_30_90Days) / AvgDailySales_30_90Days.
+ * trend = (avg_daily_sales_30d - avg_daily_sales_30_90d) / avg_daily_sales_30_90d.
  * Positive = accelerating, negative = slowing. Div-0 guard: null when the
  * 30-90d window is 0 (a brand-new or long-dormant SKU has no trend base).
  */
@@ -677,27 +717,35 @@ export function resolveDemandBasis(args: {
  *   h = holding_rate_annual * unit_cost (annual cost of holding one unit).
  * Returns 0 for any degenerate input (no demand, no handling cost, no holding
  * cost) - there is no meaningful batch to size, so EOQ never raises the line.
- * unit_cost falls back to EOQ_FALLBACK_UNIT_COST when unrecorded so an unpriced
- * SKU still gets a sensible batch (documented at that constant).
+ * When unit_cost is unrecorded the holding term uses fallback_unit_cost; with
+ * neither there is no holding cost to size against, so the result is 0.
  */
 export function economicOrderQty(args: {
   annual_demand: number;
   handling_cost_per_line: number;
   holding_rate_annual: number;
   unit_cost: number | null;
+  /** Unit cost assumed for an unpriced SKU (settings.eoq_fallback_unit_cost); absent = none. */
+  fallback_unit_cost?: number;
 }): number {
   const D = args.annual_demand;
   const K = args.handling_cost_per_line;
-  const cost = args.unit_cost != null && args.unit_cost > 0 ? args.unit_cost : EOQ_FALLBACK_UNIT_COST;
+  const cost = args.unit_cost != null && args.unit_cost > 0 ? args.unit_cost : (args.fallback_unit_cost ?? 0);
   const h = args.holding_rate_annual * cost;
   if (!(D > 0) || !(K > 0) || !(h > 0)) return 0;
   const eoq = Math.sqrt((2 * D * K) / h);
   return Number.isFinite(eoq) ? eoq : 0;
 }
 
+/**
+ * What a caller-defined performance label means to the buying maths:
+ * 'priority' = buy first when stocked out, 'run_down' = never batch up.
+ */
+export type LabelRole = 'priority' | 'run_down';
+
 /** Guard context for the EOQ top-up: label + explicit exclusions from the caller. */
 export interface EoqContext {
-  /** performance label; null when no cached label. */
+  /** The SKU's performance label (caller-defined); null or absent when it has none. */
   label?: string | null;
   /**
    * The buyer flagged this SKU as one never to escalate (clearance /
@@ -706,14 +754,12 @@ export interface EoqContext {
    */
   excluded?: boolean;
   /**
-   * Performance labels that mean "run this down", never batch up. The caller
-   * passes its own list; absent = DEFAULT_EOQ_DEAD_LABELS.
+   * The caller's map from its own labels to roles. A label mapped to
+   * 'run_down' blocks the top-up. No default: with no map, no label, or a
+   * label the map does not name, nothing is blocked.
    */
-  dead_labels?: readonly string[];
+  label_roles?: Record<string, LabelRole>;
 }
-
-/** The dead labels used when the caller supplies none. */
-export const DEFAULT_EOQ_DEAD_LABELS: readonly string[] = ['Dead'];
 
 export interface EoqResult {
   /** The (possibly raised) final line quantity. */
@@ -732,8 +778,12 @@ export interface EoqResult {
  * can't be pushed to years of stock.
  *
  * Guards (each returns the base untouched, applied:false):
- *   - EOQ disabled, or no base suggestion (nothing to raise).
- *   - SKU is dead, carries one of the dead labels, or is excluded by the caller.
+ *   - EOQ disabled, no handling_cost_per_line, or no base suggestion (nothing
+ *     to raise).
+ *   - SKU is dead, carries a label whose role is 'run_down', or is excluded
+ *     by the caller.
+ *   - No unit cost and no eoq_fallback_unit_cost: no holding cost to size
+ *     against.
  *   - No forward demand (annual demand 0): nothing to size a batch against.
  *   - The base already covers eoq_max_cover_days (raising would overshoot the
  *     cover cap): leave it.
@@ -746,7 +796,7 @@ export function applyEoqLineQty(args: {
   is_dead: boolean;
   settings: Pick<
     BuyerSettings,
-    'eoq_enabled' | 'handling_cost_per_line' | 'holding_rate_annual' | 'eoq_max_cover_days'
+    'eoq_enabled' | 'handling_cost_per_line' | 'eoq_fallback_unit_cost' | 'holding_rate_annual' | 'eoq_max_cover_days'
   >;
   ctx?: EoqContext;
   /**
@@ -767,15 +817,18 @@ export function applyEoqLineQty(args: {
   if (!(baseQty > 0)) return inert;
   if (is_dead) return inert;
   if (ctx?.excluded) return inert;
-  if (ctx?.label && (ctx.dead_labels ?? DEFAULT_EOQ_DEAD_LABELS).includes(ctx.label)) return inert;
+  if (ctx?.label && ctx.label_roles?.[ctx.label] === 'run_down') return inert;
   // No forward demand at all -> no batch to size (zero-demand guard).
   if (!(annualDemand > 0)) return inert;
 
+  // An absent handling cost or an unpriced SKU with no fallback cost sizes to
+  // 0 here, which leaves the line at its base.
   const eoq = economicOrderQty({
     annual_demand: annualDemand,
-    handling_cost_per_line: settings.handling_cost_per_line,
+    handling_cost_per_line: settings.handling_cost_per_line ?? 0,
     holding_rate_annual: settings.holding_rate_annual,
     unit_cost,
+    fallback_unit_cost: settings.eoq_fallback_unit_cost,
   });
   if (!(eoq > 0)) return inert;
 
@@ -808,41 +861,41 @@ export function applyEoqLineQty(args: {
 // nor a pack ever forces a buy the coverage math didn't want.
 //
 // Sources:
-//   - min_order_qty: the buyer's per-SKU sku_overrides.min_order_qty;
-//     null/0 = no floor. The stats feed carries no minimum, so the min has a
-//     single source.
-//   - pack (pack_qty): the buyer's per-SKU sku_overrides.pack_qty (override)
-//     first, else the stats feed's reorder_qty (the per-SKU
-//     reorder quantity, treated as a pack SIZE only; null/0-tolerant).
+//   - min_order_qty: the caller's per-SKU override; null/0 = no floor. The
+//     row carries no minimum, so the min has a single source.
+//   - pack (pack_qty): the caller's per-SKU override first, else the row's
+//     reorder_qty (the per-SKU reorder quantity, treated as a pack SIZE only;
+//     null/0-tolerant).
 //
-// BACK-COMPAT: a row that carries ONLY a pack (no min) behaves exactly
-// as a pack with no minimum always has - ceil(q/pack)*pack already lifts any nonzero q of 1..N up to N,
-// which is the same floor-AND-multiple behaviour. Splitting the min off changes
-// nothing until a buyer sets a min larger than one pack.
+// A row that carries ONLY a pack (no min) needs no separate floor:
+// ceil(q/pack)*pack already lifts any nonzero q of 1..N up to N, which is the
+// same floor-AND-multiple behaviour. The min matters only once it is larger
+// than one pack.
 
 /** The effective pack for a SKU and which source supplied it. */
 export interface PackResolution {
   pack: number | null;
-  source: 'override' | 'feed' | null;
+  /** 'override' = the caller's per-SKU override, 'input' = the row's reorder_qty. */
+  source: 'override' | 'input' | null;
 }
 
 /**
  * Resolve the effective pack size: the buyer's per-SKU override (pack_qty > 0)
- * always wins; else the stats feed's reorder_qty (> 0, rounded to whole
+ * always wins; else the row's reorder_qty (> 0, rounded to whole
  * units); else null = no pack rule. 0/null/negative/NaN on either source
  * means "unset" - never a rule.
  */
 export function resolveEffectivePack(
   overridePackQty: number | null | undefined,
-  feedReorderQty: number | null | undefined,
+  rowReorderQty: number | null | undefined,
 ): PackResolution {
   if (typeof overridePackQty === 'number' && Number.isFinite(overridePackQty) && overridePackQty > 0) {
     const p = Math.round(overridePackQty);
     if (p > 0) return { pack: p, source: 'override' };
   }
-  if (typeof feedReorderQty === 'number' && Number.isFinite(feedReorderQty) && feedReorderQty > 0) {
-    const p = Math.round(feedReorderQty);
-    if (p > 0) return { pack: p, source: 'feed' };
+  if (typeof rowReorderQty === 'number' && Number.isFinite(rowReorderQty) && rowReorderQty > 0) {
+    const p = Math.round(rowReorderQty);
+    if (p > 0) return { pack: p, source: 'input' };
   }
   return { pack: null, source: null };
 }
@@ -850,7 +903,7 @@ export function resolveEffectivePack(
 /**
  * Resolve the effective minimum order quantity (floor): the buyer's per-SKU
  * override (min_order_qty > 0), rounded to whole units; else null = no floor.
- * The stats feed carries no minimum (its reorder_qty is a pack SIZE, not a
+ * The row carries no minimum (its reorder_qty is a pack SIZE, not a
  * floor), so the min has a single source. 0/null/negative/NaN = "unset".
  */
 export function resolveEffectiveMin(overrideMinQty: number | null | undefined): number | null {
@@ -916,7 +969,7 @@ export interface OrderConstraintResult {
  * 15 (min doesn't bind, pack rounds). A ZERO base stays zero: neither a min nor
  * a pack ever conjures a buy the coverage math didn't want.
  *
- * pre_pack_qty is the post-min, pre-pack figure so a surface can show the pack
+ * pre_pack_qty is the post-min, pre-pack figure so a reader can show the pack
  * lift ("10 -> 15 (pack of 5)") against the already-floored quantity. over_cap
  * fires on the FINAL quantity (min or pack driven) landing past the EOQ cover
  * cap - supplier reality wins (the quantity stands) but the overshoot is flagged.
@@ -955,13 +1008,13 @@ export function applyOrderConstraints(args: {
  * Derive the full buyer view of one SKU from its stats + the buyer settings +
  * the incoming units due inside ~2 months + (optionally) the SKU's forward
  * forecast (the caller computes both inputs so this stays pure). This is the
- * ONLY place the primitive formulas are assembled; tools and dashboard both
- * consume this.
+ * ONLY place the primitive formulas are assembled; every caller consumes
+ * this.
  *
  * Basis selection: with settings.risk_basis 'forward_auto' and a
  * forecast that carries demand in the horizon, risk + suggested buy run on
  * FORWARD cover / forecast demand (seasonality-aware); otherwise they run on
- * trailing velocity exactly as before. coverage_days always reports the
+ * trailing velocity. coverage_days always reports the
  * trailing figure; forward_coverage_days the forward one; `basis` says which
  * one drove the judgement.
  */
@@ -972,28 +1025,28 @@ export function deriveSkuMetrics(
   forward?: ForwardInput | null,
   eoqCtx?: EoqContext,
   /**
-   * Latest month's marketplace_soh_end from the bounded monthly-history cache,
-   * used only when the live stats feed carries no marketplace_soh. null when
+   * A fallback marketplace stock figure the caller may pass, used only when
+   * the row carries neither marketplace_soh nor is_saleable. null when
    * unknown - resolveSaleability then falls back to own-stock-only semantics.
    */
   fallbackMarketplaceSoh?: number | null,
   /**
-   * The buyer's per-SKU pack_qty override (sku_overrides.pack_qty);
-   * null/absent = no override. Beats the stats feed's reorder_qty in
-   * resolveEffectivePack; the feed value rides in on stats.reorder_qty.
+   * The caller's per-SKU pack_qty override; null/absent = no override. Beats
+   * the row's reorder_qty in resolveEffectivePack; the row value rides in on
+   * stats.reorder_qty.
    */
   packQtyOverride?: number | null,
   /**
-   * The buyer's per-SKU min_order_qty override (sku_overrides.min_order_qty):
-   * the minimum order quantity floor. null/absent = no floor. Applied
-   * before pack rounding; single-sourced (the feed carries no minimum).
+   * The caller's per-SKU min_order_qty override: the minimum order quantity
+   * floor. null/absent = no floor. Applied before pack rounding;
+   * single-sourced (the row carries no minimum).
    */
   minOrderQtyOverride?: number | null,
 ): DerivedSkuMetrics {
-  const velocity = weightedVelocity(stats);
+  const velocity = weightedVelocity(stats, settings.velocity_weights);
   const coverage = coverageDays(stats.qty, velocity);
-  const target = resolveCoverageTarget(settings, stats.brand, stats.profitability_level, stats.class_1, stats.sku);
-  const lead = resolveLeadTime(settings, stats.brand, stats.class_1, stats.sku);
+  const target = resolveCoverageTarget(settings, stats.brand, stats.profitability_level, stats.class_1);
+  const lead = resolveLeadTime(settings, stats.brand, stats.class_1);
 
   // Only trust the forecast for a SKU that has genuinely sold at some point
   // (recent windows OR all-time). A flat forecast on a never-sold SKU is noise,
@@ -1019,7 +1072,7 @@ export function deriveSkuMetrics(
     fallback_marketplace_soh: fallbackMarketplaceSoh,
   });
   // A TRULY_OUT-and-selling SKU is a real stockout; MARKETPLACE_ONLY-and-selling
-  // is fulfilled from marketplace stock, so it gets its own tier/badge and must
+  // is fulfilled from marketplace stock, so it gets its own tier and must
   // NOT count as STOCKOUT.
   const trulyOutSelling = saleability.state === 'TRULY_OUT' && selling;
   const mpOnlySelling = saleability.state === 'MARKETPLACE_ONLY' && selling;
@@ -1147,8 +1200,8 @@ export function deriveSkuMetrics(
       return forwardFinal !== buy;
     })();
 
-  // A seasonal/prebook class (seasonalClass, above) is bought via the
-  // seasonal-buy panel, so it never joins the continuous reorder queue.
+  // A seasonal/prebook class (seasonalClass, above) is bought outside the
+  // reorder queue, so it never joins it.
   // Forecast demand but no sales history: the buy was suppressed by hasHistory.
   const forecastOnly = !hasHistory && forward != null && forecastUnitsWindow(forward, 30) > 0;
 
@@ -1194,9 +1247,6 @@ export function deriveSkuMetrics(
     cover_capped: rules.cover_capped,
   };
 }
-
-/** |trend| at or past this fraction is worth calling out as a reason. */
-export const TREND_REASON_THRESHOLD = 0.25;
 
 /**
  * Structured reasons for one SKU's derived judgement - built from the SAME
@@ -1249,7 +1299,7 @@ export function skuReasons(
 
   // Why a risky-looking SKU is NOT on the reorder queue.
   if (d.seasonal_class) {
-    out.push(reason('SEASONAL_CLASS', 'seasonal/prebook class - buy via the seasonal panel, not the reorder queue'));
+    out.push(reason('SEASONAL_CLASS', 'seasonal/prebook class - bought outside the reorder queue'));
   }
   if (d.forecast_only) {
     out.push(reason('FORECAST_ONLY_NO_HISTORY', 'forecast shows demand but the SKU has never sold - buy suppressed'));
@@ -1307,7 +1357,7 @@ export function skuReasons(
   // number of packs. Applied after the min floor, only when it changed the
   // quantity. pre_pack_qty is the post-min figure the pack rounded from.
   if (d.pack_applied && d.pack_qty != null) {
-    const src = d.pack_source === 'override' ? 'buyer override' : 'feed reorder qty';
+    const src = d.pack_source === 'override' ? 'buyer override' : 'reorder qty';
     out.push(
       reason(
         'PACK_ROUNDED',
@@ -1329,7 +1379,7 @@ export function skuReasons(
   // Seasonality callouts: forward cover much thinner than trailing means the
   // forecast sees demand ramping ahead of recent history (and vice versa).
   if (d.basis === 'forward' && d.forward_coverage_days != null && d.coverage_days != null && d.coverage_days > 0) {
-    if (d.forward_coverage_days < d.coverage_days * 0.75) {
+    if (d.forward_coverage_days < d.coverage_days * settings.season_peak_ratio) {
       out.push(
         reason(
           'SEASON_PEAK_AHEAD',
@@ -1337,7 +1387,7 @@ export function skuReasons(
           d.forward_coverage_days,
         ),
       );
-    } else if (d.forward_coverage_days > d.coverage_days * 1.33) {
+    } else if (d.forward_coverage_days > d.coverage_days * settings.season_slowdown_ratio) {
       out.push(
         reason(
           'SEASON_SLOWDOWN_AHEAD',
@@ -1349,10 +1399,12 @@ export function skuReasons(
   }
 
   if (d.is_dead) {
-    out.push(reason('DEAD_STOCK', `${Math.round(stats.qty)} units on hand with no sales across 180d`, stats.qty));
+    // The span is the velocity windows the blend actually reads.
+    const span = velocityLookbackDays(settings.velocity_weights);
+    out.push(reason('DEAD_STOCK', `${Math.round(stats.qty)} units on hand with no sales across ${span}d`, stats.qty));
   }
 
-  if (d.trend_pct != null && Math.abs(d.trend_pct) >= TREND_REASON_THRESHOLD) {
+  if (d.trend_pct != null && Math.abs(d.trend_pct) >= settings.trend_reason_threshold) {
     const pct = Math.round(d.trend_pct * 100);
     out.push(
       d.trend_pct > 0
@@ -1362,8 +1414,10 @@ export function skuReasons(
   }
 
   const age = stats.age_of_oldest_item_days;
-  if (age != null && age > 180) out.push(reason('AGED_180', `oldest item ${Math.round(age)}d old`, age));
-  else if (age != null && age > 90) out.push(reason('AGED_90', `oldest item ${Math.round(age)}d old`, age));
+  // The codes name the two buckets; settings.aged_days sets where they start.
+  const [agedFirst, agedSecond] = settings.aged_days;
+  if (age != null && age > agedSecond) out.push(reason('AGED_180', `oldest item ${Math.round(age)}d old`, age));
+  else if (age != null && age > agedFirst) out.push(reason('AGED_90', `oldest item ${Math.round(age)}d old`, age));
 
   const adj = profitabilityAdjust(settings.profitability_coverage_adjust, stats.profitability_level);
   if (adj < 0) {
@@ -1403,50 +1457,14 @@ function mostCommonLabel(votes: Map<string, number>): string | null {
 }
 
 /**
- * Consolidate fallback-prefix brands onto the real label. The stats feed
- * gives a real brand label (e.g. "Brand B") for SKUs tracked through the
- * warehouse and falls back to the 3-char SKU prefix ("BBB") for ones that
- * haven't - so one brand can split across two groups. This maps every prefix
- * that HAS a real label onto that label (most common wins, ties broken
- * alphabetically) and rewrites the still-prefix rows to it, so "BBB" stock
- * joins "Brand B". Then labels that differ only in case ("Brand B" /
- * "BRAND B") collapse onto their most common spelling: brand-keyed state is
- * matched by brandKey, so two case variants must be one group or they
- * would each claim the same budget. Pure; every brand grouping (queue,
- * inventory, OTB, budgets, facets) reads the result because it runs at the
- * stats boundary.
+ * Collapse brand labels that differ only in case ("Brand B" / "BRAND B") onto
+ * their most common spelling (ties broken alphabetically). Brand-keyed state
+ * is matched by brandKey, so two case variants must be one group or they
+ * would each claim the same budget. Rows with an empty brand are left alone;
+ * the same array is returned when no label differs. Pure: run it on the rows
+ * before grouping by brand. Any other repair of brand data is the caller's.
  */
-export function consolidateBrandLabels<T extends { sku: string; brand: string }>(rows: T[]): T[] {
-  const prefixOf = (sku: string): string => sku.slice(0, 3).toUpperCase();
-  const votes = new Map<string, Map<string, number>>();
-  for (const r of rows) {
-    if (!r.brand) continue;
-    const p = prefixOf(r.sku);
-    if (r.brand.toUpperCase() !== p) {
-      const m = votes.get(p) ?? new Map<string, number>();
-      m.set(r.brand, (m.get(r.brand) ?? 0) + 1);
-      votes.set(p, m);
-    }
-  }
-  const prefixToLabel = new Map<string, string>();
-  for (const [p, m] of votes) {
-    const best = mostCommonLabel(m);
-    if (best) prefixToLabel.set(p, best);
-  }
-  const relabelled =
-    prefixToLabel.size === 0
-      ? rows
-      : rows.map((r) => {
-          const p = prefixOf(r.sku);
-          return r.brand && r.brand.toUpperCase() === p && prefixToLabel.has(p)
-            ? { ...r, brand: prefixToLabel.get(p)! }
-            : r;
-        });
-  return collapseCaseVariants(relabelled);
-}
-
-/** Rewrite labels that share a brandKey onto their most common spelling (no-op when none differ). */
-function collapseCaseVariants<T extends { brand: string }>(rows: T[]): T[] {
+export function collapseBrandCase<T extends { brand: string }>(rows: T[]): T[] {
   const spellings = new Map<string, Map<string, number>>();
   for (const r of rows) {
     if (!r.brand) continue;

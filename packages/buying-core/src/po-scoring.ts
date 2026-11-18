@@ -3,12 +3,11 @@
  *
  * Turns one raw purchase-order row into a graded, RAG-coloured, signalled
  * PoScored record, and rolls PoScored rows up per supplier into a scorecard.
- * No I/O, no Date.now() - the SAME functions power every tool
- * and screen, so a number on the tab and the same
- * number from a tool can never disagree. Nothing here is persisted.
+ * No I/O, no Date.now(): the same input and thresholds always give the same
+ * numbers, so two callers can never disagree. Nothing here is persisted.
  *
- * The thresholds are calibrated for retail
- * buying. Every ratio guards its denominator: a divide by zero yields null
+ * Every cut-off is a field of PoScoringThresholds, which the caller may
+ * override. Every ratio guards its denominator: a divide by zero yields null
  * (unknown), never NaN or Infinity. A PO still fully incoming (nothing received
  * yet) has no sell-through to judge, so it grades C / amber / watch until stock
  * lands.
@@ -20,10 +19,10 @@ import { reason, type Reason } from './reason-codes';
 
 /**
  * One purchase order as the caller supplies it,
- * after normalisation. Money columns are dollars; unit / day / aged counts are
- * whole numbers. Dates are YYYY-MM-DD or null (the feed had no date). Any
- * numeric field can be null when the feed cell was empty (unknown, not zero) -
- * scorePo coerces the money nulls to 0 where the spec says so, and guards the
+ * after normalisation. Money columns are in store currency; unit / day / aged
+ * counts are whole numbers. Dates are YYYY-MM-DD or null (the row had no
+ * date). Any numeric field can be null when the caller's input was empty
+ * (unknown, not zero): scorePo coerces the money nulls to 0, and guards the
  * count nulls to 0 for the unit maths.
  */
 export interface PurchaseOrderRow {
@@ -61,10 +60,10 @@ export interface PoScored extends PurchaseOrderRow {
   /** margin / sold_revenue * 100; null when there is no sold revenue. */
   margin_pct: number | null;
   /**
-   * Margin returned per $1 of landed cost (margin / total_cost); null when no
-   * cost. NOTE: this is NOT classic GMROI (margin over AVERAGE inventory
-   * investment, annualized) - do not compare it to the industry 1.0/2.0/3.0
-   * bands. The honest name; `gmroi` remains as a deprecated alias.
+   * Margin returned per 1.00 of landed cost, in store currency
+   * (margin / total_cost); null when no cost. NOTE: this is NOT classic GMROI
+   * (margin over AVERAGE inventory investment, annualized) - do not compare it
+   * to the industry 1.0/2.0/3.0 bands. `gmroi` remains as a deprecated alias.
    */
   margin_per_landed_dollar: number | null;
   /** @deprecated alias of margin_per_landed_dollar (kept one minor version). */
@@ -97,7 +96,7 @@ export interface SupplierScore {
   margin: number;
   /** Weighted sell-through: Σsold / Σreceived * 100; null when nothing received. */
   sell_through_pct: number | null;
-  /** Mean margin-per-landed-dollar across the supplier's POs that have one. */
+  /** Mean margin per 1.00 landed across the supplier's POs that have one. */
   avg_gmroi: number | null;
   /** Units still in stock aged past 180 days across the supplier's POs. */
   dead_stock_units: number;
@@ -115,6 +114,74 @@ export interface SupplierScore {
 
 export type SupplierTier = 'Preferred' | 'Strong' | 'Acceptable' | 'At risk';
 
+// ── Thresholds ─────────────────────────────────────────────────────────────
+
+/**
+ * Every cut-off the grade, signal, reasons and supplier tier read. Pass a
+ * partial object to any scoring function to override some of them; the rest
+ * keep the defaults in DEFAULT_PO_SCORING_THRESHOLDS. Margin fields are
+ * margin per 1.00 of landed cost (margin / total_cost), a plain ratio.
+ */
+export interface PoScoringThresholds {
+  /** Sell-through % below which a PO grades D and in-stock units signal markdown. Default 40. */
+  low_sell_through_pct: number;
+  /** Margin per 1.00 landed below which a PO grades D. Default 0.2. */
+  low_margin_per_landed: number;
+  /** Sell-through % an A grade and a reorder signal need at least. Default 70. */
+  strong_sell_through_pct: number;
+  /** Margin per 1.00 landed an A grade and a reorder signal need at least. Default 0.5. */
+  strong_margin_per_landed: number;
+  /** Sell-through % a B grade needs at least. Default 55. */
+  solid_sell_through_pct: number;
+  /** Margin per 1.00 landed a B grade needs at least. Default 0.35. */
+  solid_margin_per_landed: number;
+  /** Share of in-stock units past the first aged bucket, %, above which the PO signals markdown. Default 15. */
+  aged_share_high_pct: number;
+  /** Most units left in stock for a strong PO to signal reorder. Default 5. */
+  reorder_in_stock_max: number;
+  /** ETA slip in days above which a PO carries a SUPPLIER_LATE reason. Default 7. */
+  supplier_late_days: number;
+  /**
+   * Days the oldest unsold unit must have been in stock before the PO is
+   * graded on sell-through and margin; younger stock parks at C / watch.
+   * Default 60.
+   */
+  judge_min_days: number;
+  /** Average grade points (A=4 ... D=1) a Preferred supplier needs at least. Default 3.5. */
+  tier_preferred_min_points: number;
+  /** Average grade points a Strong supplier needs at least. Default 2.75. */
+  tier_strong_min_points: number;
+  /** Average grade points an Acceptable supplier needs at least; below is At risk. Default 2.0. */
+  tier_acceptable_min_points: number;
+}
+
+export const DEFAULT_PO_SCORING_THRESHOLDS: PoScoringThresholds = {
+  low_sell_through_pct: 40,
+  low_margin_per_landed: 0.2,
+  strong_sell_through_pct: 70,
+  strong_margin_per_landed: 0.5,
+  solid_sell_through_pct: 55,
+  solid_margin_per_landed: 0.35,
+  aged_share_high_pct: 15,
+  reorder_in_stock_max: 5,
+  supplier_late_days: 7,
+  judge_min_days: 60,
+  tier_preferred_min_points: 3.5,
+  tier_strong_min_points: 2.75,
+  tier_acceptable_min_points: 2.0,
+};
+
+/** Caller overrides merged over the defaults; an undefined field keeps its default. */
+function resolveThresholds(overrides?: Partial<PoScoringThresholds>): PoScoringThresholds {
+  const out = { ...DEFAULT_PO_SCORING_THRESHOLDS };
+  if (!overrides) return out;
+  for (const key of Object.keys(out) as (keyof PoScoringThresholds)[]) {
+    const v = overrides[key];
+    if (v !== undefined) out[key] = v;
+  }
+  return out;
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 const r2 = (n: number): number => Math.round(n * 100) / 100;
@@ -127,16 +194,10 @@ function num(v: number | null | undefined, fallback = 0): number {
 /** Grade → points for supplier-tier averaging (A=4 … D=1). */
 const GRADE_POINTS: Record<Grade, number> = { A: 4, B: 3, C: 2, D: 1 };
 
-/** "small" in-stock: a reorder signal wants stock nearly gone (sold through). */
-const REORDER_INSTOCK_MAX = 5;
-
-/** An ETA slip past this many days is worth a SUPPLIER_LATE reason. */
-export const SUPPLIER_LATE_DAYS = 7;
-
 /**
  * Whole days from a to b (YYYY-MM-DD strings); positive when b is later.
- * null when either side is missing/unparseable - dates in this feed can be
- * empty cells, and a fabricated 0 would read as "on time".
+ * null when either side is missing/unparseable - a row's dates can be
+ * empty, and a fabricated 0 would read as "on time".
  */
 export function daysBetween(a: string | null, b: string | null): number | null {
   if (!a || !b) return null;
@@ -156,26 +217,21 @@ export function percentile(values: number[], p: number): number | null {
 
 // ── Scoring ─────────────────────────────────────────────────────────────────
 
-/**
- * Score one purchase order. Every branch is total: sell-through is null only
- * when nothing has been received; margin coerces null money to 0; the three
- * ratios (margin_pct, gmroi) guard their denominators to null; aged_over_90_pct
- * is 0 when nothing is in stock. Grade / RAG / signal follow the retail
- * thresholds documented inline.
- */
-/**
- * Days a PO's oldest unsold unit must have been in stock before the PO is
- * graded on sell-through and margin. 60 is about two months of selling time.
- */
-export const PO_JUDGE_MIN_DAYS = 60;
-
-/** Received stock whose oldest unsold unit landed under PO_JUDGE_MIN_DAYS ago. */
-function isTooEarlyToJudge(row: Pick<PurchaseOrderRow, 'oldest_unsold_days'>): boolean {
+/** Received stock whose oldest unsold unit landed under judge_min_days ago. */
+function isTooEarlyToJudge(row: Pick<PurchaseOrderRow, 'oldest_unsold_days'>, t: PoScoringThresholds): boolean {
   const d = row.oldest_unsold_days;
-  return d != null && Number.isFinite(d) && d < PO_JUDGE_MIN_DAYS;
+  return d != null && Number.isFinite(d) && d < t.judge_min_days;
 }
 
-export function scorePo(row: PurchaseOrderRow): PoScored {
+/**
+ * Score one purchase order. Every branch is total: sell-through is null only
+ * when nothing has been received; margin coerces null money to 0; the
+ * ratios (margin_pct, gmroi) guard their denominators to null; aged_over_90_pct
+ * is 0 when nothing is in stock. Grade / RAG / signal and the reason text read
+ * `thresholds` merged over DEFAULT_PO_SCORING_THRESHOLDS.
+ */
+export function scorePo(row: PurchaseOrderRow, thresholds?: Partial<PoScoringThresholds>): PoScored {
+  const t = resolveThresholds(thresholds);
   const unitsInStock = num(row.units_in_stock);
   const unitsSold = num(row.units_sold);
   const received = unitsInStock + unitsSold;
@@ -195,15 +251,15 @@ export function scorePo(row: PurchaseOrderRow): PoScored {
 
   // A PO still fully incoming (nothing received yet) has no sell-through and no
   // realised margin to judge, so it must not be read as a failure just because
-  // its margin-per-dollar is 0. It parks at C / amber / watch until stock lands.
-  // So does stock that landed under PO_JUDGE_MIN_DAYS ago: it has had no
-  // time to sell, and grading it on the old-stock thresholds recommended fresh
-  // deliveries for markdown.
-  // An unknown landing age is judged as before, never exempted by a missing value.
-  const tooEarly = received === 0 || isTooEarlyToJudge(row);
-  const grade: Grade = tooEarly ? 'C' : gradeFor(sellThrough, gmroi, unitsInStock, agedOver90Pct, hasDeadStock);
+  // its margin per landed cost is 0. It parks at C / amber / watch until stock
+  // lands. So does stock that landed under judge_min_days ago: it has had no
+  // time to sell, and the old-stock thresholds would send a fresh delivery to
+  // markdown. An unknown landing age is still judged, never exempted by a
+  // missing value.
+  const tooEarly = received === 0 || isTooEarlyToJudge(row, t);
+  const grade: Grade = tooEarly ? 'C' : gradeFor(sellThrough, gmroi, hasDeadStock, t);
   const rag = ragFor(grade);
-  const signal: Signal = tooEarly ? 'watch' : signalFor(sellThrough, gmroi, unitsInStock, agedOver90Pct, hasDeadStock);
+  const signal: Signal = tooEarly ? 'watch' : signalFor(sellThrough, gmroi, unitsInStock, agedOver90Pct, hasDeadStock, t);
 
   const etaSlip = daysBetween(row.original_eta, row.latest_eta);
   const scored: PoScored = {
@@ -234,7 +290,7 @@ export function scorePo(row: PurchaseOrderRow): PoScored {
     signal,
     reasons: [],
   };
-  scored.reasons = poReasons(scored);
+  scored.reasons = poReasons(scored, t);
   return scored;
 }
 
@@ -242,36 +298,48 @@ export function scorePo(row: PurchaseOrderRow): PoScored {
  * Structured reasons for a PO's grade + signal, from the same thresholds
  * gradeFor/signalFor used. Ordered by what the buyer acts on first.
  */
-function poReasons(po: PoScored): Reason[] {
+function poReasons(po: PoScored, t: PoScoringThresholds): Reason[] {
   const out: Reason[] = [];
   const st = po.sell_through_pct;
   const gm = po.margin_per_landed_dollar;
 
   if (po.received === 0) {
     out.push(reason('STILL_INCOMING', 'nothing received yet - no sell-through to judge'));
-  } else if (isTooEarlyToJudge(po)) {
+  } else if (isTooEarlyToJudge(po, t)) {
     out.push(
       reason(
         'TOO_EARLY_TO_JUDGE',
-        `stock landed ${po.oldest_unsold_days} days ago (< ${PO_JUDGE_MIN_DAYS}) - too early to judge sell-through`,
+        `stock landed ${po.oldest_unsold_days} days ago (< ${t.judge_min_days}) - too early to judge sell-through`,
         po.oldest_unsold_days ?? undefined,
       ),
     );
   } else {
-    if (st != null && st >= 70) out.push(reason('SELL_THROUGH_STRONG', `sell-through ${st.toFixed(0)}% of received`, st));
-    if (st != null && st < 40) out.push(reason('SELL_THROUGH_LOW', `sell-through ${st.toFixed(0)}% < 40%`, st));
-    if (gm != null && gm < 0.2) out.push(reason('MARGIN_PER_DOLLAR_LOW', `margin $${gm.toFixed(2)} per $1 landed < $0.20`, gm));
-    if (po.signal === 'reorder' && po.units_in_stock <= REORDER_INSTOCK_MAX) {
+    if (st != null && st >= t.strong_sell_through_pct) {
+      out.push(reason('SELL_THROUGH_STRONG', `sell-through ${st.toFixed(0)}% of received`, st));
+    }
+    if (st != null && st < t.low_sell_through_pct) {
+      out.push(reason('SELL_THROUGH_LOW', `sell-through ${st.toFixed(0)}% < ${t.low_sell_through_pct}%`, st));
+    }
+    if (gm != null && gm < t.low_margin_per_landed) {
+      out.push(
+        reason(
+          'MARGIN_PER_DOLLAR_LOW',
+          `margin ${gm.toFixed(2)} per 1.00 landed < ${t.low_margin_per_landed.toFixed(2)}`,
+          gm,
+        ),
+      );
+    }
+    if (po.signal === 'reorder' && po.units_in_stock <= t.reorder_in_stock_max) {
       out.push(reason('STOCK_NEARLY_GONE', `${po.units_in_stock} units left in stock`, po.units_in_stock));
     }
-    if (po.units_in_stock > 0 && po.aged_over_90_pct > 15) {
+    if (po.units_in_stock > 0 && po.aged_over_90_pct > t.aged_share_high_pct) {
       out.push(reason('AGED_STOCK_SHARE_HIGH', `${po.aged_over_90_pct.toFixed(0)}% of in-stock aged past 90d`, po.aged_over_90_pct));
     }
     if (po.has_dead_stock) {
       out.push(reason('DEAD_STOCK_180', `${po.unsold_over_180d} units unsold past 180d`, po.unsold_over_180d));
     }
   }
-  if (po.eta_slip_days != null && po.eta_slip_days > SUPPLIER_LATE_DAYS) {
+  if (po.eta_slip_days != null && po.eta_slip_days > t.supplier_late_days) {
     out.push(reason('SUPPLIER_LATE', `ETA slipped ${po.eta_slip_days}d past the original`, po.eta_slip_days));
   }
   return out;
@@ -281,8 +349,8 @@ function poReasons(po: PoScored): Reason[] {
 
 /**
  * Roll the PO-level aged-unsold counts into inventory-wide aging by landed
- * value. Feed grain limits the buckets to 0-90 / 91-180 / 180+ (the feed
- * carries only the two aged counts, not a full five-bucket split). Value =
+ * value. The buckets are 0-90 / 91-180 / 180+ because the row carries only
+ * the two aged counts (unsold_over_90d, unsold_over_180d). Value =
  * bucket units * the PO's per-unit landed cost; POs with no cost contribute
  * units but no value (uncosted_units so the total stays honest).
  */
@@ -340,34 +408,31 @@ export function agedValueBuckets(scored: PoScored[]): AgedValueBuckets {
 }
 
 /**
- * Grade band. Order matters: A and B are the "healthy" tiers, then a C rescue
- * band, then the D failure band. A PO still fully incoming (received == 0, so
- * sell_through is null) is graded C - there is no sell-through to judge yet.
+ * Grade band. The D failure band is tested first, then A and B (the
+ * "healthy" tiers); everything else is C. The fully-incoming and too-early
+ * cases never reach here: scorePo parks them at C.
  */
 function gradeFor(
   sellThrough: number | null,
   gmroi: number | null,
-  unitsInStock: number,
-  agedOver90Pct: number,
   hasDeadStock: boolean,
+  t: PoScoringThresholds,
 ): Grade {
   const st = sellThrough;
   const gm = gmroi;
 
   // D / red first when a hard failure is present, so a dead-stock or
-  // deeply-underselling PO can never be rescued into C by the aged-stock clause.
-  if ((st != null && st < 40) || (gm != null && gm < 0.2) || hasDeadStock) return 'D';
+  // deeply-underselling PO can never grade higher.
+  if ((st != null && st < t.low_sell_through_pct) || (gm != null && gm < t.low_margin_per_landed) || hasDeadStock) {
+    return 'D';
+  }
 
-  // A / green: strong sell-through AND strong GMROI.
-  if (st != null && st >= 70 && gm != null && gm >= 0.5) return 'A';
-  // B / green: solid sell-through AND acceptable GMROI.
-  if (st != null && st >= 55 && gm != null && gm >= 0.35) return 'B';
+  // A / green: strong sell-through AND strong margin per landed cost.
+  if (st != null && st >= t.strong_sell_through_pct && gm != null && gm >= t.strong_margin_per_landed) return 'A';
+  // B / green: solid sell-through AND acceptable margin per landed cost.
+  if (st != null && st >= t.solid_sell_through_pct && gm != null && gm >= t.solid_margin_per_landed) return 'B';
 
-  // C / amber rescue: decent sell-through, OR stock that isn't ageing.
-  if ((st != null && st >= 40) || (unitsInStock > 0 && agedOver90Pct <= 15)) return 'C';
-
-  // Everything else that reached here (received something, no hard failure, but
-  // below the B bar) lands at C. The fully-incoming case is handled upstream.
+  // C / amber: received something, no hard failure, below the B bar.
   return 'C';
 }
 
@@ -389,14 +454,24 @@ function signalFor(
   unitsInStock: number,
   agedOver90Pct: number,
   hasDeadStock: boolean,
+  t: PoScoringThresholds,
 ): Signal {
   const st = sellThrough;
   const gm = gmroi;
 
-  if (st != null && st >= 70 && gm != null && gm >= 0.5 && unitsInStock <= REORDER_INSTOCK_MAX) {
+  if (
+    st != null &&
+    st >= t.strong_sell_through_pct &&
+    gm != null &&
+    gm >= t.strong_margin_per_landed &&
+    unitsInStock <= t.reorder_in_stock_max
+  ) {
     return 'reorder';
   }
-  if (unitsInStock > 0 && ((st != null && st < 40) || agedOver90Pct > 15 || hasDeadStock)) {
+  if (
+    unitsInStock > 0 &&
+    ((st != null && st < t.low_sell_through_pct) || agedOver90Pct > t.aged_share_high_pct || hasDeadStock)
+  ) {
     return 'markdown';
   }
   return 'watch';
@@ -407,10 +482,13 @@ function signalFor(
 /**
  * Group scored POs by supplier into a scorecard. Sell-through is WEIGHTED
  * (Σsold / Σreceived), GMROI is the simple mean over the POs that have one, and
- * the tier comes from the supplier's average grade points (A=4 … D=1). Sorted
- * by total cost descending (biggest spend first).
+ * the tier comes from the supplier's average grade points (A=4 … D=1) against
+ * the tier cut-offs in `thresholds`. The grades are the ones already on the
+ * rows; pass the same thresholds to scorePo to change them. Sorted by total
+ * cost descending (biggest spend first).
  */
-export function rollupSuppliers(scored: PoScored[]): SupplierScore[] {
+export function rollupSuppliers(scored: PoScored[], thresholds?: Partial<PoScoringThresholds>): SupplierScore[] {
+  const t = resolveThresholds(thresholds);
   interface Acc {
     supplier: string;
     po_count: number;
@@ -500,16 +578,16 @@ export function rollupSuppliers(scored: PoScored[]): SupplierScore[] {
       lead_time_p50_days: percentile(a.leadTimes, 0.5),
       lead_time_p90_days: percentile(a.leadTimes, 0.9),
       last_po_date: a.lastPoDate,
-      tier: tierFor(avgGradePoints),
+      tier: tierFor(avgGradePoints, t),
     });
   }
   return out.sort((x, y) => y.total_cost - x.total_cost);
 }
 
 /** Supplier tier from average grade points (A=4, B=3, C=2, D=1). */
-function tierFor(avgGradePoints: number): SupplierTier {
-  if (avgGradePoints >= 3.5) return 'Preferred';
-  if (avgGradePoints >= 2.75) return 'Strong';
-  if (avgGradePoints >= 2.0) return 'Acceptable';
+function tierFor(avgGradePoints: number, t: PoScoringThresholds): SupplierTier {
+  if (avgGradePoints >= t.tier_preferred_min_points) return 'Preferred';
+  if (avgGradePoints >= t.tier_strong_min_points) return 'Strong';
+  if (avgGradePoints >= t.tier_acceptable_min_points) return 'Acceptable';
   return 'At risk';
 }

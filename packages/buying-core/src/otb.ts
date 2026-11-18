@@ -10,9 +10,9 @@
  * each later month's BOM chains from the prior month's planned EOM (the plan
  * assumes you trade to plan). on_order is the landed value of incoming PO
  * units bucketed by ETA month; ETAs before the horizon count against the
- * first month (they land before it opens). All dollars are COST value,
- * matching the stock-value budgets. No I/O - the handler feeds plans +
- * actuals; the same function powers the tool and the tab.
+ * first month (they land before it opens). All money figures are COST value
+ * in store currency, matching the stock-value budgets. No I/O: the caller
+ * supplies plans + actuals.
  */
 
 export interface OtbPlanRow {
@@ -32,11 +32,11 @@ export interface OtbMonth {
   bom: number;
   /** Landed value of incoming POs with an ETA inside this month. */
   on_order: number;
-  /** The formula result. Positive = dollars available to spend into this month. */
+  /** The formula result. Positive = store currency available to spend into this month. */
   otb: number;
   /** True when a plan is entered for this cell (any of sales/markdowns/EOM > 0).
-   * When false, otb is just the negative stock/on-order position and the UI
-   * renders it muted rather than as a red "overbought" warning. */
+   * When false, otb is just the negative stock/on-order position, so a caller
+   * can show it muted rather than as an "overbought" warning. */
   planned: boolean;
 }
 

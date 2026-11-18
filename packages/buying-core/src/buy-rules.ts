@@ -13,16 +13,20 @@
 import type { SkuStats } from './buyer-metrics';
 
 export interface BuyRuleSettings {
-  /** No line may take on-hand + inbound + buy past this many days of demand. 0 disables. */
+  /** No line may take on-hand + inbound + buy past this many days of demand. 0 disables. Default 120. */
   max_cover_days: number;
-  /** A SKU selling fewer units than this per month is a slow seller. 0 disables the rule. */
+  /** A SKU selling fewer units than this per month is a slow seller. 0 disables the rule. Default 1. */
   slow_seller_monthly_units: number;
-  /** Stock a slow seller keeps (on hand + inbound); the buy tops up to it. */
+  /** Stock a slow seller keeps (on hand + inbound); the buy tops up to it. Default 2. */
   slow_seller_stock_target: number;
-  /** Most a new SKU's line may be beyond what it sold in the last 30 days. 0 disables. */
+  /** Most a new SKU's line may be beyond what it sold in the last 30 days. 0 disables. Default 3. */
   new_sku_trial_qty: number;
-  /** Days after arrival a new SKU is reviewed for sell-through (NEW_SKU_SLOW). */
+  /** Days after arrival a new SKU is reviewed for sell-through (NEW_SKU_SLOW). Default 45. */
   new_sku_review_days: number;
+  /** Every unit in stock arrived within this many days, for a SKU to count as new. Default 180. */
+  new_sku_window_days: number;
+  /** Sell-through (0..1) below this after the review window flags a new SKU (NEW_SKU_SLOW). Default 0.25. */
+  new_sku_slow_sell_through: number;
 }
 
 export const DEFAULT_BUY_RULE_SETTINGS: BuyRuleSettings = {
@@ -31,12 +35,9 @@ export const DEFAULT_BUY_RULE_SETTINGS: BuyRuleSettings = {
   slow_seller_stock_target: 2,
   new_sku_trial_qty: 3,
   new_sku_review_days: 45,
+  new_sku_window_days: 180,
+  new_sku_slow_sell_through: 0.25,
 };
-
-/** Every unit in stock arrived within this many days, for a SKU to count as new. */
-export const NEW_SKU_WINDOW_DAYS = 180;
-/** Sell-through below this after the review window flags a new SKU (NEW_SKU_SLOW). */
-export const NEW_SKU_SLOW_SELL_THROUGH = 0.25;
 
 type NewSkuStats = Pick<
   SkuStats,
@@ -51,21 +52,26 @@ type NewSkuStats = Pick<
 
 /**
  * New (or re-launched): no sales in the 90-360 day windows, and every unit in
- * stock arrived inside NEW_SKU_WINDOW_DAYS (or none is in stock). A product
- * that sold years ago and is being bought again counts as new, which is the
- * intent: its old history says nothing about this range.
+ * stock arrived inside windowDays (or none is in stock). A product that sold
+ * years ago and is being bought again counts as new, which is the intent: its
+ * old history says nothing about this range. windowDays is the caller's
+ * new_sku_window_days (default 180).
  */
-export function isNewSku(s: NewSkuStats): boolean {
+export function isNewSku(s: NewSkuStats, windowDays: number = DEFAULT_BUY_RULE_SETTINGS.new_sku_window_days): boolean {
   const oldSales = (s.avg_daily_sales_90_180d || 0) + (s.avg_daily_sales_180_270d || 0) + (s.avg_daily_sales_270_360d || 0);
   if (oldSales > 0) return false;
   const age = s.age_of_oldest_item_days;
   if (age == null) return !(s.qty > 0);
-  return age <= NEW_SKU_WINDOW_DAYS;
+  return age <= windowDays;
 }
 
-/** Units sold in roughly the last 90 days, from the 30d and 30-90d windows. */
+/**
+ * Units sold in roughly the last 90 days, from the 30d and 30-90d windows.
+ * Never negative: net returns count as nothing sold, so a sell-through ratio
+ * built on it keeps a positive denominator.
+ */
 export function recentUnitsSold(s: Pick<SkuStats, 'avg_daily_sales_30d' | 'avg_daily_sales_30_90d'>): number {
-  return Math.round((s.avg_daily_sales_30d || 0) * 30 + (s.avg_daily_sales_30_90d || 0) * 60);
+  return Math.max(0, Math.round((s.avg_daily_sales_30d || 0) * 30 + (s.avg_daily_sales_30_90d || 0) * 60));
 }
 
 export interface BuyRuleInput {
@@ -81,7 +87,7 @@ export interface BuyRuleInput {
   selling: boolean;
   /** The SKU has sold at some point (recent windows or all-time). */
   has_history: boolean;
-  /** Seasonal/prebook classes are bought via the seasonal panel; rules leave them alone. */
+  /** Seasonal/prebook classes are bought outside the reorder queue; rules leave them alone. */
   seasonal_class: boolean;
   settings: BuyRuleSettings;
 }
@@ -105,7 +111,7 @@ export interface BuyRuleResult {
 export function applyBuyRules(i: BuyRuleInput): BuyRuleResult {
   const st = i.settings;
   const onHandInbound = Math.max(0, i.stats.qty) + Math.max(0, i.incoming_next_2m);
-  const newSku = isNewSku(i.stats);
+  const newSku = isNewSku(i.stats, st.new_sku_window_days);
   let qty = i.qty;
 
   const slow =
@@ -155,7 +161,8 @@ export interface RuleExceptionHit {
 }
 
 /**
- * New SKUs past the review window whose sell-through is under 25%: markdown
+ * New SKUs past the review window whose sell-through is under
+ * new_sku_slow_sell_through: markdown
  * or return candidates, and a sign the trial buy was too deep.
  */
 export function newSkusNotSelling(rows: RuleRow[], settings: BuyRuleSettings): RuleExceptionHit[] {
@@ -166,7 +173,7 @@ export function newSkusNotSelling(rows: RuleRow[], settings: BuyRuleSettings): R
     const age = s.age_of_oldest_item_days;
     if (age == null || age < settings.new_sku_review_days) continue;
     const sold = recentUnitsSold(s);
-    if (sold / (sold + s.qty) >= NEW_SKU_SLOW_SELL_THROUGH) continue;
+    if (sold / (sold + s.qty) >= settings.new_sku_slow_sell_through) continue;
     out.push({ sku: r.sku, units: s.qty, cost: s.unit_cost != null ? s.unit_cost * s.qty : null });
   }
   return out;
