@@ -109,6 +109,21 @@ describe('a declared parent scopes its children', () => {
     expect(count(d1.statements, WRITE)).toBe(0);
   });
 
+  it("a create carrying the id of another parent's child is refused, alone or in a batch, and nothing is written", async () => {
+    const { d1, sim } = install();
+    for (const body of [{ TaskID: 't3', Name: 'Taken' }, [{ Name: 'New' }, { TaskID: 't3', Name: 'Taken' }]]) {
+      const err = await sim.fetch(`${BASE}/projects/p1/tasks`, post(body)).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(NotSimulatedError);
+      expect((err as NotSimulatedError).reason).toBe('parent');
+    }
+    expect(count(d1.statements, WRITE)).toBe(0);
+    expect(await taskIds(await sim.fetch(`${BASE}/projects/p2/tasks`))).toEqual(['t3']);
+    expect(await taskIds(await sim.fetch(`${BASE}/projects/p1/tasks`))).toEqual(['t1', 't2']);
+  });
+
   it('an update cannot move a child to another parent', async () => {
     const { d1, sim } = install();
     const err = await sim.fetch(`${BASE}/projects/p1/tasks/t1`, post({ ProjectID: 'p2' })).then(
