@@ -14,7 +14,7 @@ Pure buying maths for inventory apps. No I/O, no platform calls: every function 
 ## What the caller does first
 
 - **Exclusions.** The package applies none. Before calling `scorePo`, `rollupSuppliers` or the SKU functions, the caller drops the rows its exclusion list names. The list has six dimensions (`sku`, `supplier_ref`, `location_id`, `class_1`, `class_2`, `brand`), and a `supplier_ref` entry matches either of a supplier's two codes.
-- **Purchase-order rows.** `PurchaseOrderRow` is one row per purchase order. A caller holding order lines rolls them up first: units and cost columns are summed over the order's lines, `ordered_date` is the earliest line date, `original_eta` and `latest_eta` are the latest of each across the lines, the aged-unsold counts are summed, `oldest_unsold_days` is the largest, and `avg_days_to_sell` is the average weighted by units sold.
+- **Purchase-order rows.** `PurchaseOrderRow` is one row per purchase order. The caller rolls order lines up to one row per order; the roll-up rule is set with sprigr-team#16078.
 
 ## Not in this package yet
 
