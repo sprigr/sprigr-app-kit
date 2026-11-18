@@ -142,7 +142,7 @@ resources: {
 
 - `complete` runs on every create and update, before the write, and returns the object to store. `objects` is the resource's view including the objects already written earlier in the same request, so a next number counts them. It cannot change the id, or on a route with a `parent` the parent field: the engine puts both back, so a write never moves an object.
 - `derive` runs on every answered object and is never stored. Use it for a field that depends on another resource. A payment then changes its invoice's amount due on the next read, without writing the invoice. Its result keeps the stored object's id and parent field.
-- `newId` forms the id of a create that carries none, for a vendor whose ids are codes or numbers rather than UUIDs: `newId: ({ objects, parentId }) => nextCode(objects)`. It runs before `complete` and sees the same `objects`. An id already in that view is refused as `exists`, and a value that is not a non-empty string as `computed`, both before any write.
+- `newId` forms the id of a create that carries none, for a vendor whose ids are codes or numbers rather than UUIDs: `newId: ({ objects, parentId }) => nextCode(objects)`. It runs before `complete` and sees the same `objects`. It returns a string or a number; a number is stored and answered as a number and keyed by its string form, so a get of `/1042` finds `1042`. An id already in that view is refused as `exists`, and a value that is neither a non-empty string nor a finite number as `computed`, both before any write.
 - A throw from any of them is refused as `computed`, with the throw as the error's `cause`.
 
 **Build throws (`TypeError`):**

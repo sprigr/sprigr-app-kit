@@ -77,8 +77,9 @@ export type DeriveFunction = (obj: SampleObject, related: Record<string, SampleO
 /**
  * Forms a new object's id the way the vendor does, for a create that carries none.
  * `objects` is the resource's view, including objects written earlier in the same request.
+ * A number is stored and answered as a number, as a vendor with number ids answers it.
  */
-export type NewIdFunction = (ctx: { objects: readonly SampleObject[]; parentId: string | undefined }) => string;
+export type NewIdFunction = (ctx: { objects: readonly SampleObject[]; parentId: string | undefined }) => string | number;
 
 export interface ResourceRules {
   /** Fields the vendor sets that not every seed object shows. Every answered object must carry them. */

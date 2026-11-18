@@ -60,12 +60,13 @@ function completeObject(rules: ResourceRules | undefined, base: SampleObject, ct
 }
 
 /** A new object's id: the resource's `newId` when it has one, else a UUID. */
-function mintId(rules: ResourceRules | undefined, objects: readonly SampleObject[], parentId: string | undefined): string {
+function mintId(rules: ResourceRules | undefined, objects: readonly SampleObject[], parentId: string | undefined): string | number {
   const newId = rules?.newId;
   if (!newId) return crypto.randomUUID();
-  const id = appCall(() => newId({ objects, parentId }));
-  if (typeof id !== 'string' || id === '') throw new Refusal('computed');
-  return id;
+  const id: unknown = appCall(() => newId({ objects, parentId }));
+  if (typeof id === 'string' && id !== '') return id;
+  if (typeof id === 'number' && Number.isFinite(id)) return id;
+  throw new Refusal('computed');
 }
 
 /** Numbers compare as numbers, everything else as strings; missing values sort last. */
@@ -365,10 +366,11 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
           const given = obj[idField];
           const previous = isId(given) ? working.get(String(given)) : undefined;
           if (previous && !route.upsert) throw new Refusal('exists');
-          const newId = isId(given) ? String(given) : mintId(resourceRules, [...working.values()], parentId);
-          if (!isId(given) && working.has(newId)) throw new Refusal('exists');
+          const minted = isId(given) ? undefined : mintId(resourceRules, [...working.values()], parentId);
+          const newId = String(minted ?? given);
+          if (minted !== undefined && working.has(newId)) throw new Refusal('exists');
           const scoped = parentField === undefined ? obj : { ...obj, [parentField]: obj[parentField] ?? parentId };
-          const base = previous ? { ...previous, ...obj, [idField]: previous[idField] } : { ...scoped, [idField]: given ?? newId };
+          const base = previous ? { ...previous, ...obj, [idField]: previous[idField] } : { ...scoped, [idField]: given ?? minted };
           const ctx = { op: previous ? 'update' : 'create', action: undefined, previous, objects: [...working.values()], parentId } as const;
           const stored = completeObject(resourceRules, base, ctx, fixed);
           answered.push(check(derive(stored)));
