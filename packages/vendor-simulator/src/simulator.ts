@@ -408,7 +408,10 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         const existing = id === undefined ? undefined : ownChild(objects.get(id));
         if (id === undefined || !existing) return notFound();
         const body = await readJson(req, init);
-        const patch = body.ok ? bodyObjects(route, body.value)?.[0] : undefined;
+        const patches = body.ok ? bodyObjects(route, body.value) : null;
+        // Writing the first and dropping the rest would answer for objects never written.
+        if (patches && patches.length > 1) throw new Refusal('body');
+        const patch = patches?.[0];
         if (!patch) return badRequest();
         if (namesOtherParent(patch)) throw new Refusal('parent');
         const merged = { ...existing, ...patch, [idField]: existing[idField] };
