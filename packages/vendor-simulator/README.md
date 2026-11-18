@@ -82,6 +82,8 @@ const resp = await fetchWithBudget(url, init, deadline, { fetchImpl });
 
 A request the dialect has no route for throws `NotSimulatedError` (code `not_simulated`, with `method` and `path`). It is never sent to the vendor.
 
+**Both errors mean nothing was sent.** `SampleModeUnknownError` and `NotSimulatedError` are thrown out of the `fetchImpl` before any request leaves the app. Map them, by `instanceof` or `.code`, to your not-sent answer. Never treat them as an unknown outcome: a write path that reads any throw from fetch as "outcome unknown" would answer `write_may_have_applied` for a request that was never sent. Your adoption tests should include a write with the flag unreadable that answers not sent.
+
 ## The plain dialect
 
 Routes map a method and a path under `base` to one of `list`, `get`, `create`, `update`, `delete` on a seed resource.
@@ -91,6 +93,8 @@ Routes map a method and a path under `base` to one of `list`, `get`, `create`, `
 - `filters`: query parameter to field, equality on the field's string form.
 - `sort.param`: `Field` or `Field DESC`; numbers compare as numbers.
 - `page`: `{ param, size, first }`; a list is paged only when the parameter is sent.
+
+The dialect matches the method and the path only, never the host. If your app calls two hosts, a path that matches a route is simulated whichever host it was sent to, and a call to a host whose paths have no route is refused with `NotSimulatedError`.
 
 A create without an id gets a generated one. An update merges fields into the object. A delete hides the object from list and get. Writes go to the overlay only; the seed is never changed.
 

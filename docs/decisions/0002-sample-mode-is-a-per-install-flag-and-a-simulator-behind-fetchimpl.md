@@ -23,7 +23,7 @@ The app cannot learn sample mode from the request. Install dispatch reads no com
 
 `sampleAwareFetch` returns a `FetchImpl`. Each adopting app builds it per invocation and passes it as `fetchImpl` to `fetchWithBudget`, or to its own vendor client. `@sprigr/apps-fetch-budget` does not call it and does not change. It has no D1 handle, seed or table name, and reading the flag there would add a D1 read to every app that uses it, adopters or not.
 
-**What stops a path that forgets it: nothing in this package.** A vendor call made with the global `fetch`, or through `fetchWithBudget` without this `fetchImpl`, reaches the network with the flag on. Until the platform egress fence (step 2b) is decided, the guard is per app. An adopting app routes every vendor call through one client function that takes the `fetchImpl`. Its adoption PR carries a test that runs every declared tool and action with the flag on and asserts the network stub is never called. That test belongs to each app's proof, not to this package.
+**What stops a path that forgets it: nothing in this package.** A vendor call made with the global `fetch`, or through `fetchWithBudget` without this `fetchImpl`, reaches the network with the flag on. Until the platform egress fence (step 2b) is decided, the guard is per app. An adopting app routes every vendor call through one client function that takes the `fetchImpl`. Its adoption PR carries a test that runs every declared tool and action with the flag on and asserts the network stub is never called, and a write with the flag unreadable that answers not sent. That test belongs to each app's proof, not to this package.
 
 ## Ending sample mode
 
@@ -45,3 +45,6 @@ The messages of `NotSimulatedError` and `SampleModeUnknownError` are not final. 
 - Each adopting app adds one migration (the table), the two hooks, a seed, a dialect, and one `fetchImpl` at its vendor client.
 - Ending sample mode deletes every write a person made while sampling. That is the point of sample data.
 - Until step 2b, an app path that bypasses its vendor client is caught only by that app's tests.
+- `SampleModeUnknownError` and `NotSimulatedError` both mean nothing was sent. An adopting app maps them to its not-sent answer, never to an unknown outcome such as `write_may_have_applied`. Its adoption tests include a write with the flag unreadable that answers not sent.
+- A create carrying an id that already exists replaces that object. A real vendor would usually refuse it.
+- An invocation that read on just before `on_sample_remove` can still write an overlay row after the clear. `on_sample_load` keeps overlay rows, so that row shows up in the next sample session.
