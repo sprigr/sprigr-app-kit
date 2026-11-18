@@ -119,6 +119,8 @@ A create without an id, or with a `null` one, gets a UUID, or the id its resourc
 
 Under a parent, a list returns only that parent's children. A get, update or delete of another parent's child answers 404, as does any request under a parent that does not exist. A create stores the parent id from the path.
 
+**Seed ids.** `createSimulator` throws a `TypeError` naming the resource, before any request, when a seed object has no id, a `null` one, or one that is not a usable id (a non-empty string or a finite number). It also throws when two objects of one resource have ids equal as strings, `5` and `"5"` included: the store keys objects by that string, so the later one would hide the earlier. A seed object's parent field is not checked.
+
 ### What the vendor computes
 
 A vendor fills fields in on a write: a number, totals, an amount due. The engine never answers with an object missing them.
