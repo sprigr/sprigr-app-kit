@@ -15,7 +15,7 @@ import {
 import { deriveSkuMetrics, skuReasons, DEFAULT_BUYER_SETTINGS, type SkuStats } from '../src/buyer-metrics';
 
 /** The EOQ top-up needs a handling cost; the package ships none, so these tests supply one. */
-const SETTINGS = { ...DEFAULT_BUYER_SETTINGS, handling_cost_per_line: 4 };
+const SETTINGS = { ...DEFAULT_BUYER_SETTINGS, lead_time_default_days: 14, handling_cost_per_line: 4 };
 
 function stats(over: Partial<SkuStats> = {}): SkuStats {
   return {

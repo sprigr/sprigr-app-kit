@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import * as bm from '../src/buyer-metrics';
+import type { RealisedLeadTime } from '../src/lead-time';
 import {
   type SkuStats,
   type BuyerSettings,
@@ -25,6 +27,7 @@ import {
  */
 const SETTINGS: BuyerSettings = {
   ...DEFAULT_BUYER_SETTINGS,
+  lead_time_default_days: 14,
   handling_cost_per_line: 4,
   eoq_fallback_unit_cost: 20,
   profitability_coverage_adjust: { '1': -0.15, '2': -0.3, '3': -0.5, '4': -1 },
@@ -591,7 +594,7 @@ describe('deriveSkuMetrics queue-quality guards', () => {
   });
 
   it('#2 no class is seasonal until the caller names one', () => {
-    const d = deriveSkuMetrics(stats({ sku: 'SKU-2', qty: 0, class_1: 'CLASS_Q' }), DEFAULT_BUYER_SETTINGS, 0, F([5, 5, 5]));
+    const d = deriveSkuMetrics(stats({ sku: 'SKU-2', qty: 0, class_1: 'CLASS_Q' }), { ...DEFAULT_BUYER_SETTINGS, lead_time_default_days: 14 }, 0, F([5, 5, 5]));
     expect(d.seasonal_class).toBe(false);
     expect(d.reorder).toBe(true);
   });
@@ -914,17 +917,17 @@ describe('deriveSkuMetrics EOQ top-up', () => {
   });
 
   it('the code defaults carry no handling cost, so no line is raised until the caller sets one', () => {
-    const off = deriveSkuMetrics(cheapSlow, DEFAULT_BUYER_SETTINGS, 0);
+    const off = deriveSkuMetrics(cheapSlow, { ...DEFAULT_BUYER_SETTINGS, lead_time_default_days: 14 }, 0);
     expect(off.eoq_applied).toBe(false);
     expect(off.suggested_buy_qty).toBe(off.eoq_base_qty);
-    const on = deriveSkuMetrics(cheapSlow, { ...DEFAULT_BUYER_SETTINGS, handling_cost_per_line: 4 }, 0);
+    const on = deriveSkuMetrics(cheapSlow, { ...DEFAULT_BUYER_SETTINGS, lead_time_default_days: 14, handling_cost_per_line: 4 }, 0);
     expect(on.eoq_applied).toBe(true);
     expect(on.suggested_buy_qty).toBeGreaterThan(off.suggested_buy_qty);
   });
 
   it('an unpriced SKU is raised only when settings carry eoq_fallback_unit_cost', () => {
     const unpriced = { ...cheapSlow, unit_cost: null };
-    const noFallback: BuyerSettings = { ...DEFAULT_BUYER_SETTINGS, handling_cost_per_line: 4 };
+    const noFallback: BuyerSettings = { ...DEFAULT_BUYER_SETTINGS, lead_time_default_days: 14, handling_cost_per_line: 4 };
     expect(deriveSkuMetrics(unpriced, noFallback, 0).eoq_applied).toBe(false);
     // Fallback 8 sizes the batch exactly as the recorded cost of 8 does.
     const withFallback = deriveSkuMetrics(unpriced, { ...SETTINGS, eoq_fallback_unit_cost: 8 }, 0);
@@ -1392,5 +1395,199 @@ describe('deriveSkuMetrics min order quantity', () => {
     expect(d.min_order_qty).toBe(5);
     expect(d.min_applied).toBe(false);
     expect(d.suggested_buy_qty).toBe(d.eoq_qty);
+  });
+});
+
+// 0.3.0 lead time: a person's override (supplier, brand, class), then the stock
+// record, then the supplier record, then the realised figure, then the required
+// default. Read through the namespace so a missing export is undefined, not a load error.
+type LeadTimeReason = { code: string; detail: string; value?: number };
+type ResolvedLeadTime = { days: number; source: string; reason: LeadTimeReason };
+type ResolveWithSource = (
+  settings: BuyerSettings,
+  row: SkuStats,
+  realised?: RealisedLeadTime | null,
+) => ResolvedLeadTime;
+type DerivedWithSource = ReturnType<typeof deriveSkuMetrics> & {
+  lead_time_source?: string;
+  lead_time_reason?: LeadTimeReason;
+};
+const resolveWithSource = (bm as unknown as Record<string, unknown>).resolveLeadTimeWithSource as ResolveWithSource;
+const deriveWithRealised = bm.deriveSkuMetrics as unknown as (...args: unknown[]) => DerivedWithSource;
+
+function expectExported(): void {
+  expect(typeof resolveWithSource, 'resolveLeadTimeWithSource is exported').toBe('function');
+}
+
+/** Every step set, so each row removes the steps above the one it checks. */
+const LT_SETTINGS = {
+  ...SETTINGS,
+  lead_time_default_days: 14,
+  supplier_lead_time_overrides: { 'SUP-1': 21 },
+  brand_lead_time_overrides: { 'BRAND F': 30 },
+  class_lead_time_overrides: { CLASS_A: 40 },
+} as BuyerSettings;
+const LT_ROW = { ...stats(), supplier_ref: 'SUP-1', stock_lead_time_days: 50, supplier_lead_time_days: 60 } as SkuStats;
+const REALISED: RealisedLeadTime = { median_days: 6, p90_days: 10, receipt_count: 212 };
+const noOverrides = (over: Record<string, unknown> = {}) =>
+  ({
+    ...LT_SETTINGS,
+    supplier_lead_time_overrides: {},
+    brand_lead_time_overrides: {},
+    class_lead_time_overrides: {},
+    ...over,
+  }) as BuyerSettings;
+
+describe('resolveLeadTimeWithSource', () => {
+  // Each row checks its step and then the same inputs with that step removed,
+  // so a body that returns one fixed answer fails every row on a value.
+  it('a supplier override beats the brand and class overrides and every record value', () => {
+    expectExported();
+    const r = resolveWithSource(LT_SETTINGS, LT_ROW, REALISED);
+    expect(r.days).toBe(21);
+    expect(r.source).toBe('supplier_override');
+    expect(r.reason.code).toBe('LEAD_TIME_FROM_OVERRIDE');
+    // Another supplier has no override, so the brand override applies.
+    const other = resolveWithSource(LT_SETTINGS, { ...LT_ROW, supplier_ref: 'SUP-2' } as SkuStats, REALISED);
+    expect(other.days).toBe(30);
+    expect(other.source).toBe('brand_override');
+  });
+
+  it('a brand override beats the class override', () => {
+    expectExported();
+    const s = { ...LT_SETTINGS, supplier_lead_time_overrides: {} } as BuyerSettings;
+    const r = resolveWithSource(s, LT_ROW, REALISED);
+    expect(r.days).toBe(30);
+    expect(r.source).toBe('brand_override');
+    expect(r.reason.code).toBe('LEAD_TIME_FROM_OVERRIDE');
+    const otherBrand = resolveWithSource(s, { ...LT_ROW, brand: 'Brand X' } as SkuStats, REALISED);
+    expect(otherBrand.days).toBe(40);
+    expect(otherBrand.source).toBe('class_override');
+  });
+
+  it('a class override beats the stock record', () => {
+    expectExported();
+    const s = { ...LT_SETTINGS, supplier_lead_time_overrides: {}, brand_lead_time_overrides: {} } as BuyerSettings;
+    const r = resolveWithSource(s, LT_ROW, REALISED);
+    expect(r.days).toBe(40);
+    expect(r.source).toBe('class_override');
+    expect(r.reason.code).toBe('LEAD_TIME_FROM_OVERRIDE');
+    const otherClass = resolveWithSource(s, { ...LT_ROW, class_1: 'CLASS_Z' } as SkuStats, REALISED);
+    expect(otherClass.days).toBe(50);
+    expect(otherClass.source).toBe('stock_record');
+  });
+
+  it('the stock record beats the supplier record', () => {
+    expectExported();
+    const r = resolveWithSource(noOverrides(), LT_ROW, REALISED);
+    expect(r.days).toBe(50);
+    expect(r.source).toBe('stock_record');
+    expect(r.reason.code).toBe('LEAD_TIME_FROM_STOCK_RECORD');
+    const other = resolveWithSource(noOverrides(), { ...LT_ROW, stock_lead_time_days: 35 } as SkuStats, REALISED);
+    expect(other.days).toBe(35);
+    expect(other.source).toBe('stock_record');
+  });
+
+  it('the supplier record beats the realised figure', () => {
+    expectExported();
+    const row = { ...LT_ROW, stock_lead_time_days: undefined } as SkuStats;
+    const r = resolveWithSource(noOverrides(), row, REALISED);
+    expect(r.days).toBe(60);
+    expect(r.source).toBe('supplier_record');
+    expect(r.reason.code).toBe('LEAD_TIME_FROM_SUPPLIER_RECORD');
+    const none = resolveWithSource(noOverrides(), { ...row, supplier_lead_time_days: undefined } as SkuStats, REALISED);
+    expect(none.days).toBe(6);
+    expect(none.source).toBe('realised');
+  });
+
+  it('the realised figure at the default quantile 0.5 is the median', () => {
+    expectExported();
+    const row = { ...stats(), supplier_ref: 'SUP-1' } as SkuStats;
+    const r = resolveWithSource(noOverrides(), row, REALISED);
+    expect(r.days).toBe(6);
+    expect(r.source).toBe('realised');
+    expect(r.reason.code).toBe('LEAD_TIME_FROM_RECEIPTS');
+    expect(resolveWithSource(noOverrides(), row, { median_days: 8, p90_days: 12, receipt_count: 40 }).days).toBe(8);
+  });
+
+  it('lead_time_planning_quantile 0.9 takes the 90th percentile', () => {
+    expectExported();
+    const row = { ...stats(), supplier_ref: 'SUP-1' } as SkuStats;
+    const r = resolveWithSource(noOverrides({ lead_time_planning_quantile: 0.9 }), row, REALISED);
+    expect(r.days).toBe(10);
+    expect(r.source).toBe('realised');
+    expect(resolveWithSource(noOverrides({ lead_time_planning_quantile: 0.5 }), row, REALISED).days).toBe(6);
+  });
+
+  it('a realised entry below its minimum receipts carries no figure, so the default applies', () => {
+    expectExported();
+    const row = { ...stats(), supplier_ref: 'SUP-1' } as SkuStats;
+    const r = resolveWithSource(noOverrides(), row, { median_days: null, p90_days: null, receipt_count: 19 });
+    expect(r.days).toBe(14);
+    expect(r.source).toBe('default');
+    expect(r.reason.code).toBe('LEAD_TIME_FROM_DEFAULT');
+    const other = resolveWithSource(noOverrides({ lead_time_default_days: 28 }), row, null);
+    expect(other.days).toBe(28);
+    expect(other.source).toBe('default');
+  });
+
+  it('skips 0, negative and NaN at every step', () => {
+    expectExported();
+    const s = {
+      ...LT_SETTINGS,
+      supplier_lead_time_overrides: { 'SUP-1': 0 },
+      brand_lead_time_overrides: { 'BRAND F': Number.NaN },
+      class_lead_time_overrides: { CLASS_A: -5 },
+    } as BuyerSettings;
+    const row = { ...LT_ROW, stock_lead_time_days: 0, supplier_lead_time_days: Number.NaN } as SkuStats;
+    const r = resolveWithSource(s, row, { median_days: 0, p90_days: -1, receipt_count: 30 });
+    expect(r.days).toBe(14);
+    expect(r.source).toBe('default');
+    // One valid value at the bottom of the overrides is still found under the skipped ones.
+    const classOk = resolveWithSource({ ...s, class_lead_time_overrides: { CLASS_A: 40 } } as BuyerSettings, row, null);
+    expect(classOk.days).toBe(40);
+    expect(classOk.source).toBe('class_override');
+  });
+
+  it('a missing or invalid lead_time_default_days throws a RangeError naming it', () => {
+    expectExported();
+    for (const bad of [undefined, 0, -3, Number.NaN]) {
+      const s = noOverrides({ lead_time_default_days: bad });
+      expect(() => resolveWithSource(s, stats(), null)).toThrow(RangeError);
+      expect(() => resolveWithSource(s, stats(), null)).toThrow(/lead_time_default_days/);
+    }
+    expect(resolveWithSource(noOverrides({ lead_time_default_days: 21 }), stats(), null).days).toBe(21);
+  });
+
+  it('a lead_time_planning_quantile other than 0.5 or 0.9 throws a RangeError naming it', () => {
+    expectExported();
+    const s = noOverrides({ lead_time_planning_quantile: 0.7 });
+    expect(() => resolveWithSource(s, stats(), REALISED)).toThrow(RangeError);
+    expect(() => resolveWithSource(s, stats(), REALISED)).toThrow(/lead_time_planning_quantile/);
+    const row = { ...stats(), supplier_ref: 'SUP-1' } as SkuStats;
+    expect(resolveWithSource(noOverrides({ lead_time_planning_quantile: 0.9 }), row, REALISED).days).toBe(10);
+  });
+
+  it('deriveSkuMetrics carries the source and the reason for the lead time it used', () => {
+    expectExported();
+    const row = { ...stats(), supplier_ref: 'SUP-1' } as SkuStats;
+    const fromReceipts = deriveWithRealised(row, noOverrides(), 0, undefined, undefined, undefined, undefined, undefined, REALISED);
+    expect(fromReceipts.lead_time_days).toBe(6);
+    expect(fromReceipts.lead_time_source).toBe('realised');
+    expect(fromReceipts.lead_time_reason).toMatchObject({ code: 'LEAD_TIME_FROM_RECEIPTS', detail: '6 days, from 212 receipts' });
+    const fromDefault = deriveWithRealised(row, noOverrides(), 0);
+    expect(fromDefault.lead_time_days).toBe(14);
+    expect(fromDefault.lead_time_source).toBe('default');
+    expect(fromDefault.lead_time_reason).toMatchObject({ code: 'LEAD_TIME_FROM_DEFAULT', detail: '14 days, default' });
+  });
+
+  it('a default of 14 with no records, overrides or receipts gives the 0.2.0 buy quantity', () => {
+    const s = { ...SETTINGS, lead_time_default_days: 14, eoq_enabled: false } as BuyerSettings;
+    const healthy = deriveWithRealised(stats(), s, 0, undefined, undefined, undefined, undefined, undefined, null);
+    expect(healthy.lead_time_days).toBe(14);
+    expect(healthy.suggested_buy_qty).toBe(13);
+    const out = deriveWithRealised(stats({ qty: 0 }), { ...SETTINGS, lead_time_default_days: 14 } as BuyerSettings, 0);
+    expect(out.lead_time_days).toBe(14);
+    expect(out.suggested_buy_qty).toBe(73);
   });
 });
