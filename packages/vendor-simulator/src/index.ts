@@ -10,12 +10,13 @@ export type {
   SeedResource,
 } from './types';
 export { NotSimulatedError, SampleModeUnknownError } from './errors';
+export type { NotSimulatedReason } from './errors';
 export { createSampleStore } from './store';
 export type { SampleStoreOptions } from './store';
 export { createSampleSwitch, sampleAwareFetch } from './switch';
 export type { SampleAwareFetchOptions } from './switch';
 export { plainDialect } from './dialect';
-export type { Dialect, PlainDialectOptions, PlainRoute, RouteMatch, RouteOp } from './dialect';
+export type { Dialect, ParentRelation, PlainDialectOptions, PlainRoute, QueryFunction, RouteMatch, RouteOp } from './dialect';
 export { createSimulator } from './simulator';
 export type { Simulator, SimulatorOptions } from './simulator';
 export { sampleLoadHook, sampleRemoveHook } from './hooks';

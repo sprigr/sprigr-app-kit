@@ -80,7 +80,7 @@ const resp = await fetchWithBudget(url, init, deadline, { fetchImpl });
 | off | the network, with the same request |
 | unknown (the read failed) | nothing: `SampleModeUnknownError`, code `sample_mode_unknown` |
 
-A request the dialect has no route for throws `NotSimulatedError` (code `not_simulated`, with `method` and `path`). It is never sent to the vendor.
+A request the engine does not model throws `NotSimulatedError` (code `not_simulated`, with `method`, `path` and `reason`). It is never sent to the vendor. See [What is refused](#what-is-refused).
 
 **Both errors mean nothing was sent.** `SampleModeUnknownError` and `NotSimulatedError` are thrown out of the `fetchImpl` before any request leaves the app. Map them, by `instanceof` or `.code`, to your not-sent answer. Never treat them as an unknown outcome: a write path that reads any throw from fetch as "outcome unknown" would answer `write_may_have_applied` for a request that was never sent. Your adoption tests should include a write with the flag unreadable that answers not sent.
 
@@ -90,14 +90,32 @@ Routes map a method and a path under `base` to one of `list`, `get`, `create`, `
 
 - `wrap`: the response envelope key. Without it, a list is a bare array and a get is the bare object.
 - `bodyKey`: where a write's objects sit in the request body. Without it, the body is the object (or an array of them).
-- `filters`: query parameter to field, equality on the field's string form.
-- `sort.param`: `Field` or `Field DESC`; numbers compare as numbers.
-- `page`: `{ param, size, first }`; a list is paged only when the parameter is sent.
+- `filters` (list only): query parameter to field, equality on the field's string form.
+- `query` (list only): query parameter to a function your app supplies, `(value, items) => items | null`, for a vendor syntax the engine does not parse. It runs after `filters`. Return `null` when you cannot apply the value; the request is refused.
+- `sort.param` (list only): `Field`, `Field ASC` or `Field DESC`; numbers compare as numbers.
+- `page` (list only): `{ param, size, first }`; a list is paged only when the parameter is sent.
+- `parent`: `{ param, resource, field }` for a route under a parent object, such as `/projects/:projectId/tasks`. `param` is the parent's path parameter, `resource` its seed resource, and `field` the child's field holding the parent id.
+
+A get, update or delete route names its object id `:id`. Any other path parameter must be its declared parent's; `plainDialect` throws a `TypeError` at build otherwise.
 
 The dialect matches the method and the path only, never the host. If your app calls two hosts, a path that matches a route is simulated whichever host it was sent to, and a call to a host whose paths have no route is refused with `NotSimulatedError`.
 
 A create without an id gets a generated one. An update merges fields into the object. A delete hides the object from list and get. Writes go to the overlay only; the seed is never changed.
 
+Under a parent, a list returns only that parent's children. A get, update or delete of another parent's child answers 404, as does any request under a parent that does not exist. A create stores the parent id from the path.
+
+### What is refused
+
+The engine refuses what it does not model, so it never answers wrongly. Each refusal is a `NotSimulatedError` thrown before anything is written, and its `reason` says why:
+
+| `reason` | When |
+|---|---|
+| `no_route` | No route matches the method and path. |
+| `query` | A query parameter the route does not declare (a get, update or delete declares none), one sent twice, a sort value other than `Field`, `Field ASC` or `Field DESC`, a page value that is not a whole number at or above `first`, or a `query` function that returned `null`. |
+| `accept` | The most preferred `Accept` range does not admit JSON: highest `q` wins, the first on a tie. No `Accept`, `application/json`, `application/*+json`, `application/*` and `*/*` all admit it. |
+| `content_type` | A create or update whose body is declared or built as something other than JSON, such as a multipart upload. A plain string body with no `Content-Type` is read as JSON. |
+| `parent` | A create or update whose body sets the parent field to a different parent. |
+
 ## Cost
 
-One D1 read per invocation that makes a vendor call (the flag), whether or not the install is in sample mode. In sample mode, one more read per simulated request (the overlay for that resource) and one write per created, updated or deleted object.
+One D1 read per invocation that makes a vendor call (the flag), whether or not the install is in sample mode. In sample mode, one more read per simulated request (the overlay for that resource), one more on a route with a `parent` (the parent's overlay), and one write per created, updated or deleted object. A request refused for its query, `Accept` or `Content-Type` costs no overlay read.
