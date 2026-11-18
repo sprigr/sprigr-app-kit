@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { classifyPerformance, type PerformanceRow } from '../src/performance';
-import { applyEoqLineQty, resolveLabelRole } from '../src/buyer-metrics';
+import { classifyPerformance, DEFAULT_PERFORMANCE_OPTIONS, type PerformanceRow } from '../src/performance';
+import { applyEoqLineQty, DEFAULT_BUYER_SETTINGS, resolveLabelRole } from '../src/buyer-metrics';
 import { buildBuyPlan, type BuyPlanRowInput } from '../src/buy-plan';
 
 /** An established seller: sales in every window, old stock, so neither dead nor new. */
@@ -342,5 +342,62 @@ describe('performance roles in the buy plan and the EOQ guard', () => {
     expect(resolveLabelRole('LABEL_OTHER', { LABEL_RUNDOWN: 'run_down' }, 'priority')).toBe('priority');
     expect(resolveLabelRole(null, undefined, null)).toBeNull();
     expect(eoq({ role: 'run_down', label: 'LABEL_TOP', label_roles: { LABEL_TOP: 'priority' } }).qty).toBe(15);
+  });
+});
+
+describe('classifyPerformance class rank details', () => {
+  it('two rows tied at the top of a class of five are both proven', () => {
+    const rows = [10, 20, 30, 50, 50].map((gp, i) => row(`SKU-${i + 1}`, { gross_profit: gp }));
+    const out = classifyPerformance(rows);
+    expect(out.map((r) => r.metrics.class_percentile)).toEqual([0, 0.25, 0.5, 0.88, 0.88]);
+    expect(out.map((r) => r.tier)).toEqual(['no_evidence', 'no_evidence', 'no_evidence', 'proven', 'proven']);
+  });
+
+  it('the percentile in the reason reads as an ordinal: 1st, 2nd, 3rd, 11th, 21st', () => {
+    // 101 rows with distinct gross profit: row i out-earns i of the other 100.
+    const rows = Array.from({ length: 101 }, (_, i) => row(`SKU-${i}`, { gross_profit: i + 1 }));
+    const out = classifyPerformance(rows, { priority_percentile: 0 });
+    const ordinalAt = (i: number) => /at the (\d+[a-z]+) percentile/.exec(out[i]!.reasons[0]!.detail)?.[1];
+    expect([0, 1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 100].map(ordinalAt)).toEqual([
+      '0th', '1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '22nd', '23rd', '100th',
+    ]);
+  });
+
+  it('a profitable mid-class row with enough units is not told it has too few units', () => {
+    const five = [10, 20, 30, 40, 50].map((gp, i) => row(`SKU-${i + 1}`, { gross_profit: gp }));
+    const [, , mid] = classifyPerformance(five);
+    expect(mid!.tier).toBe('no_evidence');
+    expect(mid!.reasons).toEqual([
+      {
+        code: 'PERF_NO_EVIDENCE',
+        detail: 'gross profit 30 at the 50th percentile of its class, under the 80th that counts as strong; 10 units',
+      },
+    ]);
+  });
+
+  it('tested_no_sale also fires for a row with ad spend', () => {
+    const shownWithAds = row('SKU-1', {
+      units_sold: 0,
+      gross_profit: 0,
+      ad_cost: 50,
+      lifetime_units_sold: 0,
+      lifetime_exposure: 5000,
+    });
+    const [r] = classifyPerformance([shownWithAds], { tested_exposure: 1000 });
+    expect(r!.metrics.mode).toBe('ad');
+    expect(r!.tier).toBe('tested_no_sale');
+    expect(r!.role).toBe('run_down');
+  });
+
+  it('the default velocity_weights are a copy: changing them leaves DEFAULT_BUYER_SETTINGS alone', () => {
+    expect(DEFAULT_PERFORMANCE_OPTIONS.velocity_weights).toEqual(DEFAULT_BUYER_SETTINGS.velocity_weights);
+    const weights = DEFAULT_PERFORMANCE_OPTIONS.velocity_weights as unknown as number[];
+    const before = weights[0]!;
+    try {
+      weights[0] = 0.9;
+      expect(DEFAULT_BUYER_SETTINGS.velocity_weights[0]).toBe(0.5);
+    } finally {
+      weights[0] = before;
+    }
   });
 });
