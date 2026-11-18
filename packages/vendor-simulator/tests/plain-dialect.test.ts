@@ -27,7 +27,8 @@ const SEED: SampleSeed = {
 };
 const SEED_SNAPSHOT = JSON.stringify(SEED);
 
-const DIALECT = plainDialect({
+/** Built per test, so a throwing build fails each row by name. */
+const dialect = () => plainDialect({
   base: '/api',
   routes: [
     {
@@ -45,7 +46,7 @@ const DIALECT = plainDialect({
 function install() {
   const d1 = makeMockD1(TABLE, [{ resource: SAMPLE_FLAG_RESOURCE, id: SAMPLE_FLAG_ID, body: '{}', deleted: 0 }]);
   const store = createSampleStore({ db: d1.db, table: TABLE });
-  const sim = createSimulator({ seed: SEED, dialect: DIALECT, store });
+  const sim = createSimulator({ seed: SEED, dialect: dialect(), store });
   return { d1, store, sim };
 }
 
@@ -159,6 +160,13 @@ describe('an unrouted request', () => {
 
   it('a path outside the dialect base is not simulated either', async () => {
     const { sim } = install();
-    await expect(sim.fetch('https://vendor.example/other/items')).rejects.toBeInstanceOf(NotSimulatedError);
+    const err = await sim.fetch('https://vendor.example/other/items').then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(NotSimulatedError);
+    expect((err as NotSimulatedError).code).toBe('not_simulated');
+    expect((err as NotSimulatedError).method).toBe('GET');
+    expect((err as NotSimulatedError).path).toBe('/other/items');
   });
 });

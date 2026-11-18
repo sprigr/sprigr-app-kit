@@ -55,7 +55,9 @@ describe('the per-install sample flag', () => {
 
   it('refuses a table name that is not a plain identifier', () => {
     const d1 = makeMockD1(TABLE);
-    expect(() => createSampleStore({ db: d1.db, table: 'x; DROP TABLE y' })).toThrow();
+    expect(() => createSampleStore({ db: d1.db, table: TABLE })).not.toThrow();
+    expect(() => createSampleStore({ db: d1.db, table: 'x; DROP TABLE y' })).toThrow(TypeError);
+    expect(d1.statements).toEqual([]);
   });
 });
 
