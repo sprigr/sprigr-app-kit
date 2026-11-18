@@ -210,7 +210,7 @@ function envelopeOf(route: PlainRoute, view: ListPage): Record<string, unknown> 
       : token === 'count' ? view.items.length
       : token === 'page' ? view.page
       : token === 'pageSize' ? size
-      : size > 0 ? Math.ceil(view.total / size) : 0;
+      : Math.ceil(view.total / size);
     const segments = path.split('.');
     const last = segments.pop() ?? path;
     let node = out;

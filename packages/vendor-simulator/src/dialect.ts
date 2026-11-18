@@ -168,6 +168,17 @@ function checkAction(route: PlainRoute, resources: Record<string, ResourceRules>
   }
 }
 
+/** A page size of 0, or a negative or fractional size or first page, slices on indexes no vendor answers. */
+function checkPage(route: PlainRoute): void {
+  if (!route.page) return;
+  const where = `vendor-simulator: route ${route.method} ${route.path}`;
+  const { size, first } = route.page;
+  if (!Number.isInteger(size) || size <= 0) throw new TypeError(`${where}: page.size must be a whole number above 0`);
+  if (first !== undefined && (!Number.isInteger(first) || first < 0)) {
+    throw new TypeError(`${where}: page.first must be a whole number of 0 or more`);
+  }
+}
+
 /** Every envelope field must be one the engine can compute for every answer of this route. */
 function checkEnvelope(route: PlainRoute): void {
   if (route.envelope === undefined) return;
@@ -211,6 +222,7 @@ export function plainDialect({ base = '', routes, resources = {} }: PlainDialect
       throw new TypeError(`vendor-simulator: route ${route.method} ${route.path}: upsert is for a create route`);
     }
     checkAction(route, resources);
+    checkPage(route);
     checkEnvelope(route);
   }
   for (const [resource, rules] of Object.entries(resources)) checkResourceRules(resource, rules);

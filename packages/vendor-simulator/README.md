@@ -93,7 +93,7 @@ Routes map a method and a path under `base` to one of `list`, `get`, `create`, `
 - `filters` (list only): query parameter to field, equality on the field's string form.
 - `query` (list only): query parameter to a function your app supplies, `(value, items) => items | null`, for a vendor syntax the engine does not parse. It runs after `filters`. Return `null` when you cannot apply the value; the request is refused.
 - `sort.param` (list only): `Field`, `Field ASC` or `Field DESC`; numbers compare as numbers.
-- `page` (list only): `{ param, size, first, always }`. A list is paged when the parameter is sent. With `always: true` it is also paged when the parameter is absent, answering page `first`.
+- `page` (list only): `{ param, size, first, always }`. A list is paged when the parameter is sent. With `always: true` it is also paged when the parameter is absent, answering page `first`. `plainDialect` throws a `TypeError` at build unless `size` is a whole number above 0 and `first`, when given, is a whole number of 0 or more.
 - `envelope` (list only): fields beside `wrap`, computed from the page. See [Envelope fields](#envelope-fields).
 - `parent`: `{ param, resource, field }` for a route under a parent object, such as `/projects/:projectId/tasks`. `param` is the parent's path parameter, `resource` its seed resource, and `field` the child's field holding the parent id.
 - `upsert` (create only): for a vendor whose create endpoint also updates. An object whose id already exists is merged and completed as an update instead of refused.
