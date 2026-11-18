@@ -1,0 +1,35 @@
+{
+  "name": "@sprigr/apps-buying-core",
+  "version": "0.1.0",
+  "description": "Pure buying maths for inventory apps: demand forecast tournament, cover and risk tiers, buy quantity, buy plan, open-to-buy, markdown candidates, purchase-order and supplier scoring.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsup src/index.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/buying-core"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}
