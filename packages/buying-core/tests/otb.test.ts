@@ -14,13 +14,13 @@ describe('computeOtb', () => {
       currentMonth: '2026-07',
       horizonMonths: 2,
       plans: [
-        { month: '2026-07', key: 'FFF', planned_sales: 1000, planned_markdowns: 200, planned_eom: 5000 },
-        { month: '2026-08', key: 'FFF', planned_sales: 800, planned_markdowns: 100, planned_eom: 4500 },
+        { month: '2026-07', key: 'Brand F', planned_sales: 1000, planned_markdowns: 200, planned_eom: 5000 },
+        { month: '2026-08', key: 'Brand F', planned_sales: 800, planned_markdowns: 100, planned_eom: 4500 },
       ],
-      stockValue: { FFF: 6000 }, // actual BOM for month 0
-      onOrderByMonth: { FFF: { '2026-07': 500 } },
+      stockValue: { 'Brand F': 6000 }, // actual BOM for month 0
+      onOrderByMonth: { 'Brand F': { '2026-07': 500 } },
     });
-    expect(res!.key).toBe('FFF');
+    expect(res!.key).toBe('Brand F');
     // Month 0: 1000 + 200 + 5000 - 6000 (actual BOM) - 500 (on order) = -300 (overbought).
     expect(res!.months[0]!.otb).toBe(-300);
     expect(res!.months[0]!.bom).toBe(6000);
@@ -37,10 +37,10 @@ describe('computeOtb', () => {
       currentMonth: '2026-07',
       horizonMonths: 1,
       plans: [], // no plan at all
-      stockValue: { LLL: 2000 },
-      onOrderByMonth: { LLL: { '2026-05': 300, '2026-07': 100 } }, // May ETA is overdue
+      stockValue: { 'Brand L': 2000 },
+      onOrderByMonth: { 'Brand L': { '2026-05': 300, '2026-07': 100 } }, // May ETA is overdue
     });
-    const lll = results.find((r) => r.key === 'LLL')!;
+    const lll = results.find((r) => r.key === 'Brand L')!;
     expect(lll.months[0]!.on_order).toBe(400); // 300 early + 100 this month
     // No plan → OTB = 0 + 0 + 0 - 2000 - 400 = -2400 (sell it down before buying).
     expect(lll.otb_now).toBe(-2400);
@@ -52,11 +52,11 @@ describe('computeOtb gap months', () => {
     const [res] = computeOtb({
       currentMonth: '2026-10',
       horizonMonths: 2,
-      plans: [{ month: '2026-11', key: 'GAP', planned_sales: 10000, planned_markdowns: 0, planned_eom: 40000 }],
-      stockValue: { GAP: 50000 },
+      plans: [{ month: '2026-11', key: 'Brand G', planned_sales: 10000, planned_markdowns: 0, planned_eom: 40000 }],
+      stockValue: { 'Brand G': 50000 },
       onOrderByMonth: {},
     });
-    expect(res!.key).toBe('GAP');
+    expect(res!.key).toBe('Brand G');
     // Month 0 (2026-10): no plan, muted; BOM is the actual stock value.
     expect(res!.months[0]!.bom).toBe(50000);
     expect(res!.months[0]!.otb).toBe(-50000);
@@ -72,14 +72,14 @@ describe('computeOtb gap months', () => {
       currentMonth: '2026-10',
       horizonMonths: 3,
       plans: [
-        { month: '2026-10', key: 'MMM', planned_sales: 1000, planned_markdowns: 0, planned_eom: 20000 },
+        { month: '2026-10', key: 'Brand M', planned_sales: 1000, planned_markdowns: 0, planned_eom: 20000 },
         // 2026-11 has no plan row (the gap).
-        { month: '2026-12', key: 'MMM', planned_sales: 5000, planned_markdowns: 0, planned_eom: 15000 },
+        { month: '2026-12', key: 'Brand M', planned_sales: 5000, planned_markdowns: 0, planned_eom: 15000 },
       ],
-      stockValue: { MMM: 25000 },
+      stockValue: { 'Brand M': 25000 },
       onOrderByMonth: {},
     });
-    expect(res!.key).toBe('MMM');
+    expect(res!.key).toBe('Brand M');
     // Month 0 (2026-10): planned, actual stock as BOM.
     expect(res!.months[0]!.bom).toBe(25000);
     expect(res!.months[0]!.otb).toBe(1000 + 0 + 20000 - 25000 - 0);
@@ -98,15 +98,15 @@ describe('computeOtb planned flags', () => {
     const [fff] = computeOtb({
       currentMonth: '2026-07',
       horizonMonths: 2,
-      plans: [{ month: '2026-07', key: 'FFF', planned_sales: 1000, planned_markdowns: 0, planned_eom: 0 }],
-      stockValue: { FFF: 500 },
+      plans: [{ month: '2026-07', key: 'Brand F', planned_sales: 1000, planned_markdowns: 0, planned_eom: 0 }],
+      stockValue: { 'Brand F': 500 },
       onOrderByMonth: {},
     });
     expect(fff!.months[0]!.planned).toBe(true);
     expect(fff!.months[1]!.planned).toBe(false);
     expect(fff!.has_plan).toBe(true);
 
-    const noPlan = computeOtb({ currentMonth: '2026-07', horizonMonths: 1, plans: [], stockValue: { LLL: 200 }, onOrderByMonth: {} })[0]!;
+    const noPlan = computeOtb({ currentMonth: '2026-07', horizonMonths: 1, plans: [], stockValue: { 'Brand L': 200 }, onOrderByMonth: {} })[0]!;
     expect(noPlan.has_plan).toBe(false);
     expect(noPlan.months[0]!.planned).toBe(false);
   });

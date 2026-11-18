@@ -11,6 +11,7 @@ const planRow = (
     cost?: number | null;
     reorder?: boolean;
     label?: string | null;
+    isActive?: boolean;
     hasAdSpend?: boolean;
     /** EOQ base before top-up (defaults to buy = no raise). */
     eoqBase?: number;
@@ -28,9 +29,9 @@ const planRow = (
 ): BuyPlanRowInput => ({
   sku,
   name: `${sku} name`,
-  status: 'active',
-  brand: o.brand ?? 'FFF',
-  stats: { unit_cost: o.cost === undefined ? 10 : o.cost, rrp: 30, qty: 0, class_1: 'Accessories' },
+  ...(o.isActive === undefined ? {} : { is_active: o.isActive }),
+  brand: o.brand ?? 'Brand F',
+  stats: { unit_cost: o.cost === undefined ? 10 : o.cost, rrp: 30, qty: 0, class_1: 'CAT_A' },
   derived: {
     stockout_risk: o.risk ?? 'High',
     reorder: o.reorder ?? true,
@@ -79,53 +80,99 @@ describe('buildBuyPlan', () => {
   it('orders most-urgent first and trims to brand budget headroom with visible skips', () => {
     const plan = buildBuyPlan({
       rows: [
-        planRow('FFF:B', { risk: 'High', buy: 20, cost: 10 }), // $200, second priority
-        planRow('FFF:A', { risk: 'STOCKOUT', buy: 10, cost: 10 }), // $100, first
-        planRow('LLL:C', { brand: 'LLL', risk: 'High', buy: 5, cost: 20 }), // no budget → unconstrained
+        planRow('SKU-2', { risk: 'High', buy: 20, cost: 10 }), // 200, second priority
+        planRow('SKU-1', { risk: 'STOCKOUT', buy: 10, cost: 10 }), // 100, first
+        planRow('SKU-3', { brand: 'Brand L', risk: 'High', buy: 5, cost: 20 }), // no budget: unconstrained
       ],
-      brandBudgets: { FFF: 1150 }, // stock value 1000 → headroom 150
-      brandStockValue: { FFF: 1000, LLL: 500 },
-      supplierBySku: new Map([['FFF:A', supplier('Brand F Supply')]]),
+      brandBudgets: { 'BRAND F': 1150 }, // stock value 1000: headroom 150
+      brandStockValue: { 'Brand F': 1000, 'Brand L': 500 },
+      supplierBySku: new Map([['SKU-1', supplier('Supplier 1')]]),
       budget_aware: true,
       handling_cost_per_line: 4,
     });
     expect(plan.lines.map((l) => `${l.sku}:${l.action}`)).toEqual([
-      'FFF:A:order', // $100 fits the $150 headroom
-      'FFF:B:skip', // $200 does not fit the remaining $50
-      'LLL:C:order', // brand without a budget passes through
+      'SKU-1:order', // 100 fits the 150 headroom
+      'SKU-2:skip', // 200 does not fit the remaining 50
+      'SKU-3:order', // brand without a budget passes through
     ]);
     const skipped = plan.lines[1]!;
     expect(skipped.reasons.some((r) => r.code === 'OTB_EXHAUSTED')).toBe(true);
     expect(plan.lines[0]!.supplier?.lead_time_p50_days).toBe(45);
     expect(plan.totals).toMatchObject({ order_count: 2, order_cost_total: 200, skipped_for_budget: 1, within_budget: false });
-    const fff = plan.budgets.find((b) => b.brand === 'FFF')!;
+    const fff = plan.budgets.find((b) => b.brand === 'Brand F')!;
     expect(fff).toMatchObject({ headroom_before: 150, committed: 100, headroom_after: 50 });
   });
 
-  it('lifts a STOCKED-OUT Hero above ordinary stockouts with a HERO_SKU reason', () => {
+  it('lifts a stocked-out row whose label maps to priority above ordinary stockouts, with a PRIORITY_STOCKOUT reason naming the label', () => {
     const plan = buildBuyPlan({
       rows: [
-        planRow('ORD:1', { risk: 'STOCKOUT', buy: 5, cost: 10 }), // ordinary stockout
-        planRow('HERO:1', { risk: 'STOCKOUT', buy: 5, cost: 10, label: 'Heroes' }), // hero
-        planRow('HI:1', { risk: 'High', buy: 5, cost: 10 }),
+        planRow('SKU-1', { risk: 'STOCKOUT', buy: 5, cost: 10 }), // ordinary stockout
+        planRow('SKU-2', { risk: 'STOCKOUT', buy: 5, cost: 10, label: 'LABEL_TOP' }), // priority
+        planRow('SKU-3', { risk: 'High', buy: 5, cost: 10 }),
       ],
       brandBudgets: {},
       brandStockValue: {},
       supplierBySku: new Map(),
       budget_aware: false,
       handling_cost_per_line: 4,
+      label_roles: { LABEL_TOP: 'priority' },
     });
-    // Hero sorts to the very top even though both are STOCKOUT tier.
-    expect(plan.lines[0]!.sku).toBe('HERO:1');
-    expect(plan.lines[0]!.is_hero).toBe(true);
-    expect(plan.lines[0]!.reasons[0]!.code).toBe('HERO_SKU');
-    // A non-hero stockout is not marked hero.
-    expect(plan.lines.find((l) => l.sku === 'ORD:1')!.is_hero).toBe(false);
+    // The priority row sorts to the very top even though both are STOCKOUT tier.
+    expect(plan.lines.map((l) => l.sku)).toEqual(['SKU-2', 'SKU-1', 'SKU-3']);
+    expect(plan.lines[0]!.is_priority).toBe(true);
+    expect(plan.lines[0]!.reasons[0]).toEqual({
+      code: 'PRIORITY_STOCKOUT',
+      detail: 'stocked out, labelled priority (LABEL_TOP) - buy first',
+    });
+    // An unlabelled stockout is not marked priority.
+    expect(plan.lines.find((l) => l.sku === 'SKU-1')!.is_priority).toBe(false);
+  });
+
+  it('prioritises nothing without label_roles: labelled rows keep the risk-then-quantity order', () => {
+    const args = {
+      brandBudgets: {},
+      brandStockValue: {},
+      supplierBySku: new Map<string, SupplierScore>(),
+      budget_aware: false,
+      handling_cost_per_line: 4,
+    };
+    const rows = (label: string | null) => [
+      planRow('SKU-1', { risk: 'STOCKOUT', buy: 9, cost: 10 }),
+      planRow('SKU-2', { risk: 'STOCKOUT', buy: 5, cost: 10, label }),
+      planRow('SKU-3', { risk: 'High', buy: 5, cost: 10 }),
+    ];
+    const unlabelled = buildBuyPlan({ ...args, rows: rows(null) });
+    const labelled = buildBuyPlan({ ...args, rows: rows('LABEL_TOP') });
+    for (const plan of [unlabelled, labelled]) {
+      expect(plan.lines.map((l) => l.sku)).toEqual(['SKU-1', 'SKU-2', 'SKU-3']);
+      expect(plan.lines.map((l) => l.is_priority)).toEqual([false, false, false]);
+      expect(plan.lines.flatMap((l) => l.reasons)).toEqual([]);
+    }
+    // The label is still carried on the line; it just drives nothing.
+    expect(labelled.lines[1]!.label).toBe('LABEL_TOP');
+  });
+
+  it('prioritises only the priority role: a run_down or unmapped label does not lead the plan', () => {
+    const plan = buildBuyPlan({
+      rows: [
+        planRow('SKU-1', { risk: 'STOCKOUT', buy: 9, cost: 10 }),
+        planRow('SKU-2', { risk: 'STOCKOUT', buy: 5, cost: 10, label: 'LABEL_RUNDOWN' }),
+        planRow('SKU-3', { risk: 'STOCKOUT', buy: 3, cost: 10, label: 'LABEL_OTHER' }),
+      ],
+      brandBudgets: {},
+      brandStockValue: {},
+      supplierBySku: new Map(),
+      budget_aware: false,
+      handling_cost_per_line: 4,
+      label_roles: { LABEL_TOP: 'priority', LABEL_RUNDOWN: 'run_down' },
+    });
+    expect(plan.lines.map((l) => l.sku)).toEqual(['SKU-1', 'SKU-2', 'SKU-3']);
+    expect(plan.lines.some((l) => l.is_priority)).toBe(false);
   });
 
   it('tags a stocked-out SKU still spending on ads with an AD_WASTE reason', () => {
     const plan = buildBuyPlan({
-      rows: [planRow('WASTE:1', { risk: 'STOCKOUT', buy: 5, cost: 10, hasAdSpend: true })],
+      rows: [planRow('SKU-1', { risk: 'STOCKOUT', buy: 5, cost: 10, hasAdSpend: true })],
       brandBudgets: {},
       brandStockValue: {},
       supplierBySku: new Map(),
@@ -135,24 +182,65 @@ describe('buildBuyPlan', () => {
     expect(plan.lines[0]!.reasons.some((r) => r.code === 'AD_WASTE')).toBe(true);
   });
 
-  it('does not mark a Hero that is NOT stocked out (only stocked-out Heroes lead)', () => {
+  it('does not mark a priority-labelled row that is NOT stocked out', () => {
     const plan = buildBuyPlan({
-      rows: [planRow('HERO:2', { risk: 'High', buy: 5, cost: 10, label: 'Heroes' })],
+      rows: [planRow('SKU-1', { risk: 'High', buy: 5, cost: 10, label: 'LABEL_TOP' })],
+      brandBudgets: {},
+      brandStockValue: {},
+      supplierBySku: new Map(),
+      budget_aware: false,
+      handling_cost_per_line: 4,
+      label_roles: { LABEL_TOP: 'priority' },
+    });
+    expect(plan.lines[0]!.is_priority).toBe(false);
+    expect(plan.lines[0]!.reasons.some((r) => r.code === 'PRIORITY_STOCKOUT')).toBe(false);
+  });
+
+  it('leaves a row with no brand unconstrained: it matches no brand budget', () => {
+    const plan = buildBuyPlan({
+      rows: [
+        planRow('SKU-1', { brand: '', buy: 10, cost: 10 }), // 100, no brand
+        planRow('SKU-2', { brand: 'Brand F', buy: 5, cost: 10 }), // 50, over its 10 headroom
+      ],
+      // An entry stored under an empty key must not be read as the no-brand budget.
+      brandBudgets: { '': 1, 'BRAND F': 10 },
+      brandStockValue: {},
+      supplierBySku: new Map(),
+      budget_aware: true,
+      handling_cost_per_line: 4,
+    });
+    const actions = Object.fromEntries(plan.lines.map((l) => [l.sku, l.action]));
+    expect(actions).toEqual({ 'SKU-1': 'order', 'SKU-2': 'skip' });
+    expect(plan.budgets.find((b) => b.brand === '')).toMatchObject({
+      budget: null,
+      headroom_before: null,
+      committed: 100,
+      headroom_after: null,
+    });
+    expect(plan.totals).toMatchObject({ order_count: 1, order_cost_total: 100, skipped_for_budget: 1 });
+  });
+
+  it('drops a row marked is_active false and keeps one that does not say', () => {
+    const plan = buildBuyPlan({
+      rows: [
+        planRow('SKU-1', { buy: 5 }), // is_active absent: active
+        planRow('SKU-2', { buy: 5, isActive: false }),
+        planRow('SKU-3', { buy: 5, isActive: true }),
+      ],
       brandBudgets: {},
       brandStockValue: {},
       supplierBySku: new Map(),
       budget_aware: false,
       handling_cost_per_line: 4,
     });
-    expect(plan.lines[0]!.is_hero).toBe(false);
-    expect(plan.lines[0]!.reasons.some((r) => r.code === 'HERO_SKU')).toBe(false);
+    expect(plan.lines.map((l) => l.sku)).toEqual(['SKU-1', 'SKU-3']);
   });
 
   it('marks inbound-covered stockouts expedite and uncosted lines review', () => {
     const plan = buildBuyPlan({
       rows: [
-        planRow('EXP:1', { risk: 'STOCKOUT', buy: 0 }),
-        planRow('UNC:1', { buy: 5, cost: null }),
+        planRow('SKU-1', { risk: 'STOCKOUT', buy: 0 }),
+        planRow('SKU-2', { buy: 5, cost: null }),
       ],
       brandBudgets: {},
       brandStockValue: {},
@@ -161,9 +249,9 @@ describe('buildBuyPlan', () => {
       handling_cost_per_line: 4,
     });
     const actions = Object.fromEntries(plan.lines.map((l) => [l.sku, l.action]));
-    expect(actions['EXP:1']).toBe('expedite');
-    expect(actions['UNC:1']).toBe('review');
-    expect(plan.lines.find((l) => l.sku === 'UNC:1')!.reasons.some((r) => r.code === 'UNCOSTED')).toBe(true);
+    expect(actions['SKU-1']).toBe('expedite');
+    expect(actions['SKU-2']).toBe('review');
+    expect(plan.lines.find((l) => l.sku === 'SKU-2')!.reasons.some((r) => r.code === 'UNCOSTED')).toBe(true);
     expect(plan.totals.uncosted_lines).toBe(1);
   });
 });
@@ -172,8 +260,8 @@ describe('buildBuyPlan consolidation summary', () => {
   it('folds the EOQ raises into a plan-wide consolidation summary (only ordered lines)', () => {
     const plan = buildBuyPlan({
       rows: [
-        // Raised 1 -> 15, D=60/yr, $8. Ordered.
-        planRow('ACC:1', {
+        // Raised 1 -> 15, D=60/yr, unit cost 8. Ordered.
+        planRow('SKU-1', {
           risk: 'High',
           buy: 15,
           cost: 8,
@@ -182,10 +270,10 @@ describe('buildBuyPlan consolidation summary', () => {
           eoqAnnualDemand: 60,
         }),
         // Not raised (base == qty): contributes nothing.
-        planRow('ACC:2', { risk: 'High', buy: 5, cost: 10, eoqBase: 5, eoqApplied: false, eoqAnnualDemand: 100 }),
-        // Raised 2 -> 8, D=48/yr, $12. Skipped for budget on brand BUD: excluded from summary.
-        planRow('BUD:1', {
-          brand: 'BUD',
+        planRow('SKU-2', { risk: 'High', buy: 5, cost: 10, eoqBase: 5, eoqApplied: false, eoqAnnualDemand: 100 }),
+        // Raised 2 -> 8, D=48/yr, unit cost 12. Skipped for budget on Brand U: excluded from summary.
+        planRow('SKU-3', {
+          brand: 'Brand U',
           risk: 'High',
           buy: 8,
           cost: 12,
@@ -194,22 +282,39 @@ describe('buildBuyPlan consolidation summary', () => {
           eoqAnnualDemand: 48,
         }),
       ],
-      brandBudgets: { BUD: 500 }, // stock value 500 -> headroom 0, so BUD:1 skips
-      brandStockValue: { BUD: 500 },
+      brandBudgets: { 'BRAND U': 500 }, // stock value 500 -> headroom 0, so SKU-3 skips
+      brandStockValue: { 'Brand U': 500 },
       supplierBySku: new Map(),
       budget_aware: true,
       handling_cost_per_line: 4,
     });
     const c = plan.totals.consolidation;
-    // Only ACC:1 was ordered AND raised.
+    // Only SKU-1 was ordered AND raised.
     expect(c.lines_raised).toBe(1);
     expect(c.extra_units).toBe(14); // 15 - 1
-    expect(c.extra_unit_cost).toBe(112); // 14 * $8
+    expect(c.extra_unit_cost).toBe(112); // 14 * 8
     // trips_before = 60/1 = 60; trips_after = 60/15 = 4; avoided = 56.
     expect(c.trips_avoided_per_year).toBe(56);
-    expect(c.labour_saving_per_year).toBe(224); // 56 * $4
+    expect(c.labour_saving_per_year).toBe(224); // 56 * 4
     expect(c.handling_cost_per_line).toBe(4);
     expect(c.methodology).toMatch(/economic order quantity/i);
+  });
+
+  it('claims no labour saving when no handling cost is supplied, and still counts the raise', () => {
+    const plan = buildBuyPlan({
+      rows: [planRow('SKU-1', { risk: 'High', buy: 15, cost: 8, eoqBase: 1, eoqApplied: true, eoqAnnualDemand: 60 })],
+      brandBudgets: {},
+      brandStockValue: {},
+      supplierBySku: new Map(),
+      budget_aware: false,
+    });
+    expect(plan.totals.consolidation).toMatchObject({
+      lines_raised: 1,
+      extra_units: 14,
+      trips_avoided_per_year: 56,
+      labour_saving_per_year: 0,
+      handling_cost_per_line: 0,
+    });
   });
 
   it('summariseConsolidation is zero when nothing was raised', () => {
@@ -233,10 +338,10 @@ describe('buildBuyPlan consolidation summary', () => {
     );
     expect(c.lines_raised).toBe(1);
     expect(c.extra_units).toBe(9);
-    expect(c.extra_unit_cost).toBe(0); // no unit cost, no dollar figure
+    expect(c.extra_unit_cost).toBe(0); // no unit cost, no cost figure
     // trips_before = 100/1 = 100; trips_after = 100/10 = 10; avoided = 90.
     expect(c.trips_avoided_per_year).toBe(90);
-    expect(c.labour_saving_per_year).toBe(450); // 90 * $5
+    expect(c.labour_saving_per_year).toBe(450); // 90 * 5
   });
 });
 
@@ -244,8 +349,8 @@ describe('buildBuyPlan pack-rounding consolidation split', () => {
   it('counts pack roundings separately from EOQ raises, with the EOQ trips math on pre-pack figures', () => {
     const plan = buildBuyPlan({
       rows: [
-        // EOQ raised 1 -> 15, THEN a pack of 10 rounded 15 -> 20. $8, D=60/yr.
-        planRow('BOTH:1', {
+        // EOQ raised 1 -> 15, THEN a pack of 10 rounded 15 -> 20. Unit cost 8, D=60/yr.
+        planRow('SKU-1', {
           risk: 'High',
           buy: 20,
           cost: 8,
@@ -256,8 +361,8 @@ describe('buildBuyPlan pack-rounding consolidation split', () => {
           packQty: 10,
           packApplied: true,
         }),
-        // Pack-only: no EOQ raise, base 7 rounded to one pack of 10. $10.
-        planRow('PACK:1', {
+        // Pack-only: no EOQ raise, base 7 rounded to one pack of 10. Unit cost 10.
+        planRow('SKU-2', {
           risk: 'High',
           buy: 10,
           cost: 10,
@@ -268,7 +373,7 @@ describe('buildBuyPlan pack-rounding consolidation split', () => {
           packApplied: true,
         }),
         // Neither raised nor packed: contributes nothing.
-        planRow('PLAIN:1', { risk: 'High', buy: 5, cost: 10 }),
+        planRow('SKU-3', { risk: 'High', buy: 5, cost: 10 }),
       ],
       brandBudgets: {},
       brandStockValue: {},
@@ -277,28 +382,28 @@ describe('buildBuyPlan pack-rounding consolidation split', () => {
       handling_cost_per_line: 4,
     });
     const c = plan.totals.consolidation;
-    // EOQ side: only BOTH:1, measured base -> PRE-pack figure (1 -> 15).
+    // EOQ side: only SKU-1, measured base -> PRE-pack figure (1 -> 15).
     expect(c.lines_raised).toBe(1);
     expect(c.extra_units).toBe(14);
-    expect(c.extra_unit_cost).toBe(112); // 14 x $8
+    expect(c.extra_unit_cost).toBe(112); // 14 x 8
     // trips_before = 60/1 = 60; trips_after uses the PRE-pack 15 (60/15 = 4),
     // so pack rounding never inflates the EOQ labour claim.
     expect(c.trips_avoided_per_year).toBe(56);
     expect(c.labour_saving_per_year).toBe(224);
-    // Pack side: BOTH:1 adds 5 units ($40), PACK:1 adds 3 units ($30).
+    // Pack side: SKU-1 adds 5 units (cost 40), SKU-2 adds 3 units (cost 30).
     expect(c.packs_applied).toBe(2);
     expect(c.pack_extra_units).toBe(8);
     expect(c.pack_extra_unit_cost).toBe(70);
     // The line surface carries the pack fields, and costs use the FINAL qty.
-    const both = plan.lines.find((l) => l.sku === 'BOTH:1')!;
+    const both = plan.lines.find((l) => l.sku === 'SKU-1')!;
     expect(both).toMatchObject({ suggested_qty: 20, pre_pack_qty: 15, pack_qty: 10, pack_applied: true });
-    expect(both.order_cost).toBe(160); // 20 x $8 - budget/costs consume the packed qty
+    expect(both.order_cost).toBe(160); // 20 x 8 - budget/costs consume the packed qty
     expect(c.methodology).toMatch(/pack/i);
   });
 
   it('counts min lifts separately from EOQ raises and pack roundings', () => {
-    // MIN:1 - EOQ 4 (base 4, no raise), min 10 lifts to 10, no pack. $10.
-    // BOTH:2 - EOQ raised 1 -> 8, min 10 lifts 8 -> 10, pack 4 rounds 10 -> 12. $5.
+    // Row 1 - EOQ 4 (base 4, no raise), min 10 lifts to 10, no pack. Unit cost 10.
+    // Row 2 - EOQ raised 1 -> 8, min 10 lifts 8 -> 10, pack 4 rounds 10 -> 12. Unit cost 5.
     const c = summariseConsolidation(
       [
         {
@@ -326,14 +431,14 @@ describe('buildBuyPlan pack-rounding consolidation split', () => {
       ],
       4,
     );
-    // EOQ side: only BOTH:2 (1 -> 8).
+    // EOQ side: only row 2 (1 -> 8).
     expect(c.lines_raised).toBe(1);
     expect(c.extra_units).toBe(7);
-    // Min side: MIN:1 adds 6 ($60), BOTH:2 adds 2 ($10) -> 8 units, $70.
+    // Min side: row 1 adds 6 (cost 60), row 2 adds 2 (cost 10) -> 8 units, cost 70.
     expect(c.mins_applied).toBe(2);
     expect(c.min_extra_units).toBe(8);
     expect(c.min_extra_unit_cost).toBe(70);
-    // Pack side: only BOTH:2 (10 -> 12) adds 2 units ($10).
+    // Pack side: only row 2 (10 -> 12) adds 2 units (cost 10).
     expect(c.packs_applied).toBe(1);
     expect(c.pack_extra_units).toBe(2);
     expect(c.pack_extra_unit_cost).toBe(10);
@@ -345,7 +450,7 @@ describe('simulateBuy', () => {
   it('re-derives risk per line, totals the cash, and names unknown SKUs', () => {
     const bySku = new Map([
       [
-        'FFF:A',
+        'SKU-1',
         {
           stats: { unit_cost: 10, qty: 0 },
           derived: {
@@ -362,9 +467,9 @@ describe('simulateBuy', () => {
         },
       ],
     ]);
-    const sim = simulateBuy({ lines: [{ sku: 'FFF:A', qty: 30 }, { sku: 'NOPE', qty: 1 }], bySku });
-    expect(sim.unknown_skus).toEqual(['NOPE']);
-    expect(sim.lines[0]).toMatchObject({ sku: 'FFF:A', risk_before: 'STOCKOUT', risk_after: 'Low', order_cost: 300 });
+    const sim = simulateBuy({ lines: [{ sku: 'SKU-1', qty: 30 }, { sku: 'SKU-9', qty: 1 }], bySku });
+    expect(sim.unknown_skus).toEqual(['SKU-9']);
+    expect(sim.lines[0]).toMatchObject({ sku: 'SKU-1', risk_before: 'STOCKOUT', risk_after: 'Low', order_cost: 300 });
     expect(sim.totals.order_cost_total).toBe(300);
   });
 });

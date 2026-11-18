@@ -9,6 +9,8 @@ import {
   runRate3m,
   runRateIndex,
   blendNaiveIndex,
+  meanRateIndex,
+  combo,
   FLAT_INDEX,
   type MonthlyPoint,
 } from '../src/forecast';
@@ -40,7 +42,7 @@ describe('buildSeries', () => {
   it('gap-fills missing months with zero and excludes the current month', () => {
     const rows: MonthlyPoint[] = [
       { sku: 'A', month: '2026-01', units_sold: 5 },
-      // 2026-02 missing (activity-filtered upstream) -> must become 0
+      // 2026-02 missing from the input -> must become 0
       { sku: 'A', month: '2026-03', units_sold: 3 },
       { sku: 'A', month: '2026-07', units_sold: 99 }, // current month -> dropped
     ];
@@ -252,7 +254,7 @@ describe('backtest cells', () => {
 import { seriesFromMonthMap, runLiveForecast, FALLBACK_FORECASTER } from '../src/forecast';
 
 describe('seriesFromMonthMap', () => {
-  it('rebuilds a gap-filled closed-month series from scratch JSON', () => {
+  it('rebuilds a gap-filled closed-month series from a month map', () => {
     const s = seriesFromMonthMap('A', 'CLASS_X', { '2026-01': 5, '2026-03': 3, '2026-07': 99 }, '2026-07')!;
     expect(s.startMonth).toBe('2026-01');
     expect(s.units).toEqual([5, 0, 3, 0, 0, 0]); // Jan..Jun; Jul (current) dropped
@@ -275,9 +277,9 @@ describe('runLiveForecast', () => {
     for (const c of live.cells) {
       // Demotion invariant: a demoted cell's in-force winner IS seasonal_naive.
       if (c.demoted) expect(c.winner).toBe('seasonal_naive');
-      // In-force winner never scores worse than the feed baseline on this run.
-      if (c.wape_pct != null && c.feed_wape_pct != null && !c.demoted) {
-        expect(c.wape_pct).toBeLessThanOrEqual(c.feed_wape_pct);
+      // In-force winner never scores worse than the baseline (seasonal_naive) on this run.
+      if (c.wape_pct != null && c.baseline_wape_pct != null && !c.demoted) {
+        expect(c.wape_pct).toBeLessThanOrEqual(c.baseline_wape_pct);
       }
     }
   });
@@ -291,5 +293,187 @@ describe('runLiveForecast', () => {
     const live = runLiveForecast([scored, short], bt, '2026-07', 12);
     const sf = live.forecasts.find((f) => f.sku === 'S')!;
     expect(sf.method).toBe(FALLBACK_FORECASTER.key);
+  });
+});
+
+// ── Backtest options: winner epsilon, minimum training months ────────────
+
+const flat = (key: string, value: number): typeof seasonalNaive => ({
+  key,
+  forecast: (_u, _s, h) => new Array(h).fill(value),
+});
+
+describe('rollingBacktest options', () => {
+  it('gives a near-tie to the earlier entry by default, and to the lower WAPE when winner_epsilon_pts is smaller', () => {
+    // Actuals are 10 every month: flat 11 scores 10% WAPE, flat 10.97 scores 9.7%.
+    const series = [{ sku: 'T', class_1: 'CLASS_X', startMonth: '2025-01', units: new Array(14).fill(10) }];
+    const roster = [flat('flat_11', 11), flat('flat_10_97', 10.97)];
+    const byDefault = rollingBacktest(series, roster, new Map(), { holdout: 3, horizons: 1 });
+    expect(byDefault.classes[0]!.scores.map((s) => s.wape_pct)).toEqual([10, 9.7]);
+    // 0.3 points apart is inside the default 0.5: the earlier entry keeps it.
+    expect(byDefault.classes[0]!.winner).toBe('flat_11');
+    // 0.3 points apart is outside 0.2: the lower WAPE wins.
+    const tight = rollingBacktest(series, roster, new Map(), { holdout: 3, horizons: 1, winner_epsilon_pts: 0.2 });
+    expect(tight.classes[0]!.winner).toBe('flat_10_97');
+  });
+
+  it('reports vs_baseline_pts against seasonal_naive, and a winner inside the epsilon that is worse than the baseline is demoted', () => {
+    // A year at 20 then three months at 10: seasonal_naive repeats 20 (WAPE 100%),
+    // a flat 20.03 scores 100.3%.
+    const units = [...new Array(12).fill(20), 10, 10, 10];
+    const series = [{ sku: 'D', class_1: 'CLASS_X', startMonth: '2025-01', units }];
+    const roster = [flat('flat_20_03', 20.03), seasonalNaive];
+
+    const byDefault = rollingBacktest(series, roster, new Map(), { holdout: 3, horizons: 1 });
+    expect(byDefault.classes[0]!.winner).toBe('flat_20_03');
+    expect(byDefault.classes[0]!.vs_baseline_pts).toBe(0.3);
+    const live = runLiveForecast(series, byDefault, '2026-04', 1);
+    expect(live.cells[0]).toMatchObject({
+      raw_winner: 'flat_20_03',
+      winner: 'seasonal_naive',
+      demoted: true,
+      wape_pct: 100.3,
+      baseline_wape_pct: 100,
+      vs_baseline_pts: 0.3,
+    });
+    expect(live.forecasts).toEqual([{ sku: 'D', forecast: [20], method: 'seasonal_naive' }]);
+
+    const exact = rollingBacktest(series, roster, new Map(), { holdout: 3, horizons: 1, winner_epsilon_pts: 0 });
+    expect(exact.classes[0]!.winner).toBe('seasonal_naive');
+    expect(exact.classes[0]!.vs_baseline_pts).toBe(0);
+    expect(runLiveForecast(series, exact, '2026-04', 1).cells[0]).toMatchObject({
+      raw_winner: 'seasonal_naive',
+      winner: 'seasonal_naive',
+      demoted: false,
+    });
+  });
+
+  it('scores a winner better than the baseline with a negative vs_baseline_pts', () => {
+    const units = [...new Array(12).fill(20), 10, 10, 10];
+    const series = [{ sku: 'D', class_1: 'CLASS_X', startMonth: '2025-01', units }];
+    // flat 11 against actual 10 is 10% WAPE; seasonal_naive is 100%.
+    const bt = rollingBacktest(series, [seasonalNaive, flat('flat_11', 11)], new Map(), { holdout: 3, horizons: 1 });
+    expect(bt.classes[0]!.winner).toBe('flat_11');
+    expect(bt.classes[0]!.vs_baseline_pts).toBe(-90);
+    expect(runLiveForecast(series, bt, '2026-04', 1).cells[0]).toMatchObject({
+      winner: 'flat_11',
+      demoted: false,
+      wape_pct: 10,
+      baseline_wape_pct: 100,
+      vs_baseline_pts: -90,
+    });
+  });
+
+  it('skips a 5-month series at the default 6 training months and scores it when min_train_months is 3', () => {
+    const series = [{ sku: 'S', class_1: 'CLASS_X', startMonth: '2026-01', units: [1, 2, 3, 4, 5] }];
+    const byDefault = rollingBacktest(series, [runRate3m], new Map(), { holdout: 2, horizons: 1 });
+    expect(byDefault.scored_skus).toBe(0);
+    expect(byDefault.skipped_skus).toBe(1);
+    expect(byDefault.classes).toEqual([]);
+
+    const short = rollingBacktest(series, [runRate3m], new Map(), { holdout: 2, horizons: 1, min_train_months: 3 });
+    expect(short.scored_skus).toBe(1);
+    expect(short.skipped_skus).toBe(0);
+    expect(short.classes).toHaveLength(1);
+    // Origins at months 4 and 5: forecasts 2 and 3 against actuals 4 and 5.
+    expect(short.overall[0]!.points).toBe(2);
+    expect(short.overall[0]!.abs_err).toBe(4);
+  });
+
+  it('hands params to the forecasters it scores', () => {
+    // Trained on [3,3,3,6,6,6], ADIDA forecasts 3.6 at alpha 0.2 and 4.5 at 0.5; the actual is 6.
+    const series = [{ sku: 'P', class_1: 'CLASS_X', startMonth: '2025-01', units: [3, 3, 3, 6, 6, 6, 6] }];
+    const byDefault = rollingBacktest(series, [adida], new Map(), { holdout: 1, horizons: 1 });
+    expect(byDefault.overall[0]!.wape_pct).toBe(40);
+    const tuned = rollingBacktest(series, [adida], new Map(), {
+      holdout: 1,
+      horizons: 1,
+      params: { adida_alpha: 0.5 },
+    });
+    expect(tuned.overall[0]!.wape_pct).toBe(25);
+  });
+});
+
+// ── ForecastParams: each field moves a forecast ──────────────────────────
+
+describe('ForecastParams', () => {
+  const ctx = { seasonalIndex: FLAT_INDEX, firstTargetCalMonth: 0 };
+
+  it('index_damping_k sets how far a thin class index is shrunk toward 1', () => {
+    // One SKU, one year, mean 12: raw January index 23/12, one observation per month.
+    const series = [{ sku: 'A', class_1: 'CLASS_X', startMonth: '2025-01', units: [23, ...new Array(11).fill(11)] }];
+    const byDefault = classSeasonalIndices(series).get('CLASS_X')!;
+    // Weight 1/(1+12): January keeps 1/13 of its raw swing.
+    expect(byDefault[0]!).toBeCloseTo(1 + 11 / 156, 6);
+    expect(byDefault[1]!).toBeCloseTo(1 - 1 / 156, 6);
+    const undamped = classSeasonalIndices(series, { index_damping_k: 0 }).get('CLASS_X')!;
+    expect(undamped[0]!).toBeCloseTo(23 / 12, 6);
+    expect(undamped[1]!).toBeCloseTo(11 / 12, 6);
+  });
+
+  it('index_floor decides whether a small seasonal index is divided out', () => {
+    const idx = FLAT_INDEX.slice();
+    idx[0] = 0.04; // January
+    const c = { seasonalIndex: idx, firstTargetCalMonth: 1 };
+    // 0.04 is under the default floor 0.05: treated as 1, level stays 2.
+    expect(runRateIndex.forecast([2], 0, 1, c)[0]).toBeCloseTo(2, 6);
+    expect(meanRateIndex.forecast([2], 0, 1, c)[0]).toBeCloseTo(2, 6);
+    // With the floor at 0.01 the index is used: level 2 / 0.04 = 50.
+    expect(runRateIndex.forecast([2], 0, 1, c, { index_floor: 0.01 })[0]).toBeCloseTo(50, 6);
+    expect(meanRateIndex.forecast([2], 0, 1, c, { index_floor: 0.01 })[0]).toBeCloseTo(50, 6);
+  });
+
+  it('sba_alpha and sba_beta move the SBA rate', () => {
+    // [4, 8]: interval stays 1, size = 4 + alpha * 4, rate = (1 - beta / 2) * size.
+    expect(sba.forecast([4, 8], 0, 1, ctx)[0]).toBeCloseTo(4.255, 6);
+    expect(sba.forecast([4, 8], 0, 1, ctx, { sba_alpha: 0.5 })[0]).toBeCloseTo(5.55, 6);
+    expect(sba.forecast([4, 8], 0, 1, ctx, { sba_beta: 0.4 })[0]).toBeCloseTo(3.68, 6);
+  });
+
+  it('tsb_alpha and tsb_beta move the TSB rate', () => {
+    // [4, 0, 8]: probability = 1 - beta + beta^2, size = 4 + alpha * 4.
+    expect(tsb.forecast([4, 0, 8], 0, 1, ctx)[0]).toBeCloseTo(4.3815, 6);
+    expect(tsb.forecast([4, 0, 8], 0, 1, ctx, { tsb_beta: 0.5 })[0]).toBeCloseTo(3.45, 6);
+    expect(tsb.forecast([4, 0, 8], 0, 1, ctx, { tsb_alpha: 0.5 })[0]).toBeCloseTo(5.715, 6);
+  });
+
+  it('damped_alpha, damped_beta and damped_phi move the damped-trend forecast', () => {
+    // [10, 20], one step ahead: 10 + 10 * alpha + phi * 10 * alpha * beta.
+    expect(dampedTrendIndex.forecast([10, 20], 0, 1, ctx)[0]).toBeCloseTo(12.09, 6);
+    expect(dampedTrendIndex.forecast([10, 20], 0, 1, ctx, { damped_alpha: 0.5 })[0]).toBeCloseTo(15.225, 6);
+    expect(dampedTrendIndex.forecast([10, 20], 0, 1, ctx, { damped_beta: 0.5 })[0]).toBeCloseTo(12.9, 6);
+    expect(dampedTrendIndex.forecast([10, 20], 0, 1, ctx, { damped_phi: 0.5 })[0]).toBeCloseTo(12.05, 6);
+  });
+
+  it('adida_alpha moves the ADIDA quarterly level', () => {
+    // Quarters 9 then 18: level = 9 + alpha * 9, monthly rate = level / 3.
+    expect(adida.forecast([3, 3, 3, 6, 6, 6], 0, 1, ctx)[0]).toBeCloseTo(3.6, 6);
+    expect(adida.forecast([3, 3, 3, 6, 6, 6], 0, 1, ctx, { adida_alpha: 0.5 })[0]).toBeCloseTo(4.5, 6);
+  });
+
+  it('combo passes params to each of its four methods', () => {
+    const units = [3, 3, 3, 6, 6, 6];
+    const params = { adida_alpha: 0.5, sba_alpha: 0.5 };
+    const parts = [sba, tsb, dampedTrendIndex, adida].map((f) => f.forecast(units, 0, 1, ctx, params)[0]!);
+    const tuned = combo.forecast(units, 0, 1, ctx, params)[0]!;
+    expect(tuned).toBeCloseTo(parts.reduce((a, b) => a + b, 0) / 4, 6);
+    // Both raised constants lift their method on a rising series.
+    expect(tuned).toBeGreaterThan(combo.forecast(units, 0, 1, ctx)[0]!);
+  });
+
+  it('runLiveForecast forecasts with the params it is given', () => {
+    // A year at 10 then a year at 30: every calendar month averages 20, so the
+    // class index is flat and the forecast is the ADIDA level alone.
+    const units = [...new Array(12).fill(10), ...new Array(12).fill(30)];
+    const series = [{ sku: 'G', class_1: 'CLASS_X', startMonth: '2024-01', units }];
+    const bt = rollingBacktest(series, [adida], new Map(), { holdout: 6, horizons: 1 });
+    // Quarters 30 x4 then 90 x4: level 90 - 60 * 0.8^4 = 65.424 at alpha 0.2.
+    expect(runLiveForecast(series, bt, '2026-01', 1).forecasts).toEqual([
+      { sku: 'G', forecast: [21.81], method: 'adida' },
+    ]);
+    // At alpha 1 the level is the last quarter, 90.
+    expect(runLiveForecast(series, bt, '2026-01', 1, { adida_alpha: 1 }).forecasts).toEqual([
+      { sku: 'G', forecast: [30], method: 'adida' },
+    ]);
   });
 });

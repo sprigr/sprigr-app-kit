@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { scorePo, rollupSuppliers, type PurchaseOrderRow, type PoScored } from '../src/po-scoring';
+import {
+  scorePo,
+  rollupSuppliers,
+  DEFAULT_PO_SCORING_THRESHOLDS,
+  type PurchaseOrderRow,
+  type PoScored,
+} from '../src/po-scoring';
 
 /** A zero-filled PO row; override only the fields a case cares about. */
 const po = (o: Partial<PurchaseOrderRow> & { po_number: string; supplier: string }): PurchaseOrderRow => ({
@@ -147,7 +153,7 @@ describe('scorePo', () => {
  * stock, so a fresh delivery read D / red / markdown.
  */
 describe('scorePo: too early to judge', () => {
-  // Worked example: 98 in stock, 2 sold, $4,900 landed.
+  // Worked example: 98 in stock, 2 sold, 4,900 landed cost.
   const fresh = (days: number | null) =>
     po({
       po_number: 'PO-NEW', supplier: 'Brand P & Q',
@@ -330,7 +336,7 @@ describe('agedValueBuckets', () => {
       scorePo(po({ po_number: 'P2', supplier: 'S', units_total: 10, units_in_stock: 10, unsold_over_90d: 0, unsold_over_180d: 0 })), // uncosted
     ];
     const b = agedValueBuckets(rows);
-    // P1 per-unit cost $10: fresh 25 * 10 = 250, mid 10 * 10 = 100, old 5 * 10 = 50.
+    // P1 per-unit cost 10: fresh 25 * 10 = 250, mid 10 * 10 = 100, old 5 * 10 = 50.
     expect(b.fresh_value).toBe(250);
     expect(b.aged_91_180_value).toBe(100);
     expect(b.aged_over_180_value).toBe(50);
@@ -345,5 +351,191 @@ describe('agedValueBuckets', () => {
     ]);
     expect(b.aged_over_180_units).toBe(3);
     expect(b.pct_value_aged_90d).toBeNull();
+  });
+});
+
+// ── caller-supplied thresholds ──────────────────────────────────────────────
+
+describe('PoScoringThresholds', () => {
+  const reasonOf = (r: PoScored, code: string) => r.reasons.find((x) => x.code === code);
+
+  // st 91.67%, margin per landed 0.88, 4 left in stock: A / reorder by default.
+  const strong = po({
+    po_number: 'PO-A', supplier: 'Supplier 1',
+    units_total: 50, units_in_stock: 4, units_sold: 44, units_cancelled: 2,
+    total_cost: 5000, sold_cost: 4400, sold_revenue: 8800,
+  });
+  // st 63.16%, margin per landed 0.30: C by default (under the 0.35 B bar).
+  const nearB = po({
+    po_number: 'PO-B', supplier: 'Supplier 1',
+    units_total: 40, units_in_stock: 14, units_sold: 24, units_cancelled: 2,
+    total_cost: 6000, sold_cost: 3600, sold_revenue: 5400,
+  });
+  // st 63.16%, margin per landed 0.42: B by default.
+  const solid = po({
+    po_number: 'PO-B2', supplier: 'Supplier 1',
+    units_total: 40, units_in_stock: 14, units_sold: 24, units_cancelled: 2,
+    total_cost: 4800, sold_cost: 3000, sold_revenue: 5000,
+  });
+  // st 86.21%, margin per landed 0.06: D by default, on margin alone.
+  const thin = po({
+    po_number: 'PO-THIN', supplier: 'Supplier 1',
+    units_total: 60, units_in_stock: 8, units_sold: 50, units_cancelled: 2,
+    total_cost: 9000, sold_cost: 7500, sold_revenue: 8000,
+  });
+  // st 35%, margin per landed 0.60, nothing aged: D / markdown by default, on sell-through alone.
+  const slow = po({
+    po_number: 'PO-SLOW', supplier: 'Supplier 1',
+    units_total: 20, units_in_stock: 13, units_sold: 7,
+    total_cost: 1000, sold_cost: 300, sold_revenue: 900,
+  });
+  // st 50%, margin per landed 0.40, 2 of 10 in stock aged (20%): C / markdown by default.
+  const ageing = po({
+    po_number: 'PO-AGE', supplier: 'Supplier 1',
+    units_total: 20, units_in_stock: 10, units_sold: 10,
+    total_cost: 1000, sold_cost: 500, sold_revenue: 900,
+    unsold_over_90d: 2,
+  });
+  // 98 in stock, 2 sold: D / markdown once it is old enough to judge.
+  const landed = (days: number) =>
+    po({
+      po_number: 'PO-NEW', supplier: 'Supplier 1',
+      units_total: 100, units_in_stock: 98, units_sold: 2,
+      total_cost: 4900, sold_cost: 100, sold_revenue: 120,
+      oldest_unsold_days: days,
+    });
+
+  it('passing the defaults explicitly, or an empty object, scores the same as passing nothing', () => {
+    for (const row of [strong, nearB, solid, thin, slow, ageing, landed(6), landed(90)]) {
+      expect(scorePo(row, DEFAULT_PO_SCORING_THRESHOLDS)).toEqual(scorePo(row));
+      expect(scorePo(row, {})).toEqual(scorePo(row));
+    }
+  });
+
+  it('low_sell_through_pct moves the D / markdown line and the number in the reason text', () => {
+    const byDefault = scorePo(slow);
+    expect(byDefault.grade).toBe('D');
+    expect(byDefault.signal).toBe('markdown');
+    expect(reasonOf(byDefault, 'SELL_THROUGH_LOW')?.detail).toBe('sell-through 35% < 40%');
+
+    const lower = scorePo(slow, { low_sell_through_pct: 30 });
+    expect(lower.grade).toBe('C');
+    expect(lower.rag).toBe('amber');
+    expect(lower.signal).toBe('watch');
+    expect(reasonOf(lower, 'SELL_THROUGH_LOW')).toBeUndefined();
+
+    const tighter = scorePo(slow, { low_sell_through_pct: 36 });
+    expect(tighter.grade).toBe('D');
+    expect(reasonOf(tighter, 'SELL_THROUGH_LOW')?.detail).toBe('sell-through 35% < 36%');
+  });
+
+  it('low_margin_per_landed moves the D line, and the reason text carries no currency symbol', () => {
+    const byDefault = scorePo(thin);
+    expect(byDefault.grade).toBe('D');
+    expect(reasonOf(byDefault, 'MARGIN_PER_DOLLAR_LOW')?.detail).toBe('margin 0.06 per 1.00 landed < 0.20');
+
+    const lower = scorePo(thin, { low_margin_per_landed: 0.05 });
+    expect(lower.grade).toBe('C');
+    expect(lower.rag).toBe('amber');
+    expect(reasonOf(lower, 'MARGIN_PER_DOLLAR_LOW')).toBeUndefined();
+
+    const tighter = scorePo(thin, { low_margin_per_landed: 0.1 });
+    expect(tighter.grade).toBe('D');
+    expect(reasonOf(tighter, 'MARGIN_PER_DOLLAR_LOW')?.detail).toBe('margin 0.06 per 1.00 landed < 0.10');
+  });
+
+  it('strong_sell_through_pct raises the A and reorder bar', () => {
+    const r = scorePo(strong, { strong_sell_through_pct: 95 });
+    expect(r.grade).toBe('B');
+    expect(r.rag).toBe('green');
+    expect(r.signal).toBe('watch');
+    expect(reasonOf(r, 'SELL_THROUGH_STRONG')).toBeUndefined();
+    expect(reasonOf(scorePo(strong), 'SELL_THROUGH_STRONG')?.detail).toBe('sell-through 92% of received');
+  });
+
+  it('strong_margin_per_landed raises the A and reorder bar', () => {
+    const r = scorePo(strong, { strong_margin_per_landed: 0.9 });
+    expect(r.grade).toBe('B');
+    expect(r.signal).toBe('watch');
+  });
+
+  it('solid_sell_through_pct raises the B bar', () => {
+    const r = scorePo(solid, { solid_sell_through_pct: 65 });
+    expect(r.grade).toBe('C');
+    expect(r.rag).toBe('amber');
+  });
+
+  it('solid_margin_per_landed lowers the B bar', () => {
+    const r = scorePo(nearB, { solid_margin_per_landed: 0.3 });
+    expect(r.grade).toBe('B');
+    expect(r.rag).toBe('green');
+  });
+
+  it('reorder_in_stock_max decides how little stock a reorder signal needs', () => {
+    const byDefault = scorePo(strong);
+    expect(byDefault.signal).toBe('reorder');
+    expect(reasonOf(byDefault, 'STOCK_NEARLY_GONE')?.detail).toBe('4 units left in stock');
+
+    const r = scorePo(strong, { reorder_in_stock_max: 3 });
+    expect(r.grade).toBe('A');
+    expect(r.signal).toBe('watch');
+    expect(reasonOf(r, 'STOCK_NEARLY_GONE')).toBeUndefined();
+  });
+
+  it('aged_share_high_pct moves the aged-share markdown line', () => {
+    const byDefault = scorePo(ageing);
+    expect(byDefault.grade).toBe('C');
+    expect(byDefault.signal).toBe('markdown');
+    expect(reasonOf(byDefault, 'AGED_STOCK_SHARE_HIGH')?.value).toBe(20);
+
+    const r = scorePo(ageing, { aged_share_high_pct: 25 });
+    expect(r.grade).toBe('C');
+    expect(r.signal).toBe('watch');
+    expect(reasonOf(r, 'AGED_STOCK_SHARE_HIGH')).toBeUndefined();
+  });
+
+  it('supplier_late_days decides which ETA slip is reported late', () => {
+    // ETA slipped 14 days.
+    const slipped = po({
+      po_number: 'PO-LATE', supplier: 'Supplier 1',
+      original_eta: '2026-02-01', latest_eta: '2026-02-15',
+      units_total: 10, units_in_stock: 5, units_sold: 5, total_cost: 1000, sold_cost: 500, sold_revenue: 900,
+    });
+    expect(reasonOf(scorePo(slipped), 'SUPPLIER_LATE')?.value).toBe(14);
+    expect(reasonOf(scorePo(slipped, { supplier_late_days: 14 }), 'SUPPLIER_LATE')).toBeUndefined();
+    expect(reasonOf(scorePo(slipped, { supplier_late_days: 13 }), 'SUPPLIER_LATE')?.value).toBe(14);
+  });
+
+  it('judge_min_days sets the too-early window and the number in its reason text', () => {
+    const shorter = scorePo(landed(6), { judge_min_days: 5 });
+    expect(shorter.grade).toBe('D');
+    expect(shorter.signal).toBe('markdown');
+    expect(reasonOf(shorter, 'TOO_EARLY_TO_JUDGE')).toBeUndefined();
+
+    const longer = scorePo(landed(90), { judge_min_days: 120 });
+    expect(longer.grade).toBe('C');
+    expect(longer.signal).toBe('watch');
+    expect(reasonOf(longer, 'TOO_EARLY_TO_JUDGE')?.detail).toBe(
+      'stock landed 90 days ago (< 120) - too early to judge sell-through',
+    );
+    expect(reasonOf(scorePo(landed(6)), 'TOO_EARLY_TO_JUDGE')?.detail).toBe(
+      'stock landed 6 days ago (< 60) - too early to judge sell-through',
+    );
+  });
+
+  it('the tier cut-offs move a supplier between tiers', () => {
+    // One A (4 points) and one D (1 point): average 2.5, Acceptable by default.
+    const rows = [scorePo(strong), scorePo(thin)];
+    expect(rollupSuppliers(rows)[0]!.tier).toBe('Acceptable');
+    expect(rollupSuppliers(rows, DEFAULT_PO_SCORING_THRESHOLDS)[0]!.tier).toBe('Acceptable');
+    expect(rollupSuppliers(rows, { tier_acceptable_min_points: 2.6 })[0]!.tier).toBe('At risk');
+    expect(rollupSuppliers(rows, { tier_strong_min_points: 2.5 })[0]!.tier).toBe('Strong');
+    expect(rollupSuppliers(rows, { tier_preferred_min_points: 2.5 })[0]!.tier).toBe('Preferred');
+  });
+
+  it('rollupSuppliers tiers on the grades already on the rows, so scorePo thresholds carry through', () => {
+    // With the margin floor at 0.05 the thin PO grades C: A (4) + C (2) = 3.0, Strong.
+    const rows = [scorePo(strong), scorePo(thin, { low_margin_per_landed: 0.05 })];
+    expect(rollupSuppliers(rows)[0]!.tier).toBe('Strong');
   });
 });

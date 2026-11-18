@@ -22,7 +22,7 @@ describe('seasonalBuy', () => {
   it('orders above the mean when margin dwarfs the overage cost (high fractile)', () => {
     // price 800, cost 400, salvage 30% → Cu 400, Co 280. fractile 0.588.
     const r = seasonalBuy({
-      sku: 'BRD-1',
+      sku: 'SKU-1',
       price: 800,
       unit_cost: 400,
       salvage_rate: 0.3,
