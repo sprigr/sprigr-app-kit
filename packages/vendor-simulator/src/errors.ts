@@ -15,8 +15,8 @@ export class SampleModeUnknownError extends Error {
  * declare or cannot apply, a response that would not be JSON, a body that is
  * not JSON, a child that names a different parent, an answer missing a field
  * the vendor would have filled in, a create with an id that already exists, a
- * body sent to an action route, which takes none, or a body id that is not a
- * usable id.
+ * body the route cannot take (any body on an action route, or more than one
+ * object on an update), or a body id that is not a usable id.
  */
 export type NotSimulatedReason = 'no_route' | 'query' | 'accept' | 'content_type' | 'parent' | 'computed' | 'exists' | 'body' | 'id';
 
