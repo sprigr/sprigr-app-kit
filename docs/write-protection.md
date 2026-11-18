@@ -274,7 +274,7 @@ Opt a tool in with `idempotency: { mode: 'request' }`; restrict a dispatcher to 
 { "name": "acme", "idempotency": { "mode": "request", "actionField": "action", "actions": ["create_note", "create_invoice"] } }
 ```
 
-For an opted-in call the platform sends a content-stable write key (the turn, workflow step, tool and input, with no per-call id), and the wrapper hands it to the handler as `args._write_key`. A caller cannot set it: a body copy is deleted. Wrap the write with `makeIdempotentWrite` from `@sprigr/apps-dedup-latch`:
+For an opted-in call the platform sends a content-stable write key (the turn, tool and input, with no per-call id), and the wrapper hands it to the handler as `args._write_key`. A caller cannot set it: a body copy is deleted. Wrap the write with `makeIdempotentWrite` from `@sprigr/apps-dedup-latch`:
 
 ```ts
 import { makeIdempotentWrite, idempotentToolResult } from '@sprigr/apps-dedup-latch';
@@ -298,7 +298,9 @@ CREATE TABLE acme_write_keys (id TEXT PRIMARY KEY, state TEXT NOT NULL, result T
 
 Each guarded write costs one insert and one update. Claims live 24 h by default (`ttlSec`); call `writes.sweep()` from a schedule. A result over `maxResultBytes` (64 KiB) is stored as a `result_not_stored` marker, so a replay says the write succeeded instead of returning a cut value.
 
-Two deliberately identical calls in the same turn and step share one key, and the second collapses into the first. Make the inputs differ (a line reference, a position) when both are wanted, or leave that action out of `actions`.
+**Approval-gated writes.** The granted pass (`_approval_granted: true`) carries its own key, never the asking pass's, so an `_approval` answer stored under the asking key cannot be replayed onto the write. It is scoped to the approval: the tapped card, else the workflow step (an unattended `proceed`, a standing approval or recipient list), else the turn. Claim the key inside your approval gate, on the pass that writes, not around the pass that returns `_approval`. A second card and a second tap is a second approval and gets a new key.
+
+Two deliberately identical calls in the same turn share one key, and the second collapses into the first. On a step-scoped granted pass the same holds across turns: the same input twice in one execution and step (a looped step writing one item twice) shares a key. Make the inputs differ (a line reference, a position) when both are wanted, or leave that action out of `actions`.
 
 ## The lint
 
