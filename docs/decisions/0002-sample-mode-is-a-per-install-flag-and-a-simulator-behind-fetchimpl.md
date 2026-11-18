@@ -18,6 +18,13 @@ The app cannot learn sample mode from the request. Install dispatch reads no com
 - **A failed hook never answers ok.** A failed delete in `on_sample_remove` rejects, so the platform does not see ok and keeps sample mode on under its existing every-install rule. A failed write in `on_sample_load` rejects too. Each has a test.
 - **Seed plus overlay.** The seed ships read-only in the app bundle. Writes land in the overlay, per install. A dialect declares the vendor's routes as data. The first dialect is a plain request dialect, and no source file names an app (a test scans for it).
 - **Unrouted means not sent.** In sample mode, a request the dialect has no route for throws `NotSimulatedError` (`not_simulated`, with method and path) and is never sent.
+- **Refused, never answered wrongly.** A routed request the engine cannot model is refused the same way, before anything is written, with a `reason`:
+  - a query parameter the route does not declare or cannot apply;
+  - an `Accept` that does not prefer JSON;
+  - a non-JSON write body;
+  - a child naming another parent.
+
+  A route declares every query parameter it takes and applies each one it declares. A vendor syntax the engine does not parse is a function the app supplies. A path parameter other than `:id` must be a declared parent. An answer that ignores part of the request would read as the vendor's answer, which is worse than a refusal the app maps to not sent.
 
 ## Where the switch is wired
 
