@@ -18,7 +18,7 @@ const BASE = 'https://vendor.example/api';
 const WRITE = /^INSERT INTO sample_objects /;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** Rates are keyed by a code the vendor forms; notes by an id it generates. */
+/** Rates are keyed by a code the vendor forms; tickets by a number it forms; notes by an id it generates. */
 const SEED: SampleSeed = {
   rates: {
     idField: 'Code',
@@ -27,26 +27,30 @@ const SEED: SampleSeed = {
       { Code: 'INPUT', Name: 'Purchases', Rate: 10 },
     ],
   },
+  tickets: { idField: 'TicketID', items: [{ TicketID: 1041, Subject: 'a' }] },
   notes: { idField: 'NoteID', items: [{ NoteID: 'n1', Text: 'a' }] },
 };
 
 const ROUTES: PlainRoute[] = [
   { method: 'PUT', path: '/rates', op: 'create', resource: 'rates', wrap: 'Rates', bodyKey: 'Rates' },
   { method: 'GET', path: '/rates/:id', op: 'get', resource: 'rates', wrap: 'Rates' },
+  { method: 'PUT', path: '/tickets', op: 'create', resource: 'tickets', wrap: 'Tickets', bodyKey: 'Tickets' },
+  { method: 'GET', path: '/tickets/:id', op: 'get', resource: 'tickets', wrap: 'Tickets' },
   { method: 'PUT', path: '/notes', op: 'create', resource: 'notes', wrap: 'Notes', bodyKey: 'Notes' },
 ];
 
-type NewId = (ctx: { objects: readonly SampleObject[]; parentId: string | undefined }) => string;
+/** Returns unknown so a test can hand back a value the engine must refuse. */
+type NewId = (ctx: { objects: readonly SampleObject[]; parentId: string | undefined }) => unknown;
 
 /** The next code after the ones already in the view, counting objects written earlier in the request. */
 const nextCode: NewId = ({ objects }) =>
   `RATE${String(objects.filter((o) => String(o.Code).startsWith('RATE')).length + 1).padStart(3, '0')}`;
 
-/** `newId` is the rule under test; it reaches plainDialect as given. */
-function install(newId?: NewId) {
+/** `newId` is the rule under test, on `resource`; it reaches plainDialect as given. */
+function install(newId?: NewId, resource = 'rates') {
   const d1 = makeMockD1(TABLE, [{ resource: SAMPLE_FLAG_RESOURCE, id: SAMPLE_FLAG_ID, body: '{}', deleted: 0 }]);
   const store = createSampleStore({ db: d1.db, table: TABLE });
-  const resources = newId ? { rates: { newId } as ResourceRules } : {};
+  const resources = newId ? { [resource]: { newId } as ResourceRules } : {};
   const sim = createSimulator({ seed: SEED, dialect: plainDialect({ base: '/api', routes: ROUTES, resources }), store });
   return { d1, sim };
 }
@@ -117,5 +121,31 @@ describe('an id the dialect forms', () => {
     const { sim } = install(nextCode);
     const res = await sim.fetch(`${BASE}/notes`, put({ Notes: [{ Text: 'b' }] }));
     expect(String((await answered(res, 'Notes'))[0]?.NoteID)).toMatch(UUID);
+  });
+
+  it('a newId that returns a number answers a number id, and a get by it finds it', async () => {
+    const { sim } = install(({ objects }) => Math.max(...objects.map((o) => Number(o.TicketID))) + 1, 'tickets');
+    const res = await sim.fetch(`${BASE}/tickets`, put({ Tickets: [{ Subject: 'b' }] }));
+    expect(res.status).toBe(200);
+    expect((await answered(res, 'Tickets'))[0]?.TicketID).toBe(1042);
+    const got = await sim.fetch(`${BASE}/tickets/1042`);
+    expect(got.status).toBe(200);
+    expect((await answered(got, 'Tickets'))[0]).toEqual({ TicketID: 1042, Subject: 'b' });
+  });
+
+  it('a newId that returns a number that is not finite is refused computed, and nothing is written', async () => {
+    for (const value of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const { d1, sim } = install(() => value, 'tickets');
+      const err = await refusal(sim.fetch(`${BASE}/tickets`, put({ Tickets: [{ Subject: 'b' }] })));
+      expect(err?.reason).toBe('computed');
+      expect(count(d1.statements, WRITE)).toBe(0);
+    }
+  });
+
+  it('a newId that returns undefined is refused computed, and nothing is written', async () => {
+    const { d1, sim } = install(() => undefined);
+    const err = await refusal(sim.fetch(`${BASE}/rates`, put({ Rates: [{ Name: 'Zero', Rate: 0 }] })));
+    expect(err?.reason).toBe('computed');
+    expect(count(d1.statements, WRITE)).toBe(0);
   });
 });
