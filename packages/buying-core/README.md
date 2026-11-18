@@ -10,3 +10,14 @@ Pure buying maths for inventory apps. No I/O, no platform calls: every function 
 - `markdown`: markdown candidates.
 - `newsvendor`: one-shot seasonal quantity.
 - `po-scoring`: purchase-order grades and supplier scorecards.
+
+## What the caller does first
+
+- **Exclusions.** The package applies none. Before calling `scorePo`, `rollupSuppliers` or the SKU functions, the caller drops the rows its exclusion list names. The list has six dimensions (`sku`, `supplier_ref`, `location_id`, `class_1`, `class_2`, `brand`), and a `supplier_ref` entry matches either of a supplier's two codes.
+- **Purchase-order rows.** `PurchaseOrderRow` is one row per purchase order. A caller holding order lines rolls them up first: units and cost columns are summed over the order's lines, `ordered_date` is the earliest line date, `original_eta` and `latest_eta` are the latest of each across the lines, the aged-unsold counts are summed, `oldest_unsold_days` is the largest, and `avg_days_to_sell` is the average weighted by units sold.
+
+## Not in this package yet
+
+- **Realised lead time from receipts.** `realized_lead_time_days` is the days from `ordered_date` to `latest_eta` once anything has been received. It is the latest expected date, not a receipt date, so on a partly received order it reflects the units still due (sprigr-team#16078).
+- **A window and a cap on supplier lead times.** `lead_time_p50_days` and `lead_time_p90_days` take every positive value. They do not limit lines to a recent window or drop values over a cap (sprigr-team#16078).
+- **A measured lead time in the buy quantity.** `resolveLeadTime` uses a brand or SKU override, then a class override, then the default. A measured supplier lead time does not reach `deriveSkuMetrics` (sprigr-team#16127).
