@@ -15,7 +15,7 @@
  * the payload so the semantics are honest.
  */
 
-import type { DerivedSkuMetrics, LabelRole, SkuStats } from './buyer-metrics';
+import { resolveLabelRole, type DerivedSkuMetrics, type LabelRole, type SkuStats } from './buyer-metrics';
 import type { Reason } from './reason-codes';
 import { reason } from './reason-codes';
 import { brandLookup } from './brand-key';
@@ -57,6 +57,8 @@ export interface BuyPlanRowInput {
   label?: string | null;
   /** Whether ads are running on this SKU (any recent window spend). */
   has_ad_spend?: boolean;
+  /** A role the row already carries (for example from classifyPerformance); a mapped label wins over it. */
+  role?: LabelRole | null;
 }
 
 export interface BuyPlanLine {
@@ -297,7 +299,7 @@ export function buildBuyPlan(args: {
   /**
    * Maps the caller's own label values to a role. A STOCKOUT row whose label
    * maps to 'priority' leads the plan. No default: without it (or without
-   * labels on the rows) no row is prioritised and the order is risk, then qty.
+   * labels on the rows) only a row that carries a role of its own is prioritised.
    */
   label_roles?: Readonly<Record<string, LabelRole>>;
 }): BuyPlan {
@@ -305,11 +307,9 @@ export function buildBuyPlan(args: {
   // A stocked-out priority SKU is the most urgent thing a buyer can act on,
   // so it sorts ABOVE the ordinary STOCKOUT tier.
   const isPriority = (r: BuyPlanRowInput): boolean =>
-    roles != null &&
-    r.label != null &&
-    Object.prototype.hasOwnProperty.call(roles, r.label) &&
-    roles[r.label] === 'priority' &&
-    r.derived.stockout_risk === 'STOCKOUT';
+    resolveLabelRole(r.label, roles, r.role) === 'priority' && r.derived.stockout_risk === 'STOCKOUT';
+  const labelMapped = (r: BuyPlanRowInput): boolean =>
+    roles != null && r.label != null && Object.prototype.hasOwnProperty.call(roles, r.label);
   const candidates = args.rows
     .filter((r) => r.is_active !== false && r.derived.reorder)
     .sort(
@@ -346,7 +346,8 @@ export function buildBuyPlan(args: {
     const reasons = [...row.reasons];
     const priority = isPriority(row);
     if (priority) {
-      reasons.unshift(reason('PRIORITY_STOCKOUT', `stocked out, labelled priority (${row.label}) - buy first`, undefined));
+      const how = labelMapped(row) ? `labelled priority (${row.label})` : 'priority role';
+      reasons.unshift(reason('PRIORITY_STOCKOUT', `stocked out, ${how} - buy first`, undefined));
     }
     // Ad spend running on a stocked-out SKU is money burning with nothing to
     // sell: flag it as waste so the buyer chases stock (or pauses the ad).

@@ -53,7 +53,13 @@ export type ReasonCode =
   // Ads / performance-label reasons
   | 'PRIORITY_STOCKOUT' // stocked out and its label maps to the 'priority' role - top buying priority
   | 'AD_WASTE' // ad spend running on a stocked-out SKU, a dead SKU, or one whose label the caller marks as run-down - waste
-  | 'PERF_LABEL'; // the SKU's performance label (caller-defined)
+  | 'PERF_LABEL' // the SKU's performance label (caller-defined)
+  // Performance tiers (performance.ts)
+  | 'PERF_PROVEN' // enough evidence and a strong return
+  | 'PERF_PROMISING' // a strong return on evidence under the floors
+  | 'PERF_UNDERPERFORMING' // enough evidence and a weak return
+  | 'PERF_TESTED_NO_SALE' // lifetime exposure past the caller's threshold and never sold
+  | 'PERF_NO_EVIDENCE'; // nothing to judge on yet
 
 export interface Reason {
   code: ReasonCode;

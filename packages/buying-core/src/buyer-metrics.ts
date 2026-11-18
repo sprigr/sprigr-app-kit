@@ -759,6 +759,26 @@ export interface EoqContext {
    * label the map does not name, nothing is blocked.
    */
   label_roles?: Record<string, LabelRole>;
+  /**
+   * A role the row already carries (for example from classifyPerformance).
+   * Used when the label is absent or the map does not name it.
+   */
+  role?: LabelRole | null;
+}
+
+/**
+ * The role of a row: its label through the caller's map when the map names
+ * it, else the role the row carries, else none.
+ */
+export function resolveLabelRole(
+  label: string | null | undefined,
+  labelRoles: Readonly<Record<string, LabelRole>> | undefined,
+  role?: LabelRole | null,
+): LabelRole | null {
+  if (label != null && labelRoles && Object.prototype.hasOwnProperty.call(labelRoles, label)) {
+    return labelRoles[label] ?? null;
+  }
+  return role ?? null;
 }
 
 export interface EoqResult {
@@ -817,7 +837,7 @@ export function applyEoqLineQty(args: {
   if (!(baseQty > 0)) return inert;
   if (is_dead) return inert;
   if (ctx?.excluded) return inert;
-  if (ctx?.label && ctx.label_roles?.[ctx.label] === 'run_down') return inert;
+  if (resolveLabelRole(ctx?.label, ctx?.label_roles, ctx?.role) === 'run_down') return inert;
   // No forward demand at all -> no batch to size (zero-demand guard).
   if (!(annualDemand > 0)) return inert;
 

@@ -10,6 +10,7 @@ Pure buying maths for inventory apps. No I/O, no platform calls: every function 
 - `markdown`: markdown candidates.
 - `newsvendor`: one-shot seasonal quantity.
 - `po-scoring`: purchase-order grades and supplier scorecards.
+- `performance`: proven, promising, underperforming and run-down tiers from sales, and from ad spend when supplied.
 
 ## What the caller does first
 
@@ -22,6 +23,7 @@ Nothing below has a built-in value. Left out, the feature does nothing.
 
 - **Brand.** The row's `brand` attribute. The package never reads a brand out of a SKU id. A row with no brand matches no brand override and no brand budget, and falls through to the class override, then the default.
 - **Labels.** A row may carry a `label`. `label_roles` maps the caller's own label values to one of two roles: `priority` (a stocked-out row sorts first in the buy plan) and `run_down` (no EOQ top-up). With no labels or no map, nothing is prioritised or blocked.
+- **No labeller of your own.** Call `classifyPerformance` and pass each row's `role` to the buy plan and the EOQ guard. With your own labels, map them with `label_roles`; a mapped label wins over the row's role.
 - **EOQ costs.** `handling_cost_per_line` and `eoq_fallback_unit_cost` are in the caller's currency. Without a handling cost there is no EOQ top-up; without a fallback cost an unpriced SKU gets none.
 - **Seasonal classes and the profitability curve.** `seasonal_classes` and `profitability_coverage_adjust` start empty.
 - **Active rows.** `is_active` on a buy-plan or markdown row; a row that does not say is treated as active.
