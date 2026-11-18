@@ -131,3 +131,37 @@ describe('envelope fields at build', () => {
     expect(build(PAGED)).not.toThrow();
   });
 });
+
+describe('page numbers at build', () => {
+  const plain = { method: 'GET', path: '/items', op: 'list', resource: 'items', wrap: 'items' } as const;
+  const paged = (page: { size: number; first?: number; always?: boolean }) => () =>
+    plainDialect({ base: '/api', routes: [{ ...plain, page: { param: 'page', ...page } }] });
+  const throws = (fn: () => unknown, re: RegExp) => {
+    expect(fn).toThrow(TypeError);
+    expect(fn).toThrow(re);
+  };
+
+  it('throws for a page size that is not a whole number above 0', () => {
+    const re = /page\.size must be a whole number above 0/;
+    throws(paged({ size: 0 }), re);
+    throws(paged({ size: -1 }), re);
+    throws(paged({ size: 1.5 }), re);
+    throws(paged({ size: Number.NaN }), re);
+    throws(() => plainDialect({ base: '/api', routes: [{ ...plain, page: { param: 'page', size: 0, always: true }, envelope: { 'pagination.pageCount': 'pageCount' } }] }), re);
+  });
+
+  it('throws for a first page that is not a whole number of 0 or more', () => {
+    const re = /page\.first must be a whole number of 0 or more/;
+    throws(paged({ size: 2, first: -1 }), re);
+    throws(paged({ size: 2, first: 0.5 }), re);
+  });
+
+  it('builds and answers with size 1 and first 0', async () => {
+    expect(paged({ size: 1, first: 0 })).not.toThrow();
+    const d1 = makeMockD1(TABLE, [{ resource: SAMPLE_FLAG_RESOURCE, id: SAMPLE_FLAG_ID, body: '{}', deleted: 0 }]);
+    const store = createSampleStore({ db: d1.db, table: TABLE });
+    const sim = createSimulator({ seed: SEED, dialect: paged({ size: 1, first: 0 })(), store });
+    expect(ids(await body(await sim.fetch(`${BASE}/items?page=0`)))).toEqual(['i1']);
+    expect(ids(await body(await sim.fetch(`${BASE}/items?page=4`)))).toEqual(['i5']);
+  });
+});
