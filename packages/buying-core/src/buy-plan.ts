@@ -167,7 +167,7 @@ export const CONSOLIDATION_METHODOLOGY =
   'h = holding rate x unit cost) whenever a bigger batch is cheaper than paying the ' +
   'fixed receiving/unpacking/binning labour on repeated tiny orders. It only ever ' +
   'RAISES a line and is capped at eoq_max_cover_days of forward cover; dead, ' +
-  'clearance/discontinued and Dead-labelled SKUs are never escalated. ' +
+  'clearance/discontinued SKUs and SKUs carrying a dead label are never escalated. ' +
   'Trips avoided per year = sum over raised lines of (D/base_qty - D/new_qty); ' +
   'the labour saving values each avoided trip at the handling cost per line. ' +
   'After the EOQ, two supplier order constraints apply in order: the minimum ' +

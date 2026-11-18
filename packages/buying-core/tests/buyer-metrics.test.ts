@@ -621,8 +621,8 @@ describe('applyEoqLineQty', () => {
     expect(r.qty).toBe(1);
   });
 
-  it('never escalates a Dead-labelled SKU', () => {
-    for (const label of ['Dead']) {
+  it('never escalates a SKU carrying a dead label, default or caller-supplied', () => {
+    for (const [label, dead_labels] of [['Dead', undefined], ['Rundown-X', ['Dead', 'Rundown-X']]] as const) {
       const r = applyEoqLineQty({
         baseQty: 1,
         velocity: 60 / 365,
@@ -630,7 +630,7 @@ describe('applyEoqLineQty', () => {
         unit_cost: 8,
         is_dead: false,
         settings: set,
-        ctx: { label },
+        ctx: { label, dead_labels },
       });
       expect(r.applied).toBe(false);
       expect(r.qty).toBe(1);

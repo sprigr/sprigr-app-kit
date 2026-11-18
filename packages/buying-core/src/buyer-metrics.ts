@@ -705,10 +705,15 @@ export interface EoqContext {
    * even if every other condition holds.
    */
   excluded?: boolean;
+  /**
+   * Performance labels that mean "run this down", never batch up. The caller
+   * passes its own list; absent = DEFAULT_EOQ_DEAD_LABELS.
+   */
+  dead_labels?: readonly string[];
 }
 
-/** Performance labels that mean "run this down", never batch up. */
-const EOQ_DEAD_LABELS = new Set(['Dead']);
+/** The dead labels used when the caller supplies none. */
+export const DEFAULT_EOQ_DEAD_LABELS: readonly string[] = ['Dead'];
 
 export interface EoqResult {
   /** The (possibly raised) final line quantity. */
@@ -728,7 +733,7 @@ export interface EoqResult {
  *
  * Guards (each returns the base untouched, applied:false):
  *   - EOQ disabled, or no base suggestion (nothing to raise).
- *   - SKU is dead, or labelled Dead, or excluded by the caller.
+ *   - SKU is dead, carries one of the dead labels, or is excluded by the caller.
  *   - No forward demand (annual demand 0): nothing to size a batch against.
  *   - The base already covers eoq_max_cover_days (raising would overshoot the
  *     cover cap): leave it.
@@ -762,7 +767,7 @@ export function applyEoqLineQty(args: {
   if (!(baseQty > 0)) return inert;
   if (is_dead) return inert;
   if (ctx?.excluded) return inert;
-  if (ctx?.label && EOQ_DEAD_LABELS.has(ctx.label)) return inert;
+  if (ctx?.label && (ctx.dead_labels ?? DEFAULT_EOQ_DEAD_LABELS).includes(ctx.label)) return inert;
   // No forward demand at all -> no batch to size (zero-demand guard).
   if (!(annualDemand > 0)) return inert;
 
