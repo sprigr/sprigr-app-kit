@@ -86,6 +86,8 @@ const ROUTES: PlainRoute[] = [
   { method: 'POST', path: '/notes/:id', op: 'update', resource: 'notes' },
   { method: 'POST', path: '/projects/:projectId/tasks', op: 'create', resource: 'tasks', parent, upsert: true },
   { method: 'GET', path: '/projects/:projectId/tasks', op: 'list', resource: 'tasks', parent },
+  { method: 'GET', path: '/projects/:projectId/tasks/:id', op: 'get', resource: 'tasks', parent },
+  { method: 'POST', path: '/projects/:projectId/tasks/:id', op: 'update', resource: 'tasks', parent },
 ];
 
 /** Built per test, so a throwing build fails each row by name. */
@@ -286,5 +288,47 @@ describe('the new reasons keep the message', () => {
       expect(err.message).toBe(base);
       expect(err.reason).toBe(reason);
     }
+  });
+});
+
+describe('a rule names only what the seed has', () => {
+  it('a resources key that is not a seed resource throws at build', () => {
+    expect(() => install({ invoices: invoiceRules(), invoice: { computed: [], complete: (o: SampleObject) => o } })).toThrow(TypeError);
+  });
+
+  it('a uses entry that is not a seed resource throws at build', () => {
+    expect(() => install({ invoices: { ...invoiceRules(), uses: ['payment'] } })).toThrow(TypeError);
+  });
+});
+
+describe('the app cannot move an object or change its id', () => {
+  const taskIds = async (res: Response) => ((await res.json()) as SampleObject[]).map((t) => t.TaskID);
+
+  it('a create keeps the parent from the path, whatever complete does with the parent field', async () => {
+    const moves = (obj: SampleObject) => ({ ...obj, ProjectID: 'pr2' });
+    const drops = (obj: SampleObject) => Object.fromEntries(Object.entries(obj).filter(([k]) => k !== 'ProjectID'));
+    for (const complete of [moves, drops]) {
+      const { sim } = install({ invoices: invoiceRules(), tasks: { complete } });
+      const created = (await (await sim.fetch(`${BASE}/projects/pr1/tasks`, send('POST', { Name: 'Fit' }))).json()) as SampleObject;
+      expect(created.ProjectID).toBe('pr1');
+      expect(await taskIds(await sim.fetch(`${BASE}/projects/pr1/tasks`))).toContain(created.TaskID);
+      expect(await taskIds(await sim.fetch(`${BASE}/projects/pr2/tasks`))).not.toContain(created.TaskID);
+    }
+  });
+
+  it('an update keeps the parent, whatever complete does with the parent field', async () => {
+    const { sim } = install({ invoices: invoiceRules(), tasks: { complete: (obj: SampleObject) => ({ ...obj, ProjectID: 'pr2' }) } });
+    const updated = (await (await sim.fetch(`${BASE}/projects/pr1/tasks/t1`, send('POST', { Name: 'Remeasure' }))).json()) as SampleObject;
+    expect(updated).toMatchObject({ TaskID: 't1', ProjectID: 'pr1', Name: 'Remeasure' });
+    expect(await taskIds(await sim.fetch(`${BASE}/projects/pr1/tasks`))).toContain('t1');
+    expect(await taskIds(await sim.fetch(`${BASE}/projects/pr2/tasks`))).not.toContain('t1');
+  });
+
+  it('an answer carries the stored id and parent, whatever derive returns for them', async () => {
+    const derive = (obj: SampleObject) => ({ ...obj, TaskID: 'other', ProjectID: 'pr2' });
+    const { sim } = install({ invoices: invoiceRules(), tasks: { uses: [], derive } });
+    const got = (await (await sim.fetch(`${BASE}/projects/pr1/tasks/t1`)).json()) as SampleObject;
+    expect(got).toMatchObject({ TaskID: 't1', ProjectID: 'pr1' });
+    expect(await taskIds(await sim.fetch(`${BASE}/projects/pr1/tasks`))).toEqual(['t1']);
   });
 });
