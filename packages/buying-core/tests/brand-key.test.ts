@@ -3,7 +3,7 @@ import { brandKey, brandLookup, onFeedLabels } from '../src/brand-key';
 
 describe('brand-key', () => {
   it('brandKey trims and upper-cases', () => {
-    expect(brandKey('  Brand O and E ')).toBe('BRAND O AND E');
+    expect(brandKey('  Brand P and Q ')).toBe('BRAND P AND Q');
     expect(brandKey('fff')).toBe('FFF');
   });
 

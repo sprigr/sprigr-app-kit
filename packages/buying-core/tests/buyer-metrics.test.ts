@@ -392,12 +392,12 @@ describe('consolidateBrandLabels', () => {
 
   it('picks the most common label when siblings disagree', () => {
     const out = consolidateBrandLabels([
-      { sku: 'OOC:1', brand: 'Brand O and E' },
-      { sku: 'OOC:2', brand: 'Brand O and E' },
-      { sku: 'OOC:3', brand: 'Brand O & E' },
+      { sku: 'OOC:1', brand: 'Brand P and Q' },
+      { sku: 'OOC:2', brand: 'Brand P and Q' },
+      { sku: 'OOC:3', brand: 'Brand P & Q' },
       { sku: 'OOC:4', brand: 'OOC' },
     ]);
-    expect(out.find((r) => r.sku === 'OOC:4')!.brand).toBe('Brand O and E');
+    expect(out.find((r) => r.sku === 'OOC:4')!.brand).toBe('Brand P and Q');
   });
 
   it('is a no-op when no real labels exist (all prefixes)', () => {
@@ -411,16 +411,16 @@ describe('consolidateBrandLabels', () => {
       { sku: 'BBB:2', brand: 'Brand B' },
       { sku: 'BBB:3', brand: 'BRAND B' }, // case variant -> majority spelling
       { sku: 'BBB:4', brand: 'BBB' }, // prefix row -> label, then the same group
-      { sku: 'OOA:1', brand: 'Brand O and E' },
-      { sku: 'OOA:2', brand: 'brand o and e' }, // 1-1 tie -> alphabetical
+      { sku: 'OOA:1', brand: 'Brand P and Q' },
+      { sku: 'OOA:2', brand: 'brand p and q' }, // 1-1 tie -> alphabetical
     ]);
     expect(out.map((r) => r.brand)).toEqual([
       'Brand B',
       'Brand B',
       'Brand B',
       'Brand B',
-      'Brand O and E',
-      'Brand O and E',
+      'Brand P and Q',
+      'Brand P and Q',
     ]);
   });
 });

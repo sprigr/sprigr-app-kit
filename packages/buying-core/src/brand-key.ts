@@ -4,7 +4,7 @@
  * Brand-keyed buyer state (stock-value budgets, OTB plan cells, brand
  * coverage + lead-time overrides) is STORED under brandKey(label): trimmed and
  * upper-cased. A feed may carry brand labels in mixed case
- * ("Brand B", "Brand O and E"), so a read must never index those maps by
+ * ("Brand B", "Brand P and Q"), so a read must never index those maps by
  * the raw row label: exact indexing misses every mixed-case brand. Every
  * brand-keyed READ goes through
  * brandLookup; class keys stay exact (they were never upper-cased).

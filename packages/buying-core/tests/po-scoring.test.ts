@@ -150,7 +150,7 @@ describe('scorePo: too early to judge', () => {
   // Worked example: 98 in stock, 2 sold, $4,900 landed.
   const fresh = (days: number | null) =>
     po({
-      po_number: 'PO-NEW', supplier: 'Brand O & E',
+      po_number: 'PO-NEW', supplier: 'Brand P & Q',
       units_total: 100, units_in_stock: 98, units_sold: 2,
       total_cost: 4900, sold_cost: 100, sold_revenue: 120,
       oldest_unsold_days: days,
