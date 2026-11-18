@@ -43,13 +43,20 @@ function appCall<T>(fn: () => T): T {
 
 const isId = (v: unknown): v is string | number => typeof v === 'string' || typeof v === 'number';
 
-/** The object to store: the app's completion when there is one, never changing the id. */
-function completeObject(rules: ResourceRules | undefined, base: SampleObject, ctx: CompleteContext, idField: string): SampleObject {
+/** App code may not change these: the id, and on a parented route the parent field. */
+function restore(out: SampleObject, from: SampleObject, fixed: readonly string[]): SampleObject {
+  const kept: SampleObject = { ...out };
+  for (const field of fixed) kept[field] = from[field];
+  return kept;
+}
+
+/** The object to store: the app's completion when there is one, with the fixed fields restored. */
+function completeObject(rules: ResourceRules | undefined, base: SampleObject, ctx: CompleteContext, fixed: readonly string[]): SampleObject {
   const complete = rules?.complete;
   if (!complete) return base;
   const out = appCall(() => complete({ ...base }, ctx));
   if (!isObject(out)) throw new Refusal('computed');
-  return { ...out, [idField]: base[idField] };
+  return restore(out, base, fixed);
 }
 
 /** Numbers compare as numbers, everything else as strings; missing values sort last. */
@@ -207,6 +214,14 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     }
   }
   for (const [resource, r] of Object.entries(rules)) {
+    // A name the seed does not have would never apply, and the answers would lack what it computes.
+    if (!Object.hasOwn(seed, resource)) {
+      throw new TypeError(`vendor-simulator: resources names ${JSON.stringify(resource)}, which is not a seed resource`);
+    }
+    const unknownUses = (r.uses ?? []).filter((u) => !Object.hasOwn(seed, u));
+    if (unknownUses.length > 0) {
+      throw new TypeError(`vendor-simulator: resource ${JSON.stringify(resource)} uses ${unknownUses.join(', ')}, which is not a seed resource`);
+    }
     if (r.derive) continue;
     const missing = (r.computed ?? []).filter((f) => seed[resource]?.items.some((item) => !Object.hasOwn(item, f)));
     if (missing.length > 0) {
@@ -257,12 +272,13 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     if (route.op !== 'delete') {
       for (const u of resourceRules?.uses ?? []) related[u] = [...(await view(u)).objects.values()];
     }
+    const fixed = parentField === undefined ? [idField] : [idField, parentField];
     const deriveFn = resourceRules?.derive;
     const derive = (obj: SampleObject): SampleObject => {
       if (!deriveFn) return obj;
       const out = appCall(() => deriveFn({ ...obj }, related));
       if (!isObject(out)) throw new Refusal('computed');
-      return out;
+      return restore(out, obj, fixed);
     };
     const fields = requiredFor(route.resource);
     const check = (obj: SampleObject): SampleObject => {
@@ -304,7 +320,7 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
           const scoped = parentField === undefined ? obj : { ...obj, [parentField]: obj[parentField] ?? parentId };
           const base = previous ? { ...previous, ...obj, [idField]: previous[idField] } : { ...scoped, [idField]: given ?? newId };
           const ctx = { op: previous ? 'update' : 'create', previous, objects: [...working.values()], parentId } as const;
-          const stored = completeObject(resourceRules, base, ctx, idField);
+          const stored = completeObject(resourceRules, base, ctx, fixed);
           answered.push(check(derive(stored)));
           working.set(newId, stored);
           planned.push([newId, stored]);
@@ -322,7 +338,7 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         if (namesOtherParent(patch)) throw new Refusal('parent');
         const merged = { ...existing, ...patch, [idField]: existing[idField] };
         const ctx = { op: 'update', previous: existing, objects: [...objects.values()], parentId } as const;
-        const stored = completeObject(resourceRules, merged, ctx, idField);
+        const stored = completeObject(resourceRules, merged, ctx, fixed);
         const answer = check(derive(stored));
         await store.put(route.resource, id, stored);
         return json(one(answer));

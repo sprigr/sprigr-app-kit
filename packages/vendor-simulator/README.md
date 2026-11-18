@@ -126,13 +126,14 @@ resources: {
 },
 ```
 
-- `complete` runs on every create and update, before the write, and returns the object to store. `objects` is the resource's view including the objects already written earlier in the same request, so a next number counts them. It cannot change the id.
-- `derive` runs on every answered object and is never stored. Use it for a field that depends on another resource. A payment then changes its invoice's amount due on the next read, without writing the invoice.
+- `complete` runs on every create and update, before the write, and returns the object to store. `objects` is the resource's view including the objects already written earlier in the same request, so a next number counts them. It cannot change the id, or on a route with a `parent` the parent field: the engine puts both back, so a write never moves an object.
+- `derive` runs on every answered object and is never stored. Use it for a field that depends on another resource. A payment then changes its invoice's amount due on the next read, without writing the invoice. Its result keeps the stored object's id and parent field.
 - A throw from either is refused as `computed`, with the throw as the error's `cause`.
 
 **Build throws (`TypeError`):**
 - `computed` with neither `complete` nor `derive`;
 - `uses` without `derive`;
+- a `resources` key or a `uses` entry that is not a seed resource;
 - a resource with a create or update route whose seed has no objects and that declares no `computed` (declare `computed: []` if the vendor computes nothing);
 - a declared `computed` field that some seed object lacks when the resource has no `derive` to fill it on a read.
 

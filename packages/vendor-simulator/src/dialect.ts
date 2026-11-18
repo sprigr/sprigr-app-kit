@@ -45,7 +45,7 @@ export interface CompleteContext {
   /** The stored object on an update; undefined on a create. */
   previous: SampleObject | undefined;
   /** This resource's view, including objects written earlier in the same request. */
-  objects: SampleObject[];
+  objects: readonly SampleObject[];
   /** The parent id from the path, on a route with a `parent`. */
   parentId: string | undefined;
 }
