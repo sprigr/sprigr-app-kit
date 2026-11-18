@@ -477,3 +477,35 @@ describe('ForecastParams', () => {
     ]);
   });
 });
+
+// ── Velocity split: one option, read back by the live run ────────────────
+
+describe('velocity_split_units_per_month', () => {
+  // 26 months at 5 units: slow under the default split of 8, fast under 4.
+  const series = [{ sku: 'V', class_1: 'CLASS_X', startMonth: '2024-01', units: new Array(26).fill(5) }];
+  const roster = [seasonalNaive, runRate3m];
+
+  it('moves the fast/slow line, and the backtest result records the split it used', () => {
+    const byDefault = rollingBacktest(series, roster, new Map(), { holdout: 3, horizons: 1 });
+    expect(byDefault.velocity_split_units_per_month).toBe(8);
+    expect(byDefault.classes.map((c) => c.band)).toEqual(['slow']);
+    const split4 = rollingBacktest(series, roster, new Map(), { holdout: 3, horizons: 1, velocity_split_units_per_month: 4 });
+    expect(split4.velocity_split_units_per_month).toBe(4);
+    expect(split4.classes.map((c) => c.band)).toEqual(['fast']);
+  });
+
+  it('runLiveForecast bands each SKU on the split its backtest used', () => {
+    const bt = rollingBacktest(series, roster, new Map(), { holdout: 3, horizons: 1, velocity_split_units_per_month: 4 });
+    const live = runLiveForecast(series, bt, '2026-03', 1);
+    expect(live.cells.map((c) => c.band)).toEqual(['fast']);
+    expect(live.forecasts[0]!.method).toBe(live.cells[0]!.winner);
+    expect(live.forecasts[0]!.method).not.toBe(FALLBACK_FORECASTER.key);
+  });
+
+  it('a split that is not a positive number falls back to 8', () => {
+    for (const v of [0, -1, Number.NaN]) {
+      const bt = rollingBacktest(series, roster, new Map(), { holdout: 3, horizons: 1, velocity_split_units_per_month: v });
+      expect(bt.velocity_split_units_per_month).toBe(8);
+    }
+  });
+});

@@ -84,9 +84,9 @@ describe('markdownCandidates', () => {
     ];
     const codes = (out: ReturnType<typeof markdownCandidates>) => out.map((c) => `${c.sku}:${c.reasons[0]!.code}:${c.suggested_depth_pct}`);
     // Default [90, 180]: only the 100-day row is aged, in the first bucket.
-    expect(codes(markdownCandidates({ rows }))).toEqual(['SKU-1:AGED_90:20']);
+    expect(codes(markdownCandidates({ rows }))).toEqual(['SKU-1:AGED_FIRST:20']);
     // [60, 90]: 100d is past the second threshold, 70d past the first, 50d neither.
-    expect(codes(markdownCandidates({ rows, aged_days: [60, 90] }))).toEqual(['SKU-1:AGED_180:40', 'SKU-2:AGED_90:20']);
+    expect(codes(markdownCandidates({ rows, aged_days: [60, 90] }))).toEqual(['SKU-1:AGED_SECOND:40', 'SKU-2:AGED_FIRST:20']);
   });
 
   it('prices each condition from markdown_depths, keeping the default for a key left out', () => {

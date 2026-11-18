@@ -40,7 +40,7 @@ describe('scorePo', () => {
     expect(r.sell_through_pct).toBeCloseTo(91.67, 1);
     expect(r.margin).toBe(4400);
     expect(r.margin_pct).toBeCloseTo(50, 5);
-    expect(r.gmroi).toBeCloseTo(0.88, 5);
+    expect(r.margin_per_landed_cost).toBeCloseTo(0.88, 5);
     expect(r.aged_over_90_pct).toBe(0);
     expect(r.has_dead_stock).toBe(false);
     expect(r.grade).toBe('A');
@@ -56,11 +56,11 @@ describe('scorePo', () => {
         total_cost: 6000, sold_cost: 3600, sold_revenue: 5400, avg_days_to_sell: 41,
       }),
     );
-    // received 38, sell-through 63.2%, margin 1800, gmroi 0.30.
+    // received 38, sell-through 63.2%, margin 1800, margin per landed 0.30.
     expect(r.received).toBe(38);
     expect(r.sell_through_pct).toBeCloseTo(63.16, 1);
-    expect(r.gmroi).toBeCloseTo(0.3, 5);
-    // st >= 55 but gmroi 0.30 < 0.35 → not B; st >= 40 → C rescue band.
+    expect(r.margin_per_landed_cost).toBeCloseTo(0.3, 5);
+    // st >= 55 but margin per landed 0.30 < 0.35 → not B; st >= 40 → C rescue band.
     expect(r.grade).toBe('C');
     expect(r.rag).toBe('amber');
     expect(r.signal).toBe('watch');
@@ -74,9 +74,9 @@ describe('scorePo', () => {
         total_cost: 4800, sold_cost: 3000, sold_revenue: 5000, avg_days_to_sell: 40,
       }),
     );
-    // received 38, sell-through 63.2%, margin 2000, gmroi 0.417 (>= 0.35).
+    // received 38, sell-through 63.2%, margin 2000, margin per landed 0.417 (>= 0.35).
     expect(r.sell_through_pct).toBeCloseTo(63.16, 1);
-    expect(r.gmroi).toBeCloseTo(0.42, 1);
+    expect(r.margin_per_landed_cost).toBeCloseTo(0.42, 1);
     expect(r.grade).toBe('B');
     expect(r.rag).toBe('green');
     expect(r.signal).toBe('watch');
@@ -108,10 +108,10 @@ describe('scorePo', () => {
         total_cost: 9000, sold_cost: 7500, sold_revenue: 8000, avg_days_to_sell: 33,
       }),
     );
-    // received 58, sell-through 86.2%, margin 500, gmroi 0.056 → D by GMROI.
+    // received 58, sell-through 86.2%, margin 500, margin per landed 0.056 → D on margin per landed.
     expect(r.sell_through_pct).toBeCloseTo(86.21, 1);
     expect(r.margin).toBe(500);
-    expect(r.gmroi).toBeCloseTo(0.06, 2);
+    expect(r.margin_per_landed_cost).toBeCloseTo(0.06, 2);
     expect(r.grade).toBe('D');
     expect(r.rag).toBe('red');
     // Not markdown (sell-through high, nothing aged), not reorder (weak GMROI).
@@ -131,7 +131,7 @@ describe('scorePo', () => {
     expect(r.margin).toBe(0);
     expect(r.margin_pct).toBeNull(); // no sold revenue
     // GMROI is 0 here (no realised margin), but the incoming case is not a fail.
-    expect(r.gmroi).toBe(0);
+    expect(r.margin_per_landed_cost).toBe(0);
     expect(r.aged_over_90_pct).toBe(0);
     expect(r.grade).toBe('C');
     expect(r.rag).toBe('amber');
@@ -143,7 +143,7 @@ describe('scorePo', () => {
     expect(r.sell_through_pct).toBe(50); // received 2, sold 1
     expect(r.margin).toBe(0);
     expect(r.margin_pct).toBeNull(); // sold_revenue null → 0 → no denominator
-    expect(r.gmroi).toBeNull(); // total_cost null → 0 → no denominator
+    expect(r.margin_per_landed_cost).toBeNull(); // total_cost null → 0 → no denominator
     expect(Number.isFinite(r.aged_over_90_pct)).toBe(true);
   });
 });
@@ -296,12 +296,13 @@ describe('delivery metrics', () => {
     expect(incoming.reasons.map((x) => x.code)).toContain('STILL_INCOMING');
   });
 
-  it('margin_per_landed_dollar equals the deprecated gmroi alias', () => {
+  it('margin_per_landed_cost is the margin per 1.00 of landed cost, with no gmroi or per-dollar field left', () => {
     const r = scorePo(
       po({ po_number: 'PO-D4', supplier: 'S', units_total: 10, units_in_stock: 2, units_sold: 8, total_cost: 1000, sold_cost: 800, sold_revenue: 1500 }),
     );
-    expect(r.margin_per_landed_dollar).toBe(r.gmroi);
-    expect(r.margin_per_landed_dollar).toBeCloseTo(0.7, 5);
+    expect(r.margin_per_landed_cost).toBeCloseTo(0.7, 5);
+    expect(Object.keys(r)).not.toContain('gmroi');
+    expect(Object.keys(r)).not.toContain('margin_per_landed_dollar');
   });
 
   it('daysBetween and percentile guard their edges', () => {
@@ -432,16 +433,16 @@ describe('PoScoringThresholds', () => {
   it('low_margin_per_landed moves the D line, and the reason text carries no currency symbol', () => {
     const byDefault = scorePo(thin);
     expect(byDefault.grade).toBe('D');
-    expect(reasonOf(byDefault, 'MARGIN_PER_DOLLAR_LOW')?.detail).toBe('margin 0.06 per 1.00 landed < 0.20');
+    expect(reasonOf(byDefault, 'MARGIN_PER_LANDED_LOW')?.detail).toBe('margin 0.06 per 1.00 landed < 0.20');
 
     const lower = scorePo(thin, { low_margin_per_landed: 0.05 });
     expect(lower.grade).toBe('C');
     expect(lower.rag).toBe('amber');
-    expect(reasonOf(lower, 'MARGIN_PER_DOLLAR_LOW')).toBeUndefined();
+    expect(reasonOf(lower, 'MARGIN_PER_LANDED_LOW')).toBeUndefined();
 
     const tighter = scorePo(thin, { low_margin_per_landed: 0.1 });
     expect(tighter.grade).toBe('D');
-    expect(reasonOf(tighter, 'MARGIN_PER_DOLLAR_LOW')?.detail).toBe('margin 0.06 per 1.00 landed < 0.10');
+    expect(reasonOf(tighter, 'MARGIN_PER_LANDED_LOW')?.detail).toBe('margin 0.06 per 1.00 landed < 0.10');
   });
 
   it('strong_sell_through_pct raises the A and reorder bar', () => {
