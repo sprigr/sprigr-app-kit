@@ -16,8 +16,8 @@ import { deriveSkuMetrics, skuReasons, DEFAULT_BUYER_SETTINGS, type SkuStats } f
 
 function stats(over: Partial<SkuStats> = {}): SkuStats {
   return {
-    sku: 'OOC:TEST-1',
-    brand: 'OOC',
+    sku: 'PPC:TEST-1',
+    brand: 'PPC',
     class_1: 'CLASS_Q',
     category: 'Tools',
     rrp: 20,
