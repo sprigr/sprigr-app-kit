@@ -113,8 +113,8 @@ The engine refuses what it does not model, so it never answers wrongly. Each ref
 | `no_route` | No route matches the method and path. |
 | `query` | A query parameter the route does not declare (a get, update or delete declares none), one sent twice, a sort value other than `Field`, `Field ASC` or `Field DESC`, a page value that is not a whole number at or above `first`, or a `query` function that returned `null`. |
 | `accept` | The most preferred `Accept` range does not admit JSON: highest `q` wins, the first on a tie. No `Accept`, `application/json`, `application/*+json`, `application/*` and `*/*` all admit it. |
-| `content_type` | A create or update whose body is declared or built as something other than JSON, such as a multipart upload. A plain string body with no `Content-Type` is read as JSON. |
-| `parent` | A create or update whose body sets the parent field to a different parent. |
+| `content_type` | A create or update whose body is declared or built as something other than JSON, such as a multipart upload. A string body passed in `init` with no `Content-Type` header is read as JSON. A `Request` built with a string body and no header carries the `text/plain` type the platform sets, so it is refused; give it `Content-Type: application/json`. |
+| `parent` | A create or update whose body sets the parent field to a different parent, or a create whose id is already another parent's child. |
 
 ## Cost
 

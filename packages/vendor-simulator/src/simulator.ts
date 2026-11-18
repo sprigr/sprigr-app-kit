@@ -217,7 +217,14 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         const body = await readJson(req, init);
         const incoming = body.ok ? bodyObjects(route, body.value) : null;
         if (!body.ok || !incoming) return badRequest();
-        if (incoming.some(namesOtherParent)) throw new Refusal('parent');
+        // All or nothing: no object in the batch may name, or by its id take over, another parent's child.
+        const takesOtherChild = (obj: SampleObject): boolean => {
+          const given = obj[idField];
+          if (parentField === undefined || (typeof given !== 'string' && typeof given !== 'number')) return false;
+          const existing = objects.get(String(given));
+          return existing !== undefined && ownChild(existing) === undefined;
+        };
+        if (incoming.some((obj) => namesOtherParent(obj) || takesOtherChild(obj))) throw new Refusal('parent');
         const created: SampleObject[] = [];
         for (const obj of incoming) {
           const given = obj[idField];
