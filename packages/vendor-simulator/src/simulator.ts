@@ -41,7 +41,9 @@ function appCall<T>(fn: () => T): T {
   }
 }
 
-const isId = (v: unknown): v is string | number => typeof v === 'string' || typeof v === 'number';
+/** An id the engine can key, store and answer: a non-empty string or a finite number. */
+const usableId = (v: unknown): v is string | number =>
+  (typeof v === 'string' && v !== '') || (typeof v === 'number' && Number.isFinite(v));
 
 /** App code may not change these: the id, and on a parented route the parent field. */
 function restore(out: SampleObject, from: SampleObject, fixed: readonly string[]): SampleObject {
@@ -64,8 +66,7 @@ function mintId(rules: ResourceRules | undefined, objects: readonly SampleObject
   const newId = rules?.newId;
   if (!newId) return crypto.randomUUID();
   const id: unknown = appCall(() => newId({ objects, parentId }));
-  if (typeof id === 'string' && id !== '') return id;
-  if (typeof id === 'number' && Number.isFinite(id)) return id;
+  if (usableId(id)) return id;
   throw new Refusal('computed');
 }
 
@@ -308,8 +309,11 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     const parentField = route.parent?.field;
     const ownChild = (obj: SampleObject | undefined): SampleObject | undefined =>
       obj && (parentField === undefined || String(obj[parentField] ?? '') === parentId) ? obj : undefined;
+    // A parent field equal only as a string, such as ["p1"], names no parent.
     const namesOtherParent = (obj: SampleObject): boolean =>
-      parentField !== undefined && obj[parentField] !== undefined && String(obj[parentField]) !== parentId;
+      parentField !== undefined &&
+      obj[parentField] !== undefined &&
+      !(usableId(obj[parentField]) && String(obj[parentField]) === parentId);
 
     const { idField, objects } = await view(route.resource);
     const id = params.id;
@@ -353,10 +357,12 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         // All or nothing: no object in the batch may name, or by its id take over, another parent's child.
         const takesOtherChild = (obj: SampleObject): boolean => {
           const given = obj[idField];
-          if (parentField === undefined || !isId(given)) return false;
+          if (parentField === undefined || !usableId(given)) return false;
           const existing = objects.get(String(given));
           return existing !== undefined && ownChild(existing) === undefined;
         };
+        // A body id the engine cannot key or answer as sent: what the vendor does with it is not modelled.
+        if (incoming.some((obj) => obj[idField] != null && !usableId(obj[idField]))) throw new Refusal('id');
         if (incoming.some((obj) => namesOtherParent(obj) || takesOtherChild(obj))) throw new Refusal('parent');
         // Every object is completed and checked before the first write.
         const working = new Map(objects);
@@ -364,9 +370,9 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         const answered: SampleObject[] = [];
         for (const obj of incoming) {
           const given = obj[idField];
-          const previous = isId(given) ? working.get(String(given)) : undefined;
+          const previous = usableId(given) ? working.get(String(given)) : undefined;
           if (previous && !route.upsert) throw new Refusal('exists');
-          const minted = isId(given) ? undefined : mintId(resourceRules, [...working.values()], parentId);
+          const minted = usableId(given) ? undefined : mintId(resourceRules, [...working.values()], parentId);
           const newId = String(minted ?? given);
           if (minted !== undefined && working.has(newId)) throw new Refusal('exists');
           const scoped = parentField === undefined ? obj : { ...obj, [parentField]: obj[parentField] ?? parentId };
