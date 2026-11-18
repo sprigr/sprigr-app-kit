@@ -115,7 +115,7 @@ A get, update, delete or action route names its object id `:id`. Any other path 
 
 The dialect matches the method and the path only, never the host. If your app calls two hosts, a path that matches a route is simulated whichever host it was sent to, and a call to a host whose paths have no route is refused with `NotSimulatedError`.
 
-A create without an id gets a generated one; a create carrying an id that already exists is refused unless the route declares `upsert`. An update merges fields into the object. A delete hides the object from list and get. Writes go to the overlay only; the seed is never changed.
+A create without an id gets a UUID, or the id its resource's `newId` returns; a create carrying an id that already exists is refused unless the route declares `upsert`. An update merges fields into the object. A delete hides the object from list and get. Writes go to the overlay only; the seed is never changed.
 
 Under a parent, a list returns only that parent's children. A get, update or delete of another parent's child answers 404, as does any request under a parent that does not exist. A create stores the parent id from the path.
 
@@ -142,7 +142,8 @@ resources: {
 
 - `complete` runs on every create and update, before the write, and returns the object to store. `objects` is the resource's view including the objects already written earlier in the same request, so a next number counts them. It cannot change the id, or on a route with a `parent` the parent field: the engine puts both back, so a write never moves an object.
 - `derive` runs on every answered object and is never stored. Use it for a field that depends on another resource. A payment then changes its invoice's amount due on the next read, without writing the invoice. Its result keeps the stored object's id and parent field.
-- A throw from either is refused as `computed`, with the throw as the error's `cause`.
+- `newId` forms the id of a create that carries none, for a vendor whose ids are codes or numbers rather than UUIDs: `newId: ({ objects, parentId }) => nextCode(objects)`. It runs before `complete` and sees the same `objects`. An id already in that view is refused as `exists`, and a value that is not a non-empty string as `computed`, both before any write.
+- A throw from any of them is refused as `computed`, with the throw as the error's `cause`.
 
 **Build throws (`TypeError`):**
 - `computed` with neither `complete` nor `derive`;
@@ -215,8 +216,8 @@ The engine refuses what it does not model, so it never answers wrongly. Each ref
 | `accept` | The most preferred `Accept` range does not admit JSON: highest `q` wins, the first on a tie. No `Accept`, `application/json`, `application/*+json`, `application/*` and `*/*` all admit it. |
 | `content_type` | A create or update whose body is declared or built as something other than JSON, such as a multipart upload. A string body passed in `init` with no `Content-Type` header is read as JSON. A `Request` built with a string body and no header carries the `text/plain` type the platform sets, so it is refused; give it `Content-Type: application/json`. |
 | `parent` | A create or update whose body sets the parent field to a different parent, or a create whose id is already another parent's child. |
-| `computed` | An answered object misses a field every seed object carries or a declared `computed` field, or `complete` or `derive` threw. See [What the vendor computes](#what-the-vendor-computes). |
-| `exists` | A create carrying an id that already exists, on a route without `upsert`. Checked for the whole batch. |
+| `computed` | An answered object misses a field every seed object carries or a declared `computed` field; `complete`, `derive` or `newId` threw; or `newId` returned no usable id. See [What the vendor computes](#what-the-vendor-computes). |
+| `exists` | A create carrying an id that already exists, on a route without `upsert`, or an id from `newId` that already exists. Checked for the whole batch. |
 | `body` | Any request body sent to an action route, `{}` and JSON included. An action takes none. |
 
 ## Cost

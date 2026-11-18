@@ -74,10 +74,18 @@ export type CompleteFunction = (obj: SampleObject, ctx: CompleteContext) => Samp
 /** Fills fields that depend on other resources, on every answer. The result is never stored. */
 export type DeriveFunction = (obj: SampleObject, related: Record<string, SampleObject[]>) => SampleObject;
 
+/**
+ * Forms a new object's id the way the vendor does, for a create that carries none.
+ * `objects` is the resource's view, including objects written earlier in the same request.
+ */
+export type NewIdFunction = (ctx: { objects: readonly SampleObject[]; parentId: string | undefined }) => string;
+
 export interface ResourceRules {
   /** Fields the vendor sets that not every seed object shows. Every answered object must carry them. */
   computed?: string[];
   complete?: CompleteFunction;
+  /** In place of a generated UUID, for a vendor that forms its ids another way. */
+  newId?: NewIdFunction;
   /** The resources `derive` reads; each adds one overlay read per request on this resource. */
   uses?: string[];
   derive?: DeriveFunction;
