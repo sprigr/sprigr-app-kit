@@ -16,7 +16,19 @@ export type { SampleStoreOptions } from './store';
 export { createSampleSwitch, sampleAwareFetch } from './switch';
 export type { SampleAwareFetchOptions } from './switch';
 export { plainDialect } from './dialect';
-export type { Dialect, ParentRelation, PlainDialectOptions, PlainRoute, QueryFunction, RouteMatch, RouteOp } from './dialect';
+export type {
+  CompleteContext,
+  CompleteFunction,
+  DeriveFunction,
+  Dialect,
+  ParentRelation,
+  PlainDialectOptions,
+  PlainRoute,
+  QueryFunction,
+  ResourceRules,
+  RouteMatch,
+  RouteOp,
+} from './dialect';
 export { createSimulator } from './simulator';
 export type { Simulator, SimulatorOptions } from './simulator';
 export { sampleLoadHook, sampleRemoveHook } from './hooks';

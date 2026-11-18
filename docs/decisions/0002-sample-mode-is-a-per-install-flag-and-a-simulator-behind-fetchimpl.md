@@ -22,7 +22,9 @@ The app cannot learn sample mode from the request. Install dispatch reads no com
   - a query parameter the route does not declare or cannot apply;
   - an `Accept` that does not prefer JSON;
   - a non-JSON write body;
-  - a child naming another parent.
+  - a child naming another parent;
+  - an answered object missing a field every seed object of its resource carries, or a declared computed field (on a read or a write);
+  - a create carrying an id that already exists, unless the route declares `upsert`.
 
   A route declares every query parameter it takes and applies each one it declares. A vendor syntax the engine does not parse is a function the app supplies. A path parameter other than `:id` must be a declared parent. An answer that ignores part of the request would read as the vendor's answer, which is worse than a refusal the app maps to not sent.
 
@@ -53,5 +55,5 @@ The messages of `NotSimulatedError` and `SampleModeUnknownError` are not final. 
 - Ending sample mode deletes every write a person made while sampling. That is the point of sample data.
 - Until step 2b, an app path that bypasses its vendor client is caught only by that app's tests.
 - `SampleModeUnknownError` and `NotSimulatedError` both mean nothing was sent. An adopting app maps them to its not-sent answer, never to an unknown outcome such as `write_may_have_applied`. Its adoption tests include a write with the flag unreadable that answers not sent.
-- A create carrying an id that already exists replaces that object. A real vendor would usually refuse it.
+- What a vendor computes on a write is the app's to supply (`complete`, `derive`). Without it, a create is answered only when its body already carries every field the seed shows, so an adopting app writes completion for each resource the vendor fills in.
 - An invocation that read on just before `on_sample_remove` can still write an overlay row after the clear. `on_sample_load` keeps overlay rows, so that row shows up in the next sample session.

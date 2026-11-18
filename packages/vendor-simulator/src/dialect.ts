@@ -36,12 +36,41 @@ export interface PlainRoute {
   page?: { param: string; size: number; first?: number };
   /** For a route under a parent object: its children are scoped to that parent. */
   parent?: ParentRelation;
+  /** Create only. An object whose id exists is merged and completed as an update instead of refused. */
+  upsert?: boolean;
+}
+
+export interface CompleteContext {
+  op: 'create' | 'update';
+  /** The stored object on an update; undefined on a create. */
+  previous: SampleObject | undefined;
+  /** This resource's view, including objects written earlier in the same request. */
+  objects: SampleObject[];
+  /** The parent id from the path, on a route with a `parent`. */
+  parentId: string | undefined;
+}
+
+/** Fills what the vendor computes on a write. Returns the object to store. */
+export type CompleteFunction = (obj: SampleObject, ctx: CompleteContext) => SampleObject;
+
+/** Fills fields that depend on other resources, on every answer. The result is never stored. */
+export type DeriveFunction = (obj: SampleObject, related: Record<string, SampleObject[]>) => SampleObject;
+
+export interface ResourceRules {
+  /** Fields the vendor sets that not every seed object shows. Every answered object must carry them. */
+  computed?: string[];
+  complete?: CompleteFunction;
+  /** The resources `derive` reads; each adds one overlay read per request on this resource. */
+  uses?: string[];
+  derive?: DeriveFunction;
 }
 
 export interface PlainDialectOptions {
   /** Path prefix every route sits under, e.g. `/api`. */
   base?: string;
   routes: PlainRoute[];
+  /** Per seed resource: what the vendor computes and how the app fills it. */
+  resources?: Record<string, ResourceRules>;
 }
 
 export interface RouteMatch {
@@ -52,6 +81,10 @@ export interface RouteMatch {
 export interface Dialect {
   /** The route for this request, or null when it is not simulated. */
   match(method: string, pathname: string): RouteMatch | null;
+  /** Per-resource rules; none when absent. */
+  resources?: Readonly<Record<string, ResourceRules>>;
+  /** The resources a create or update route writes, checked against the seed at build. */
+  written?: ReadonlySet<string>;
 }
 
 const trimSlash = (p: string): string => (p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p);
@@ -95,10 +128,26 @@ function checkPathParams(route: PlainRoute): void {
   }
 }
 
+/** A declared computed field must have something to fill it, and `derive` is what reads `uses`. */
+function checkResourceRules(resource: string, rules: ResourceRules): void {
+  const where = `vendor-simulator: resource ${JSON.stringify(resource)}`;
+  if ((rules.computed?.length ?? 0) > 0 && !rules.complete && !rules.derive) {
+    throw new TypeError(`${where}: computed fields need complete or derive`);
+  }
+  if (rules.uses !== undefined && !rules.derive) throw new TypeError(`${where}: uses needs derive`);
+}
+
 /** A REST-style dialect: method plus path pattern, JSON bodies, query filters, sort and paging. */
-export function plainDialect({ base = '', routes }: PlainDialectOptions): Dialect {
+export function plainDialect({ base = '', routes, resources = {} }: PlainDialectOptions): Dialect {
   const root = trimSlash(base) === '/' ? '' : trimSlash(base);
-  for (const route of routes) checkPathParams(route);
+  for (const route of routes) {
+    checkPathParams(route);
+    if (route.upsert && route.op !== 'create') {
+      throw new TypeError(`vendor-simulator: route ${route.method} ${route.path}: upsert is for a create route`);
+    }
+  }
+  for (const [resource, rules] of Object.entries(resources)) checkResourceRules(resource, rules);
+  const written = new Set(routes.filter((r) => r.op === 'create' || r.op === 'update').map((r) => r.resource));
   const compiled = routes.map((route) => ({
     route,
     method: route.method.toUpperCase(),
@@ -106,6 +155,8 @@ export function plainDialect({ base = '', routes }: PlainDialectOptions): Dialec
   }));
 
   return {
+    resources,
+    written,
     match(method: string, pathname: string): RouteMatch | null {
       if (root && pathname !== root && !pathname.startsWith(`${root}/`)) return null;
       const parts = trimSlash(pathname.slice(root.length) || '/').split('/');
