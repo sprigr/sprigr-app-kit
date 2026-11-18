@@ -21,6 +21,7 @@ export type {
   CompleteFunction,
   DeriveFunction,
   Dialect,
+  EnvelopeValue,
   ParentRelation,
   PlainDialectOptions,
   PlainRoute,

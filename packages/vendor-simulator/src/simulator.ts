@@ -160,8 +160,15 @@ function checkQuery(route: PlainRoute, query: URLSearchParams): void {
   }
 }
 
+/** A list's answer: the page's items, the count matched before paging, and the page number when paged. */
+interface ListPage {
+  items: SampleObject[];
+  total: number;
+  page: number | null;
+}
+
 /** Filters, then the app's query functions, then sort, then page. Values were checked by `checkQuery`. */
-function listView(route: PlainRoute, all: SampleObject[], query: URLSearchParams): SampleObject[] {
+function listView(route: PlainRoute, all: SampleObject[], query: URLSearchParams): ListPage {
   let items = all;
   for (const [param, field] of Object.entries(route.filters ?? {})) {
     const want = query.get(param);
@@ -181,13 +188,43 @@ function listView(route: PlainRoute, all: SampleObject[], query: URLSearchParams
     const sign = sortMatch[2]?.toUpperCase() === 'DESC' ? -1 : 1;
     items = [...items].sort((a, b) => sign * compare(a[field], b[field]));
   }
-  const page = route.page ? query.get(route.page.param) : null;
+  const total = items.length;
+  const sent = route.page ? query.get(route.page.param) : null;
+  const first = route.page?.first ?? 1;
+  const page = sent !== null ? Number(sent) : route.page?.always ? first : null;
   if (route.page && page !== null) {
-    const index = Number(page) - (route.page.first ?? 1);
+    const index = page - first;
     const size = route.page.size;
     items = items.slice(index * size, index * size + size);
   }
-  return items;
+  return { items, total, page };
+}
+
+/** The route's envelope fields, each computed from the page; the build guarantees each is computable. */
+function envelopeOf(route: PlainRoute, view: ListPage): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const size = route.page?.size ?? 0;
+  for (const [path, token] of Object.entries(route.envelope ?? {})) {
+    const value =
+      token === 'total' ? view.total
+      : token === 'count' ? view.items.length
+      : token === 'page' ? view.page
+      : token === 'pageSize' ? size
+      : Math.ceil(view.total / size);
+    const segments = path.split('.');
+    const last = segments.pop() ?? path;
+    let node = out;
+    for (const segment of segments) {
+      let next = node[segment] as Record<string, unknown> | undefined;
+      if (next === undefined) {
+        next = {};
+        node[segment] = next;
+      }
+      node = next;
+    }
+    node[last] = value;
+  }
+  return out;
 }
 
 /**
@@ -247,6 +284,8 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     if ((route.op === 'create' || route.op === 'update') && !isJsonBody(bodyType(headers, req, init))) {
       throw new Refusal('content_type');
     }
+    // An action takes no body: a JSON one is refused too, so it is not `content_type`.
+    if (route.op === 'action' && (await bodyText(req, init)) !== '') throw new Refusal('body');
     checkQuery(route, url.searchParams);
 
     // A child is reachable only through a parent that exists, and only its own.
@@ -289,8 +328,9 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     switch (route.op) {
       case 'list': {
         const all = [...objects.values()].filter((o) => ownChild(o) !== undefined).map(derive);
-        const items = listView(route, all, url.searchParams).map(check);
-        return json(route.wrap ? { [route.wrap]: items } : items);
+        const page = listView(route, all, url.searchParams);
+        const items = page.items.map(check);
+        return json(route.wrap ? { [route.wrap]: items, ...envelopeOf(route, page) } : items);
       }
       case 'get': {
         const obj = id === undefined ? undefined : ownChild(objects.get(id));
@@ -319,7 +359,7 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
           const newId = isId(given) ? String(given) : crypto.randomUUID();
           const scoped = parentField === undefined ? obj : { ...obj, [parentField]: obj[parentField] ?? parentId };
           const base = previous ? { ...previous, ...obj, [idField]: previous[idField] } : { ...scoped, [idField]: given ?? newId };
-          const ctx = { op: previous ? 'update' : 'create', previous, objects: [...working.values()], parentId } as const;
+          const ctx = { op: previous ? 'update' : 'create', action: undefined, previous, objects: [...working.values()], parentId } as const;
           const stored = completeObject(resourceRules, base, ctx, fixed);
           answered.push(check(derive(stored)));
           working.set(newId, stored);
@@ -337,11 +377,21 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         if (!patch) return badRequest();
         if (namesOtherParent(patch)) throw new Refusal('parent');
         const merged = { ...existing, ...patch, [idField]: existing[idField] };
-        const ctx = { op: 'update', previous: existing, objects: [...objects.values()], parentId } as const;
+        const ctx = { op: 'update', action: undefined, previous: existing, objects: [...objects.values()], parentId } as const;
         const stored = completeObject(resourceRules, merged, ctx, fixed);
         const answer = check(derive(stored));
         await store.put(route.resource, id, stored);
         return json(one(answer));
+      }
+      case 'action': {
+        const existing = id === undefined ? undefined : ownChild(objects.get(id));
+        if (id === undefined || !existing) return notFound();
+        const ctx = { op: 'action', action: route.action, previous: existing, objects: [...objects.values()], parentId } as const;
+        const stored = completeObject(resourceRules, existing, ctx, fixed);
+        const answer = check(derive(stored));
+        // An action that changes nothing costs no write.
+        if (JSON.stringify(stored) !== JSON.stringify(existing)) await store.put(route.resource, id, stored);
+        return route.answer === 'empty' ? new Response(null, { status: 204 }) : json(one(answer));
       }
       case 'delete': {
         if (id === undefined || !ownChild(objects.get(id))) return notFound();
