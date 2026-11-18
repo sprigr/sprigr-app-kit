@@ -14,9 +14,10 @@ export class SampleModeUnknownError extends Error {
  * Why a request was refused: no route, a query parameter the route does not
  * declare or cannot apply, a response that would not be JSON, a body that is
  * not JSON, a child that names a different parent, an answer missing a field
- * the vendor would have filled in, or a create with an id that already exists.
+ * the vendor would have filled in, a create with an id that already exists, or
+ * a body sent to an action route, which takes none.
  */
-export type NotSimulatedReason = 'no_route' | 'query' | 'accept' | 'content_type' | 'parent' | 'computed' | 'exists';
+export type NotSimulatedReason = 'no_route' | 'query' | 'accept' | 'content_type' | 'parent' | 'computed' | 'exists' | 'body';
 
 /** Sample mode is on and the engine does not model this request; it is never sent to the vendor. */
 export class NotSimulatedError extends Error {

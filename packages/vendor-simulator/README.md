@@ -86,18 +86,20 @@ A request the engine does not model throws `NotSimulatedError` (code `not_simula
 
 ## The plain dialect
 
-Routes map a method and a path under `base` to one of `list`, `get`, `create`, `update`, `delete` on a seed resource.
+Routes map a method and a path under `base` to one of `list`, `get`, `create`, `update`, `delete`, `action` on a seed resource.
 
 - `wrap`: the response envelope key. Without it, a list is a bare array and a get is the bare object.
 - `bodyKey`: where a write's objects sit in the request body. Without it, the body is the object (or an array of them).
 - `filters` (list only): query parameter to field, equality on the field's string form.
 - `query` (list only): query parameter to a function your app supplies, `(value, items) => items | null`, for a vendor syntax the engine does not parse. It runs after `filters`. Return `null` when you cannot apply the value; the request is refused.
 - `sort.param` (list only): `Field`, `Field ASC` or `Field DESC`; numbers compare as numbers.
-- `page` (list only): `{ param, size, first }`; a list is paged only when the parameter is sent.
+- `page` (list only): `{ param, size, first, always }`. A list is paged when the parameter is sent. With `always: true` it is also paged when the parameter is absent, answering page `first`.
+- `envelope` (list only): fields beside `wrap`, computed from the page. See [Envelope fields](#envelope-fields).
 - `parent`: `{ param, resource, field }` for a route under a parent object, such as `/projects/:projectId/tasks`. `param` is the parent's path parameter, `resource` its seed resource, and `field` the child's field holding the parent id.
 - `upsert` (create only): for a vendor whose create endpoint also updates. An object whose id already exists is merged and completed as an update instead of refused.
+- `action` and `answer` (action only): see [Action routes](#action-routes).
 
-A get, update or delete route names its object id `:id`. Any other path parameter must be its declared parent's; `plainDialect` throws a `TypeError` at build otherwise.
+A get, update, delete or action route names its object id `:id`. Any other path parameter must be its declared parent's; `plainDialect` throws a `TypeError` at build otherwise.
 
 The dialect matches the method and the path only, never the host. If your app calls two hosts, a path that matches a route is simulated whichever host it was sent to, and a call to a host whose paths have no route is refused with `NotSimulatedError`.
 
@@ -137,6 +139,59 @@ resources: {
 - a resource with a create or update route whose seed has no objects and that declares no `computed` (declare `computed: []` if the vendor computes nothing);
 - a declared `computed` field that some seed object lacks when the resource has no `derive` to fill it on a read.
 
+### Action routes
+
+For a call that takes no body and acts on one object, such as approve or send:
+
+```ts
+{ method: 'POST', path: '/claims/:id/approve', op: 'action', resource: 'claims', action: 'approve', answer: 'object' }
+```
+
+- **What it changes:**
+  - The resource's `complete` is called with the stored object, `op: 'action'`, `action` set to the route's name, and `previous`. Use `action` to tell the call apart from an edit.
+  - The result is derived and seed-checked, and its id and parent field are put back.
+  - It is written only when it differs from the stored object, so an action that changes nothing costs no write.
+- **What it answers:**
+  - `answer: 'object'` answers 200 with the object, wrapped as a get.
+  - `answer: 'empty'` answers 204 with an empty body.
+- **What it refuses:**
+  - any request body, `{}` included (`body`). A `Content-Type` header with an empty body is answered.
+  - any query parameter (`query`).
+- **What answers 404:** an unknown id, another parent's child, or a missing parent, as on a get, update or delete.
+- **Build throws (`TypeError`):**
+  - no `:id`;
+  - a missing or empty `action`, or `action` on another op;
+  - a missing `answer`, or `answer` on another op;
+  - a resource whose `resources` entry has no `complete`.
+
+### Envelope fields
+
+For a vendor that answers a list with fields beside it, such as a page count:
+
+```ts
+{ method: 'GET', path: '/projects', op: 'list', resource: 'projects', wrap: 'items',
+  page: { param: 'page', size: 50, first: 1, always: true },
+  envelope: { 'pagination.page': 'page', 'pagination.pageCount': 'pageCount', 'pagination.itemCount': 'total' } }
+```
+
+Each key is a dotted path beside `wrap`. Each value is one the engine computes:
+
+| Value | What it is |
+|---|---|
+| `total` | items matched after `filters` and `query` functions, before paging |
+| `count` | items on this page |
+| `page` | the page number answered |
+| `pageSize` | `page.size` |
+| `pageCount` | `total` divided by `page.size`, rounded up; 0 when nothing matched |
+
+Every field can be computed for every answer, so nothing is refused at request time. **Build throws (`TypeError`):**
+- `envelope` on a route other than a list, or without `wrap`;
+- a path that starts at the `wrap` key, is a prefix of another path, or has an empty segment;
+- a value not in the table;
+- `page`, `pageSize` or `pageCount` on a route without `page.always`, since an unpaged answer has no page to describe.
+
+Whether Xero's Projects API pages when no page is asked for is not verified, so whether a Xero dialect sets `always` is decided where Xero adopts this package.
+
 ### What is refused
 
 The engine refuses what it does not model, so it never answers wrongly. Each refusal is a `NotSimulatedError` thrown before anything is written, and its `reason` says why:
@@ -150,6 +205,7 @@ The engine refuses what it does not model, so it never answers wrongly. Each ref
 | `parent` | A create or update whose body sets the parent field to a different parent, or a create whose id is already another parent's child. |
 | `computed` | An answered object misses a field every seed object carries or a declared `computed` field, or `complete` or `derive` threw. See [What the vendor computes](#what-the-vendor-computes). |
 | `exists` | A create carrying an id that already exists, on a route without `upsert`. Checked for the whole batch. |
+| `body` | Any request body sent to an action route, `{}` and JSON included. An action takes none. |
 
 ## Cost
 
@@ -157,6 +213,6 @@ One D1 read per invocation that makes a vendor call (the flag), whether or not t
 - one more read per simulated request (the overlay for that resource);
 - one more on a route with a `parent` (the parent's overlay);
 - one more per `uses` resource on any request to that resource except a delete;
-- one write per created, updated or deleted object.
+- one write per created, updated or deleted object, and per object an action changed.
 
-A request refused for its query, `Accept` or `Content-Type` costs no overlay read.
+A request refused for its query, `Accept`, `Content-Type` or an action's body costs no overlay read.

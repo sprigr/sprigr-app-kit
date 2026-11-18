@@ -1,6 +1,13 @@
 import type { SampleObject } from './types';
 
-export type RouteOp = 'list' | 'get' | 'create' | 'update' | 'delete';
+export type RouteOp = 'list' | 'get' | 'create' | 'update' | 'delete' | 'action';
+
+/** A value the engine computes for a list's envelope field. */
+export type EnvelopeValue = 'total' | 'count' | 'page' | 'pageSize' | 'pageCount';
+
+const ENVELOPE_VALUES: readonly EnvelopeValue[] = ['total', 'count', 'page', 'pageSize', 'pageCount'];
+/** These describe a page, so the list must always answer one. */
+const PAGE_VALUES: readonly EnvelopeValue[] = ['page', 'pageSize', 'pageCount'];
 
 /**
  * An app-supplied list filter for one query parameter, for a vendor syntax the
@@ -32,17 +39,28 @@ export interface PlainRoute {
   query?: Record<string, QueryFunction>;
   /** List only. Query parameter with `Field`, `Field ASC` or `Field DESC`. */
   sort?: { param: string };
-  /** List only. Paged only when the parameter is sent; `first` is the first page number (default 1). */
-  page?: { param: string; size: number; first?: number };
+  /**
+   * List only. Paged when the parameter is sent, or always with `always`;
+   * `first` is the first page number (default 1).
+   */
+  page?: { param: string; size: number; first?: number; always?: boolean };
+  /** List only. A dotted path beside `wrap` to a value the engine computes from the page. */
+  envelope?: Record<string, EnvelopeValue>;
   /** For a route under a parent object: its children are scoped to that parent. */
   parent?: ParentRelation;
   /** Create only. An object whose id exists is merged and completed as an update instead of refused. */
   upsert?: boolean;
+  /** Action only. Its name, passed to `complete`. */
+  action?: string;
+  /** Action only. 'object' answers the object, wrapped as a get; 'empty' answers 204 with no body. */
+  answer?: 'object' | 'empty';
 }
 
 export interface CompleteContext {
-  op: 'create' | 'update';
-  /** The stored object on an update; undefined on a create. */
+  op: 'create' | 'update' | 'action';
+  /** The action route's name on an action; undefined otherwise. */
+  action: string | undefined;
+  /** The stored object on an update or an action; undefined on a create. */
   previous: SampleObject | undefined;
   /** This resource's view, including objects written earlier in the same request. */
   objects: readonly SampleObject[];
@@ -83,7 +101,7 @@ export interface Dialect {
   match(method: string, pathname: string): RouteMatch | null;
   /** Per-resource rules; none when absent. */
   resources?: Readonly<Record<string, ResourceRules>>;
-  /** The resources a create or update route writes, checked against the seed at build. */
+  /** The resources a create, update or action route writes, checked against the seed at build. */
   written?: ReadonlySet<string>;
 }
 
@@ -97,10 +115,10 @@ function decodeSegment(s: string): string | null {
   }
 }
 
-const OPS_WITH_ID: readonly RouteOp[] = ['get', 'update', 'delete'];
+const OPS_WITH_ID: readonly RouteOp[] = ['get', 'update', 'delete', 'action'];
 
 /**
- * A route's path parameters must be exactly its own `:id` (get, update, delete)
+ * A route's path parameters must be exactly its own `:id` (get, update, delete, action)
  * plus its declared parent's parameter. Anything else would be matched and then
  * ignored, which answers for the wrong object.
  */
@@ -112,7 +130,8 @@ function checkPathParams(route: PlainRoute): void {
     .map((s) => s.slice(1));
   const allowed = new Set<string>();
   if (OPS_WITH_ID.includes(route.op)) {
-    if (!names.includes('id')) throw new TypeError(`${where}: a ${route.op} route names its object id :id`);
+    const article = route.op === 'action' ? 'an' : 'a';
+    if (!names.includes('id')) throw new TypeError(`${where}: ${article} ${route.op} route names its object id :id`);
     allowed.add('id');
   }
   if (route.parent) {
@@ -125,6 +144,52 @@ function checkPathParams(route: PlainRoute): void {
   const extra = names.filter((n) => !allowed.has(n));
   if (extra.length > 0) {
     throw new TypeError(`${where}: path parameter ${extra.map((n) => `:${n}`).join(', ')} needs a declared parent`);
+  }
+}
+
+/**
+ * An action must say what it is and what it answers, and only `complete` can
+ * change its object: without one it would answer unchanged for a call the
+ * vendor acts on.
+ */
+function checkAction(route: PlainRoute, resources: Record<string, ResourceRules>): void {
+  const where = `vendor-simulator: route ${route.method} ${route.path}`;
+  if (route.op !== 'action') {
+    if (route.action !== undefined) throw new TypeError(`${where}: action is for an action route`);
+    if (route.answer !== undefined) throw new TypeError(`${where}: answer is for an action route`);
+    return;
+  }
+  if (!route.action) throw new TypeError(`${where}: an action route needs an action name`);
+  if (route.answer !== 'object' && route.answer !== 'empty') {
+    throw new TypeError(`${where}: an action route needs answer 'object' or 'empty'`);
+  }
+  if (!resources[route.resource]?.complete) {
+    throw new TypeError(`${where}: an action route on resource ${JSON.stringify(route.resource)} needs complete`);
+  }
+}
+
+/** Every envelope field must be one the engine can compute for every answer of this route. */
+function checkEnvelope(route: PlainRoute): void {
+  if (route.envelope === undefined) return;
+  const where = `vendor-simulator: route ${route.method} ${route.path}`;
+  if (route.op !== 'list') throw new TypeError(`${where}: envelope is for a list route`);
+  if (!route.wrap) throw new TypeError(`${where}: envelope needs wrap`);
+  const paths = Object.keys(route.envelope);
+  for (const path of paths) {
+    const segments = path.split('.');
+    if (segments.some((s) => s === '')) throw new TypeError(`${where}: envelope path ${JSON.stringify(path)} has an empty segment`);
+    if (segments[0] === route.wrap) throw new TypeError(`${where}: envelope path ${JSON.stringify(path)} starts at the wrap key`);
+    const value = route.envelope[path];
+    if (value === undefined || !ENVELOPE_VALUES.includes(value)) {
+      throw new TypeError(`${where}: ${JSON.stringify(value)} is not an envelope value`);
+    }
+    if (PAGE_VALUES.includes(value) && !route.page?.always) {
+      throw new TypeError(`${where}: envelope value ${JSON.stringify(value)} needs page.always`);
+    }
+  }
+  for (const a of paths) {
+    const b = paths.find((p) => p.startsWith(`${a}.`));
+    if (b !== undefined) throw new TypeError(`${where}: envelope paths ${JSON.stringify(a)} and ${JSON.stringify(b)} overlap`);
   }
 }
 
@@ -145,9 +210,12 @@ export function plainDialect({ base = '', routes, resources = {} }: PlainDialect
     if (route.upsert && route.op !== 'create') {
       throw new TypeError(`vendor-simulator: route ${route.method} ${route.path}: upsert is for a create route`);
     }
+    checkAction(route, resources);
+    checkEnvelope(route);
   }
   for (const [resource, rules] of Object.entries(resources)) checkResourceRules(resource, rules);
-  const written = new Set(routes.filter((r) => r.op === 'create' || r.op === 'update').map((r) => r.resource));
+  const writes: readonly RouteOp[] = ['create', 'update', 'action'];
+  const written = new Set(routes.filter((r) => writes.includes(r.op)).map((r) => r.resource));
   const compiled = routes.map((route) => ({
     route,
     method: route.method.toUpperCase(),

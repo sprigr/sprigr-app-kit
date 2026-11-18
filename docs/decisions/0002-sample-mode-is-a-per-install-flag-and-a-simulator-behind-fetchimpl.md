@@ -24,7 +24,8 @@ The app cannot learn sample mode from the request. Install dispatch reads no com
   - a non-JSON write body;
   - a child naming another parent;
   - an answered object missing a field every seed object of its resource carries, or a declared computed field (on a read or a write);
-  - a create carrying an id that already exists, unless the route declares `upsert`.
+  - a create carrying an id that already exists, unless the route declares `upsert`;
+  - any body sent to an action route, which takes none.
 
   A route declares every query parameter it takes and applies each one it declares. A vendor syntax the engine does not parse is a function the app supplies. A path parameter other than `:id` must be a declared parent. An answer that ignores part of the request would read as the vendor's answer, which is worse than a refusal the app maps to not sent.
 
