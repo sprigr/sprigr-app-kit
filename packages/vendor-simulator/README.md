@@ -101,6 +101,18 @@ Routes map a method and a path under `base` to one of `list`, `get`, `create`, `
 
 A get, update, delete or action route names its object id `:id`. Any other path parameter must be its declared parent's; `plainDialect` throws a `TypeError` at build otherwise.
 
+**Which route answers.**
+- A request's path is matched before its method. Of the routes, of any method, and the `reserved` paths that fit the path, the most specific wins: at the first segment where two differ, a literal beats a parameter.
+- The route with that pattern and the request's method answers. If there is none, the request is refused (`no_route`).
+- Declaration order does not matter, and segments are decoded before they are compared.
+
+**`reserved`** (a `plainDialect` option) lists vendor paths that no route models, such as `['/contacts/settings']`. A reserved path answers nothing; it only stops a parameter route from taking it. So `GET /contacts/settings` is refused, not answered 404 as the contact with id `settings`.
+
+**Build throws (`TypeError`):**
+- a reserved path with the same pattern as a route;
+- two routes with the same method and pattern;
+- a reserved path that does not start with `/` or repeats a parameter name.
+
 The dialect matches the method and the path only, never the host. If your app calls two hosts, a path that matches a route is simulated whichever host it was sent to, and a call to a host whose paths have no route is refused with `NotSimulatedError`.
 
 A create without an id gets a generated one; a create carrying an id that already exists is refused unless the route declares `upsert`. An update merges fields into the object. A delete hides the object from list and get. Writes go to the overlay only; the seed is never changed.
@@ -198,7 +210,7 @@ The engine refuses what it does not model, so it never answers wrongly. Each ref
 
 | `reason` | When |
 |---|---|
-| `no_route` | No route matches the method and path. |
+| `no_route` | No route matches the path, the most specific pattern for the path has no route for the method, or that pattern is a `reserved` path. |
 | `query` | A query parameter the route does not declare (a get, update or delete declares none), one sent twice, a sort value other than `Field`, `Field ASC` or `Field DESC`, a page value that is not a whole number at or above `first`, or a `query` function that returned `null`. |
 | `accept` | The most preferred `Accept` range does not admit JSON: highest `q` wins, the first on a tie. No `Accept`, `application/json`, `application/*+json`, `application/*` and `*/*` all admit it. |
 | `content_type` | A create or update whose body is declared or built as something other than JSON, such as a multipart upload. A string body passed in `init` with no `Content-Type` header is read as JSON. A `Request` built with a string body and no header carries the `text/plain` type the platform sets, so it is refused; give it `Content-Type: application/json`. |

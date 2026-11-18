@@ -89,6 +89,8 @@ export interface PlainDialectOptions {
   routes: PlainRoute[];
   /** Per seed resource: what the vendor computes and how the app fills it. */
   resources?: Record<string, ResourceRules>;
+  /** Vendor paths no route models, relative to `base`. They answer nothing; a parameter route never takes them. */
+  reserved?: string[];
 }
 
 export interface RouteMatch {
@@ -213,8 +215,61 @@ function checkResourceRules(resource: string, rules: ResourceRules): void {
   if (rules.uses !== undefined && !rules.derive) throw new TypeError(`${where}: uses needs derive`);
 }
 
+/** A route's or reserved path's segments, and its shape: the segments with every parameter as `:`. */
+interface Pattern {
+  path: string;
+  parts: string[];
+  shape: string;
+}
+
+function pattern(path: string): Pattern {
+  const parts = trimSlash(path).split('/');
+  return { path, parts, shape: parts.map((p) => (p.startsWith(':') ? ':' : p)).join('/') };
+}
+
+const isParam = (segment: string): boolean => segment.startsWith(':');
+
+/** Whether a pattern fits decoded request segments; a segment that did not decode fits nothing. */
+function fits(p: Pattern, segments: Array<string | null>): boolean {
+  if (p.parts.length !== segments.length) return false;
+  return p.parts.every((want, i) => {
+    const got = segments[i];
+    if (got === null || got === undefined) return false;
+    return isParam(want) ? got !== '' : got === want;
+  });
+}
+
+/** Of two patterns that fit one request, `a` is more specific when it has a literal where `b` first has a parameter. */
+function moreSpecific(a: Pattern, b: Pattern): boolean {
+  for (let i = 0; i < a.parts.length; i++) {
+    const aLiteral = !isParam(a.parts[i] ?? '');
+    const bLiteral = !isParam(b.parts[i] ?? '');
+    if (aLiteral !== bLiteral) return aLiteral;
+  }
+  return false;
+}
+
+/**
+ * A reserved path that is also a route, or two routes one request could reach
+ * on one method, would leave a request answered by whichever was declared first.
+ */
+function checkShapes(routes: Array<Pattern & { method: string }>, reserved: Pattern[]): void {
+  for (const r of reserved) {
+    if (!r.path.startsWith('/')) throw new TypeError(`vendor-simulator: reserved path ${r.path} must start with /`);
+    const names = r.parts.filter(isParam);
+    if (new Set(names).size !== names.length) throw new TypeError(`vendor-simulator: reserved path ${r.path} repeats a parameter`);
+    if (routes.some((c) => c.shape === r.shape)) throw new TypeError(`vendor-simulator: reserved path ${r.path} is also a route`);
+  }
+  routes.forEach((a, i) => {
+    const b = routes.slice(i + 1).find((c) => c.method === a.method && c.shape === a.shape);
+    if (b) {
+      throw new TypeError(`vendor-simulator: routes ${a.method} ${a.path} and ${b.method} ${b.path} match the same requests`);
+    }
+  });
+}
+
 /** A REST-style dialect: method plus path pattern, JSON bodies, query filters, sort and paging. */
-export function plainDialect({ base = '', routes, resources = {} }: PlainDialectOptions): Dialect {
+export function plainDialect({ base = '', routes, resources = {}, reserved = [] }: PlainDialectOptions): Dialect {
   const root = trimSlash(base) === '/' ? '' : trimSlash(base);
   for (const route of routes) {
     checkPathParams(route);
@@ -228,37 +283,31 @@ export function plainDialect({ base = '', routes, resources = {} }: PlainDialect
   for (const [resource, rules] of Object.entries(resources)) checkResourceRules(resource, rules);
   const writes: readonly RouteOp[] = ['create', 'update', 'action'];
   const written = new Set(routes.filter((r) => writes.includes(r.op)).map((r) => r.resource));
-  const compiled = routes.map((route) => ({
-    route,
-    method: route.method.toUpperCase(),
-    parts: trimSlash(route.path).split('/'),
-  }));
+  const compiled = routes.map((route) => ({ route, method: route.method.toUpperCase(), ...pattern(route.path) }));
+  const reservedPatterns = reserved.map(pattern);
+  checkShapes(compiled, reservedPatterns);
+  const patterns: Pattern[] = [...compiled, ...reservedPatterns];
 
   return {
     resources,
     written,
     match(method: string, pathname: string): RouteMatch | null {
       if (root && pathname !== root && !pathname.startsWith(`${root}/`)) return null;
-      const parts = trimSlash(pathname.slice(root.length) || '/').split('/');
-      const m = method.toUpperCase();
-      for (const c of compiled) {
-        if (c.method !== m || c.parts.length !== parts.length) continue;
-        const params: Record<string, string> = {};
-        let ok = true;
-        for (let i = 0; i < parts.length && ok; i++) {
-          const want = c.parts[i] ?? '';
-          const got = parts[i] ?? '';
-          if (want.startsWith(':')) {
-            const value = got ? decodeSegment(got) : null;
-            if (value === null) ok = false;
-            else params[want.slice(1)] = value;
-          } else if (want !== got) {
-            ok = false;
-          }
-        }
-        if (ok) return { route: c.route, params };
+      const segments = trimSlash(pathname.slice(root.length) || '/').split('/').map(decodeSegment);
+      // The path is matched before the method: the most specific pattern decides which route may answer.
+      let best: Pattern | null = null;
+      for (const p of patterns) {
+        if (fits(p, segments) && (best === null || moreSpecific(p, best))) best = p;
       }
-      return null;
+      if (best === null) return null;
+      const shape = best.shape;
+      const hit = compiled.find((c) => c.method === method.toUpperCase() && c.shape === shape);
+      if (!hit) return null;
+      const params: Record<string, string> = {};
+      hit.parts.forEach((want, i) => {
+        if (isParam(want)) params[want.slice(1)] = segments[i] ?? '';
+      });
+      return { route: hit.route, params };
     },
   };
 }
