@@ -135,7 +135,7 @@ describe('plain dialect: writes land on this install only', () => {
     const a = install();
     const b = install();
     await a.sim.fetch(`${BASE}/items/i1`, post({ Items: [{ Price: 99 }] }));
-    await a.sim.fetch(`${BASE}/items`, post({ Items: [{ Name: 'Hook' }] }));
+    await a.sim.fetch(`${BASE}/items`, post({ Items: [{ Name: 'Hook', Status: 'ACTIVE', Price: 1 }] }));
     const [bGot] = await items(await b.sim.fetch(`${BASE}/items/i1`));
     expect(bGot?.Price).toBe(5);
     expect((await items(await b.sim.fetch(`${BASE}/items`))).length).toBe(3);

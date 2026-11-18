@@ -1,4 +1,4 @@
-import type { Dialect, PlainRoute } from './dialect';
+import type { CompleteContext, Dialect, PlainRoute, ResourceRules } from './dialect';
 import { NotSimulatedError, type NotSimulatedReason } from './errors';
 import type { FetchImpl, SampleObject, SampleSeed, SampleStore } from './types';
 
@@ -24,9 +24,39 @@ const badRequest = (): Response => new Response(null, { status: 400 });
 
 /** Thrown inside one request; `simulate` turns it into NotSimulatedError with the method and path. */
 class Refusal extends Error {
-  constructor(readonly reason: NotSimulatedReason) {
-    super(reason);
+  constructor(
+    readonly reason: NotSimulatedReason,
+    options?: { cause?: unknown },
+  ) {
+    super(reason, options);
   }
+}
+
+/** Runs app-supplied code. A throw is refused as `computed`, keeping the throw as the cause. */
+function appCall<T>(fn: () => T): T {
+  try {
+    return fn();
+  } catch (err) {
+    throw new Refusal('computed', { cause: err });
+  }
+}
+
+const isId = (v: unknown): v is string | number => typeof v === 'string' || typeof v === 'number';
+
+/** App code may not change these: the id, and on a parented route the parent field. */
+function restore(out: SampleObject, from: SampleObject, fixed: readonly string[]): SampleObject {
+  const kept: SampleObject = { ...out };
+  for (const field of fixed) kept[field] = from[field];
+  return kept;
+}
+
+/** The object to store: the app's completion when there is one, with the fixed fields restored. */
+function completeObject(rules: ResourceRules | undefined, base: SampleObject, ctx: CompleteContext, fixed: readonly string[]): SampleObject {
+  const complete = rules?.complete;
+  if (!complete) return base;
+  const out = appCall(() => complete({ ...base }, ctx));
+  if (!isObject(out)) throw new Refusal('computed');
+  return restore(out, base, fixed);
 }
 
 /** Numbers compare as numbers, everything else as strings; missing values sort last. */
@@ -166,6 +196,39 @@ function listView(route: PlainRoute, all: SampleObject[], query: URLSearchParams
  * reaches the network.
  */
 export function createSimulator({ seed, dialect, store }: SimulatorOptions): Simulator {
+  const rules: Readonly<Record<string, ResourceRules>> = dialect.resources ?? {};
+
+  // What every answered object must carry: each key every seed object of its resource
+  // has as an own property (null included), plus the declared computed fields. Once, at build.
+  const required = new Map<string, string[]>();
+  for (const [resource, source] of Object.entries(seed)) {
+    const [first, ...rest] = source.items;
+    const shape = first ? Object.keys(first).filter((k) => rest.every((item) => Object.hasOwn(item, k))) : [];
+    required.set(resource, [...new Set([...shape, ...(rules[resource]?.computed ?? [])])]);
+  }
+  const requiredFor = (resource: string): string[] => required.get(resource) ?? rules[resource]?.computed ?? [];
+
+  for (const resource of dialect.written ?? []) {
+    if (seed[resource]?.items.length === 0 && rules[resource]?.computed === undefined) {
+      throw new TypeError(`vendor-simulator: resource ${JSON.stringify(resource)} is written but its seed has no objects; declare its computed fields`);
+    }
+  }
+  for (const [resource, r] of Object.entries(rules)) {
+    // A name the seed does not have would never apply, and the answers would lack what it computes.
+    if (!Object.hasOwn(seed, resource)) {
+      throw new TypeError(`vendor-simulator: resources names ${JSON.stringify(resource)}, which is not a seed resource`);
+    }
+    const unknownUses = (r.uses ?? []).filter((u) => !Object.hasOwn(seed, u));
+    if (unknownUses.length > 0) {
+      throw new TypeError(`vendor-simulator: resource ${JSON.stringify(resource)} uses ${unknownUses.join(', ')}, which is not a seed resource`);
+    }
+    if (r.derive) continue;
+    const missing = (r.computed ?? []).filter((f) => seed[resource]?.items.some((item) => !Object.hasOwn(item, f)));
+    if (missing.length > 0) {
+      throw new TypeError(`vendor-simulator: resource ${JSON.stringify(resource)}: seed objects lack computed ${missing.join(', ')} and no derive fills them on a read`);
+    }
+  }
+
   async function view(resource: string): Promise<{ idField: string; objects: Map<string, SampleObject> }> {
     const source = seed[resource];
     if (!source) throw new Error(`vendor-simulator: the seed has no resource ${JSON.stringify(resource)}`);
@@ -202,16 +265,36 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     const { idField, objects } = await view(route.resource);
     const id = params.id;
     const one = (obj: SampleObject): unknown => (route.wrap ? { [route.wrap]: [obj] } : obj);
+    const resourceRules = rules[route.resource];
+
+    // Every answered object is derived, then checked; a delete answers no object.
+    const related: Record<string, SampleObject[]> = {};
+    if (route.op !== 'delete') {
+      for (const u of resourceRules?.uses ?? []) related[u] = [...(await view(u)).objects.values()];
+    }
+    const fixed = parentField === undefined ? [idField] : [idField, parentField];
+    const deriveFn = resourceRules?.derive;
+    const derive = (obj: SampleObject): SampleObject => {
+      if (!deriveFn) return obj;
+      const out = appCall(() => deriveFn({ ...obj }, related));
+      if (!isObject(out)) throw new Refusal('computed');
+      return restore(out, obj, fixed);
+    };
+    const fields = requiredFor(route.resource);
+    const check = (obj: SampleObject): SampleObject => {
+      if (fields.some((f) => !Object.hasOwn(obj, f))) throw new Refusal('computed');
+      return obj;
+    };
 
     switch (route.op) {
       case 'list': {
-        const all = [...objects.values()].filter((o) => ownChild(o) !== undefined);
-        const items = listView(route, all, url.searchParams);
+        const all = [...objects.values()].filter((o) => ownChild(o) !== undefined).map(derive);
+        const items = listView(route, all, url.searchParams).map(check);
         return json(route.wrap ? { [route.wrap]: items } : items);
       }
       case 'get': {
         const obj = id === undefined ? undefined : ownChild(objects.get(id));
-        return obj ? json(one(obj)) : notFound();
+        return obj ? json(one(check(derive(obj)))) : notFound();
       }
       case 'create': {
         const body = await readJson(req, init);
@@ -220,22 +303,31 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         // All or nothing: no object in the batch may name, or by its id take over, another parent's child.
         const takesOtherChild = (obj: SampleObject): boolean => {
           const given = obj[idField];
-          if (parentField === undefined || (typeof given !== 'string' && typeof given !== 'number')) return false;
+          if (parentField === undefined || !isId(given)) return false;
           const existing = objects.get(String(given));
           return existing !== undefined && ownChild(existing) === undefined;
         };
         if (incoming.some((obj) => namesOtherParent(obj) || takesOtherChild(obj))) throw new Refusal('parent');
-        const created: SampleObject[] = [];
+        // Every object is completed and checked before the first write.
+        const working = new Map(objects);
+        const planned: Array<[string, SampleObject]> = [];
+        const answered: SampleObject[] = [];
         for (const obj of incoming) {
           const given = obj[idField];
-          const newId = typeof given === 'string' || typeof given === 'number' ? String(given) : crypto.randomUUID();
+          const previous = isId(given) ? working.get(String(given)) : undefined;
+          if (previous && !route.upsert) throw new Refusal('exists');
+          const newId = isId(given) ? String(given) : crypto.randomUUID();
           const scoped = parentField === undefined ? obj : { ...obj, [parentField]: obj[parentField] ?? parentId };
-          const stored = { ...scoped, [idField]: given ?? newId };
-          await store.put(route.resource, newId, stored);
-          created.push(stored);
+          const base = previous ? { ...previous, ...obj, [idField]: previous[idField] } : { ...scoped, [idField]: given ?? newId };
+          const ctx = { op: previous ? 'update' : 'create', previous, objects: [...working.values()], parentId } as const;
+          const stored = completeObject(resourceRules, base, ctx, fixed);
+          answered.push(check(derive(stored)));
+          working.set(newId, stored);
+          planned.push([newId, stored]);
         }
-        if (route.wrap) return json({ [route.wrap]: created });
-        return json(created.length === 1 && !route.bodyKey && body.ok && !Array.isArray(body.value) ? created[0] : created);
+        for (const [key, stored] of planned) await store.put(route.resource, key, stored);
+        if (route.wrap) return json({ [route.wrap]: answered });
+        return json(answered.length === 1 && !route.bodyKey && !Array.isArray(body.value) ? answered[0] : answered);
       }
       case 'update': {
         const existing = id === undefined ? undefined : ownChild(objects.get(id));
@@ -245,8 +337,11 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         if (!patch) return badRequest();
         if (namesOtherParent(patch)) throw new Refusal('parent');
         const merged = { ...existing, ...patch, [idField]: existing[idField] };
-        await store.put(route.resource, id, merged);
-        return json(one(merged));
+        const ctx = { op: 'update', previous: existing, objects: [...objects.values()], parentId } as const;
+        const stored = completeObject(resourceRules, merged, ctx, fixed);
+        const answer = check(derive(stored));
+        await store.put(route.resource, id, stored);
+        return json(one(answer));
       }
       case 'delete': {
         if (id === undefined || !ownChild(objects.get(id))) return notFound();
@@ -267,7 +362,9 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     try {
       return await answer(hit.route, hit.params, url, req, init);
     } catch (err) {
-      if (err instanceof Refusal) throw new NotSimulatedError(method, url.pathname, err.reason);
+      if (err instanceof Refusal) {
+        throw new NotSimulatedError(method, url.pathname, err.reason, err.cause === undefined ? undefined : { cause: err.cause });
+      }
       throw err;
     }
   }
