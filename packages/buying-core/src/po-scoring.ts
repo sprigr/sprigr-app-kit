@@ -7,7 +7,7 @@
  * and screen, so a number on the tab and the same
  * number from a tool can never disagree. Nothing here is persisted.
  *
- * The thresholds are calibrated for durable-goods retail
+ * The thresholds are calibrated for retail
  * buying. Every ratio guards its denominator: a divide by zero yields null
  * (unknown), never NaN or Infinity. A PO still fully incoming (nothing received
  * yet) has no sell-through to judge, so it grades C / amber / watch until stock
@@ -160,7 +160,7 @@ export function percentile(values: number[], p: number): number | null {
  * Score one purchase order. Every branch is total: sell-through is null only
  * when nothing has been received; margin coerces null money to 0; the three
  * ratios (margin_pct, gmroi) guard their denominators to null; aged_over_90_pct
- * is 0 when nothing is in stock. Grade / RAG / signal follow the sporting-goods
+ * is 0 when nothing is in stock. Grade / RAG / signal follow the retail
  * thresholds documented inline.
  */
 /**

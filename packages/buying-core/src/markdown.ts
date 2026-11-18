@@ -8,7 +8,7 @@
  * markdown-dollar history, so a markdown-%-of-sales KPI is not computable
  * here; this module ranks candidates only.
  *
- * Depth ladder (sporting-goods convention: small first cut, step up):
+ * Depth ladder (retail convention: small first cut, step up):
  *   aged 90-180d or overcover ........ 20%
  *   aged > 180d ...................... 40%
  *   dead (stock, zero demand) ........ 50%

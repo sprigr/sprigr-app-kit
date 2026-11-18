@@ -66,10 +66,10 @@ function seasonalSeries(sku: string, cls: string, years: number, peak: number[])
 }
 
 describe('classSeasonalIndices', () => {
-  const SUMMER_S = [1.6, 1.3, 1.0, 0.7, 0.5, 0.4, 0.4, 0.5, 0.8, 1.2, 1.6, 1.9]; // peak at the turn of the year
+  const YEAR_END_PEAK_S = [1.6, 1.3, 1.0, 0.7, 0.5, 0.4, 0.4, 0.5, 0.8, 1.2, 1.6, 1.9]; // peak at the turn of the year
 
   it('recovers a pooled seasonal shape from several SKUs', () => {
-    const series = [1, 2, 3, 4].map((i) => seasonalSeries(`W${i}`, 'CLASS_R', 3, SUMMER_S));
+    const series = [1, 2, 3, 4].map((i) => seasonalSeries(`W${i}`, 'CLASS_R', 3, YEAR_END_PEAK_S));
     const idx = classSeasonalIndices(series).get('CLASS_R')!;
     // December (index 11) must be well above June (index 5). With 4 SKUs x 3
     // years (n=12 per bucket) damping n/(n+12) keeps ~half the raw swing.
@@ -82,7 +82,7 @@ describe('classSeasonalIndices', () => {
 
   it('damps a thin class toward flat', () => {
     // One SKU, one year: n=3 per calendar month bucket is << damping K.
-    const series = [seasonalSeries('X', 'CLASS_Thin', 1, SUMMER_S)];
+    const series = [seasonalSeries('X', 'CLASS_Thin', 1, YEAR_END_PEAK_S)];
     const idx = classSeasonalIndices(series).get('CLASS_Thin')!;
     for (const v of idx) {
       expect(v).toBeGreaterThan(0.9);
@@ -134,10 +134,10 @@ describe('forecasters', () => {
 // ── Backtest ──────────────────────────────────────────────────────────────
 
 describe('rollingBacktest', () => {
-  const SUMMER = [2, 1.5, 1, 0.6, 0.4, 0.3, 0.3, 0.4, 0.8, 1.2, 1.8, 2.2];
+  const YEAR_END_PEAK = [2, 1.5, 1, 0.6, 0.4, 0.3, 0.3, 0.4, 0.8, 1.2, 1.8, 2.2];
 
   it('prefers seasonal methods on strongly seasonal series and beats run-rate', () => {
-    const series = [1, 2, 3].map((i) => seasonalSeries(`W${i}`, 'CLASS_R', 3, SUMMER));
+    const series = [1, 2, 3].map((i) => seasonalSeries(`W${i}`, 'CLASS_R', 3, YEAR_END_PEAK));
     const train = trainSeries(series, 6);
     const indices = classSeasonalIndices(train);
     const res = rollingBacktest(series, [seasonalNaive, runRate3m, runRateIndex, blendNaiveIndex], indices, {
@@ -155,7 +155,7 @@ describe('rollingBacktest', () => {
   it('skips too-short series and reports counts', () => {
     const series = [
       { sku: 'S', class_1: 'CLASS_X', startMonth: '2026-01', units: [1, 2, 3] },
-      seasonalSeries('L', 'CLASS_X', 2, SUMMER),
+      seasonalSeries('L', 'CLASS_X', 2, YEAR_END_PEAK),
     ];
     const res = rollingBacktest(series, [seasonalNaive], classSeasonalIndices(series), { holdout: 3, horizons: 1 });
     expect(res.scored_skus).toBe(1);
@@ -235,8 +235,8 @@ describe('SBC classification + velocity band', () => {
 
 describe('backtest cells', () => {
   it('splits cells by band and reports mase + demand mix', () => {
-    const SUMMER = [2, 1.5, 1, 0.6, 0.4, 0.3, 0.3, 0.4, 0.8, 1.2, 1.8, 2.2];
-    const fast = seasonalSeries('F', 'CLASS_R', 3, SUMMER); // base 10/mo -> fast
+    const YEAR_END_PEAK = [2, 1.5, 1, 0.6, 0.4, 0.3, 0.3, 0.4, 0.8, 1.2, 1.8, 2.2];
+    const fast = seasonalSeries('F', 'CLASS_R', 3, YEAR_END_PEAK); // base 10/mo -> fast
     const slow = { sku: 'S', class_1: 'CLASS_R', startMonth: '2023-01', units: fast.units.map((u) => (u > 15 ? 1 : 0)) };
     const res = rollingBacktest([fast, slow], [seasonalNaive, runRate3m], classSeasonalIndices([fast, slow]), { holdout: 4, horizons: 2 });
     const bands = res.classes.map((c) => c.band).sort();
@@ -263,10 +263,10 @@ describe('seriesFromMonthMap', () => {
 });
 
 describe('runLiveForecast', () => {
-  const SUMMER = [2, 1.5, 1, 0.6, 0.4, 0.3, 0.3, 0.4, 0.8, 1.2, 1.8, 2.2];
+  const YEAR_END_PEAK = [2, 1.5, 1, 0.6, 0.4, 0.3, 0.3, 0.4, 0.8, 1.2, 1.8, 2.2];
 
   it('routes SKUs through their cell winner and demotes losers to seasonal_naive', () => {
-    const series = [1, 2, 3].map((i) => seasonalSeries(`W${i}`, 'CLASS_R', 3, SUMMER));
+    const series = [1, 2, 3].map((i) => seasonalSeries(`W${i}`, 'CLASS_R', 3, YEAR_END_PEAK));
     const indices = classSeasonalIndices(trainSeries(series, 6));
     const bt = rollingBacktest(series, [seasonalNaive, runRate3m], indices, { holdout: 6, horizons: 3 });
     const live = runLiveForecast(series, bt, '2026-01', 12);
@@ -285,7 +285,7 @@ describe('runLiveForecast', () => {
   it('falls back to tsb for a SKU whose cell has no tournament result', () => {
     // One long seasonal series scored; one short series skipped by the
     // backtest (its cell then has no winner entry for its band).
-    const scored = seasonalSeries('L', 'CLASS_A', 3, SUMMER);
+    const scored = seasonalSeries('L', 'CLASS_A', 3, YEAR_END_PEAK);
     const short = { sku: 'S', class_1: 'CLASS_B', startMonth: '2026-03', units: [1, 2, 3, 4] };
     const bt = rollingBacktest([scored], [seasonalNaive, runRate3m], new Map(), { holdout: 6, horizons: 3 });
     const live = runLiveForecast([scored, short], bt, '2026-07', 12);
