@@ -30,7 +30,6 @@ export const HOME_DISPATCH_READ_METHODS: readonly string[] = [
   'jobs.get',
   'jobs.list',
   'grants.providers',
-  'fulfillment_services.list',
   'connect.checkAgentBind',
   'teams.list',
   'teams.mine',

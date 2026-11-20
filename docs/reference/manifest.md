@@ -33,7 +33,7 @@ At publish, after the validator passes, the platform also checks:
 | `tools` | yes* | [Tools](#tools) |
 | `schedules`, `jobs`, `agent_schedules` | no | [Background work](#background-work) |
 | `webhooks`, `channels`, `events` | no | [Inbound traffic and events](#inbound-traffic-and-events) |
-| `cross_tenant_tools`, `interfaces`, `app_dependencies`, `integration_dependencies`, `dependencies`, `fulfillment_services` | no | [App to app](#app-to-app) |
+| `cross_tenant_tools`, `interfaces`, `app_dependencies`, `integration_dependencies`, `dependencies` | no | [App to app](#app-to-app) |
 | `internal_storage_prefixes`, `actor_scoped_storage_prefixes`, `data_index`, `data_indexes`, `data_exports`, `datasets`, `migrations`, `data_lifecycle` | no | [Storage and data](#storage-and-data) |
 | `docs`, `home`, `undo`, `tool_access`, `content_restrictions`, `config_schema`, `decision_points`, `workflow_templates` | no | [Agent and portal surface](#agent-and-portal-surface) |
 | `auth`, `capabilities`, `oauth`, `lifecycle` | no | [Auth and capabilities](#auth-and-capabilities) |
@@ -402,9 +402,9 @@ Slug-level install gate: `{ "required"?: [{ slug, reason }], "optional"?: [...] 
 "dependencies": { "required": [{ "slug": "acme-billing", "reason": "Invoices live there." }] }
 ```
 
-### `fulfillment_services`
+### `fulfillment_services` (retired)
 
-Fulfilment services the app registers. Not validated at publish. Declaring it adds a consent checkbox to the install dialog. See [interfaces/fulfilment-hub-v1.md](../interfaces/fulfilment-hub-v1.md).
+Retired by sprigr-team decision 0386, along with `env.SPRIGR.fulfillment_services.*`, which now throws `retired`. The platform ignores the key, and a later release refuses it at publish, so remove it. To register a fulfilment location, declare the commerce app in `app_dependencies` and call its own tools with `env.SPRIGR.invoke`. See [interfaces/fulfilment-hub-v1.md](../interfaces/fulfilment-hub-v1.md) for the hub contract.
 
 ## Storage and data
 
