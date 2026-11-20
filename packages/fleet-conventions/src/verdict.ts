@@ -203,8 +203,11 @@ export function isUnactionableRuling(body: string): boolean {
 }
 
 /** Anchored "this body opens as a reviewer comment" test. Same prefix the FORM
- *  pattern anchors on, without requiring the verdict line to follow. */
-const REVIEWER_ANCHOR_RE = /^(?:<!--\s*verdict\s+sha=[^>]*-->\s*\n?)?\s*(?:#{1,6}\s*)?[*_]*\[tech-lead-reviewer\]/i;
+ *  pattern anchors on, without requiring the verdict line to follow. Also
+ *  admits a lane reviewer's own tag (`[tech-lead-reviewer-apps]` etc.), which
+ *  no reader accepts, so the post-time checks refuse that verdict instead of
+ *  letting it post invisible (sprigr-team#14736). */
+const REVIEWER_ANCHOR_RE = /^(?:<!--\s*verdict\s+sha=[^>]*-->\s*\n?)?\s*(?:#{1,6}\s*)?[*_]*\[tech-lead-reviewer(?:-[a-z0-9]+)*\]/i;
 
 /** How far into a body a `VERDICT:` line still counts as this comment's own
  *  ruling attempt rather than a quotation buried in prose. */
