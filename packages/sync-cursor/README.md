@@ -8,7 +8,7 @@ npm install @sprigr/apps-sync-cursor   # exact-pin it, like every @sprigr/apps-*
 
 | Piece | For |
 |---|---|
-| `makeSyncState` + `runResumablePage` | Paging through a **provider's** API across many invocations, with the cursor kept in your install's D1. See `src/page-walker.ts` for the failure semantics and when a null `nextCursor` resets the walk. |
+| `makeSyncState` + `runResumablePage` | Paging through a **provider's** API across many invocations, with the cursor kept in your install's D1. See `src/page-walker.ts` for the failure semantics and when a null `nextCursor` resets the walk. Pass `refreshUnchangedAfterMs` (0.3.0) so a tick whose cursor did not move skips its D1 write, unless your app picks work by oldest `last_run_at`. |
 | `runBackfillStep` + `startBackfill` | Filling a new column (or any row change) **inside your install's own D1** as a platform durable job, with a dry run first. |
 
 ## Backfills (sprigr-team decision 0291)
