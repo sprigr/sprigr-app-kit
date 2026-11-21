@@ -1,6 +1,7 @@
 {
   "name": "@sprigr/apps-reporting-core",
   "version": "0.0.1",
+  "private": true,
   "description": "Pure reporting core: a model of dimensions and measures, a formula parser, a period engine, and a compiler from a saved view to one DuckDB statement.",
   "type": "module",
   "main": "./dist/index.js",
