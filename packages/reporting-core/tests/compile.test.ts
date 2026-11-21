@@ -530,7 +530,7 @@ describe('compileView, matrix mode', () => {
   it('groups cells, row totals, column totals and the grand total in one pass, and returns one row per cell', () => {
     const out = compiled(matrix);
     expect(out.sql).toBe([
-      'WITH g AS MATERIALIZED (',
+      'WITH g AS (',
       'SELECT f."branch_code" AS "code", f."product_code" AS "across", CASE WHEN GROUPING(f."product_code") = 0 THEN any_value("d_product"."name") END AS "across__name", CAST(SUM(f."amount") AS DOUBLE) AS "m__sales", CAST(GROUPING(f."branch_code") AS INTEGER) AS "__total", CAST(GROUPING(f."product_code") AS INTEGER) AS "__across_total"',
       'FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS f',
       'LEFT JOIN "products" AS "d_product" ON "d_product"."code" = f."product_code"',
@@ -601,7 +601,7 @@ describe('compileView, the long shape of a period view', () => {
   it('returns one row per member and period, with the periods as the columns of a matrix', () => {
     const out = compiled(view, long);
     expect(out.sql).toBe([
-      'WITH g AS MATERIALIZED (',
+      'WITH g AS (',
       'SELECT f."branch_code" AS "code", f."__b" AS "across", CAST(SUM(f."amount") AS DOUBLE) AS "m__sales", CAST(GROUPING(f."branch_code") AS INTEGER) AS "__total", CAST(GROUPING(f."__b") AS INTEGER) AS "__across_total"',
       'FROM (SELECT *, CASE WHEN "sale_date" < DATE \'2026-10-01\' THEN 1 WHEN "sale_date" < DATE \'2026-11-01\' THEN 2 WHEN "sale_date" < DATE \'2026-12-01\' THEN 3 END AS "__b" FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-09-01\' AND "sale_date" < DATE \'2026-12-01\') AS f',
       'GROUP BY GROUPING SETS ((f."branch_code", f."__b"), (f."branch_code"), (f."__b"), ())',
@@ -956,11 +956,42 @@ describe('the tables a statement reads', () => {
       { mode: 'period', period: { preset: 'rolling_3' }, options: { average_column: true } },
       { mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'] }, { mode: 'matrix', across: { dimension: 'product' } },
     ];
-    const names = views.flatMap((view) => [...compiled(view).sql.matchAll(/(?:WITH|\),) (\w+) AS (?:MATERIALIZED )?\(/g)].map((m) => m[1] ?? ''));
+    const names = views.flatMap((view) => [...compiled(view).sql.matchAll(/(?:WITH|\),) (\w+) AS \(/g)].map((m) => m[1] ?? ''));
     expect(names).toEqual(expect.arrayContaining(['g', 'r', 'a', 'sm', 's1', 's2']));
     expect(names.filter((name) => !isStageName(name))).toEqual([]);
     expect(['sales_lines', 'groups', 's', 'sm_2', 'ar'].filter(isStageName)).toEqual([]);
     expect(['S1', 's12', 'G', 'rw'].filter(isStageName)).toEqual(['S1', 's12', 'G', 'rw']);
+  });
+
+  it('is read by the route as naming the model tables and nothing else, in every mode', () => {
+    // The route's table scan, cut down: a stage is `name AS (`, and any other name after FROM or JOIN is a table the role must hold.
+    const routeTables = (sql: string): string[] => {
+      const code = sql.replace(/'(?:[^']|'')*'/g, "''");
+      const stages = new Set([...code.matchAll(/(?:^|[\s,(])("?[a-z_][a-z0-9_]*"?)\s*(?:\([^)]*\))?\s+as\s*\(/gi)].map((m) => (m[1] ?? '').replace(/"/g, '').toLowerCase()));
+      const names = [...code.matchAll(/\b(?:from|join)\s+("?[a-z_][a-z0-9_.]*"?)/gi)]
+        .filter((m) => !/\bis\s+(?:not\s+)?distinct\s*$/i.test(code.slice(0, m.index ?? 0)))
+        .map((m) => (m[1] ?? '').replace(/"/g, '').toLowerCase().split('.').pop() ?? '');
+      return [...new Set(names.filter((name) => !stages.has(name)))].sort();
+    };
+    const rolling = { preset: 'rolling_3' };
+    const cases: Array<[Record<string, unknown>, { periodShape?: 'wide' | 'long' }]> = [
+      [{ options: { average_row: true, sum_row: true, total_row: true } }, {}],
+      [{ group_by: 'department', properties: ['name'] }, {}],
+      [{ group_by: 'product', options: { activity: 'all' } }, {}],
+      [{ group_by: 'product', path: [{ dimension: 'product', selected: ['P1'] }], options: { others_row: true } }, {}],
+      [{ mode: 'variance', options: { sum_row: true } }, {}],
+      [{ mode: 'period', period: rolling, options: { average_column: true } }, {}],
+      [{ mode: 'period', period: rolling }, { periodShape: 'long' }],
+      [{ mode: 'period_variance', period: rolling }, {}],
+      [{ mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'] }, {}],
+      [{ mode: 'matrix', across: { dimension: 'product' } }, {}],
+      [{ mode: 'transaction', measures: ['sales', 'lines'] }, {}],
+      [{ mode: 'custom', custom_columns: [{ key: 'now', point: { measure: 'sales' } }] }, {}],
+    ];
+    for (const [view, ctx] of cases) {
+      const out = compiled(view, ctx);
+      expect(routeTables(out.sql), JSON.stringify(view)).toEqual([...out.tables].sort());
+    }
   });
 });
 

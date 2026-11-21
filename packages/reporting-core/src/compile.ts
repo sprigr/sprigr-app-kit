@@ -1486,8 +1486,8 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   const beside = totalRow ? 'g."__total" = 1' : columnTotals ? '(g."__total" = 1 AND g."__across_total" = 0)' : null;
   const kept = keepRows(scope.having, options, shown.map((m) => `m__${m.key}`));
   const sql = [
-    // Read three times below, so it is computed once.
-    'WITH g AS MATERIALIZED (',
+    // Every stage opens as `name AS (`. The route takes any other opening, such as AS MATERIALIZED, for a table it does not hold.
+    'WITH g AS (',
     `SELECT ${select.join(', ')}`,
     `FROM ${fact}`,
     ...scope.joins.values(),
