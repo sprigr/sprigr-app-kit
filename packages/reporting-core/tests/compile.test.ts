@@ -512,8 +512,21 @@ describe('compileView, snapshot measures', () => {
 
   it('reads the latest day of each window in a variance', () => {
     const { sql } = compiled({ mode: 'variance', measures: ['soh'] });
-    expect(sql).toContain('("__cur" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__cur") OVER ()) AS "__lastc", ("__prev" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__prev") OVER ()) AS "__lastp"');
+    const cur = '"sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\'';
+    const prev = '"sale_date" >= DATE \'2025-11-01\' AND "sale_date" < DATE \'2025-12-01\'';
+    const day = (within: string): string => `(SELECT MAX("sale_date") FROM "sales_lines" WHERE ${within})`;
+    expect(sql).toContain(`("sale_date" = ${day(cur)}) AS "__lastc", ("sale_date" = ${day(prev)}) AS "__lastp" FROM "sales_lines" WHERE (${cur}) OR (${prev})) AS f`);
     expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__lastp") AS DOUBLE) AS "prev__soh"');
+  });
+
+  it('looks for each window\'s latest day among its own rows when the two overlap', () => {
+    const { sql } = compiled({
+      mode: 'variance', measures: ['soh'],
+      period: { custom: { from: '2026-10-01', to: '2026-11-30' } },
+      compare: { period: { custom: { from: '2026-09-01', to: '2026-10-31' } } },
+    });
+    const earlier = '"sale_date" >= DATE \'2026-09-01\' AND "sale_date" < DATE \'2026-11-01\'';
+    expect(sql).toContain(`("sale_date" = (SELECT MAX("sale_date") FROM "sales_lines" WHERE ${earlier})) AS "__lastp"`);
   });
 
   it('adds nothing to a view with no snapshot measure', () => {
@@ -1149,7 +1162,8 @@ describe('compileView, custom mode', () => {
     expect(gp.columns[1]).toMatchObject({ measure: 'gp', format: 'percent' });
     const soh = compiled(custom([{ key: 'stock', point: { measure: 'soh' } }, now]));
     expect(soh.sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__l1") AS DOUBLE) AS "p1"');
-    expect(soh.sql).toContain('FROM (SELECT *, ("__w1" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__w1") OVER ()) AS "__l1" FROM (SELECT *, (');
+    const within = '"sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\'';
+    expect(soh.sql).toContain(`FROM (SELECT *, (${within}) AS "__w1", ("sale_date" = (SELECT MAX("sale_date") FROM "sales_lines" WHERE ${within})) AS "__l1" FROM "sales_lines" WHERE (${within})) AS f`);
     expect(compiled(custom([now])).sql).not.toContain('"__l1"');
   });
 
@@ -1266,9 +1280,11 @@ describe('compileView, period variance mode', () => {
   it('reads a snapshot measure on the latest day of each period of both windows', () => {
     const { sql } = compiled({ ...view, measures: ['soh'] });
     expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__b" = 1 AND f."__last") AS DOUBLE) AS "b1__soh", CAST(SUM(f."qty") FILTER (WHERE f."__pb" = 1 AND f."__plast") AS DOUBLE) AS "pb1__soh"');
+    const months = (year: number): string => `CASE WHEN "sale_date" < DATE '${year}-10-01' THEN 1 WHEN "sale_date" < DATE '${year}-11-01' THEN 2 WHEN "sale_date" < DATE '${year}-12-01' THEN 3 END`;
+    const day = (within: string): string => `SELECT MAX("sale_date") FROM "sales_lines" WHERE ${within}`;
     expect(sql).toContain(
-      'FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER (PARTITION BY "__b")) AS "__last", ("sale_date" = MAX("sale_date") OVER (PARTITION BY "__pb")) AS "__plast", '
-        + '("__cur" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__cur") OVER ()) AS "__lastc", ("__prev" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__prev") OVER ()) AS "__lastp" FROM (SELECT *, CASE WHEN',
+      `("sale_date" IN (${day(cur)} GROUP BY ${months(2026)})) AS "__last", ("sale_date" = (${day(cur)})) AS "__lastc", `
+        + `("sale_date" IN (${day(prev)} GROUP BY ${months(2025)})) AS "__plast", ("sale_date" = (${day(prev)})) AS "__lastp" FROM "sales_lines" WHERE (${cur}) OR (${prev})) AS f`,
     );
   });
 

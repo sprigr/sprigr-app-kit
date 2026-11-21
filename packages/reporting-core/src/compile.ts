@@ -835,6 +835,26 @@ function withLatestDays(table: string, date: string, period: string, columns: st
   return `(SELECT *${columns}, (${date} IN (${day} GROUP BY ${period})) AS "__last", (${date} = (${day})) AS "__lastw" FROM ${table} WHERE ${where}) AS ${FACT}`;
 }
 
+/** One window of a view that reads several: its rows, the flag for its latest day, and its period columns if it is cut into them. */
+interface LatestWindow {
+  where: string;
+  flag: string;
+  periods?: { by: string; flag: string };
+}
+
+/**
+ * Fact rows of several windows, each flagged on the latest day of every window it is in. The windows may overlap,
+ * so each day is looked for among its own window's rows, and a row on that day is in that window. A window cut
+ * into periods flags the latest day of each as well, which is read only beside that window's own period number.
+ */
+function withLatestDayOfEach(table: string, date: string, columns: string, where: string, windows: LatestWindow[]): string {
+  const flags = windows.flatMap((w) => {
+    const day = `SELECT MAX(${date}) FROM ${table} WHERE ${w.where}`;
+    return [...(w.periods ? [`(${date} IN (${day} GROUP BY ${w.periods.by})) AS ${q(w.periods.flag)}`] : []), `(${date} = (${day})) AS ${q(w.flag)}`];
+  });
+  return `(SELECT *${columns}, ${flags.join(', ')} FROM ${table} WHERE ${where}) AS ${FACT}`;
+}
+
 /** A CASE over a fact row's date that gives the rows of each period column their own value. */
 function perBucket(date: string, buckets: PeriodBucket[], value: (bucket: PeriodBucket, index: number) => number): string {
   return `CASE ${buckets.map((b, i) => `WHEN ${date} < ${sqlDate(b.to)} THEN ${value(b, i)}`).join(' ')} END`;
@@ -960,6 +980,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   let comparison: PeriodWindow | null = null;
   /** Period variance mode: the comparison window's periods, one for each period column. */
   let earlierSlices: Slice[] = [];
+  let earlierBuckets: PeriodBucket[] = [];
   if (view.mode === 'variance' || periodVariance) {
     const compare = view.compare ?? 'previous_year';
     if (typeof compare === 'object' && compare !== null) {
@@ -986,6 +1007,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
       if (earlier.length !== buckets.length) {
         fail('option_unsupported', `the period splits into ${buckets.length} columns and the comparison into ${earlier.length}, so they cannot be set side by side`);
       }
+      earlierBuckets = earlier;
       earlierSlices = earlier.map((bucket, i) => ({
         bucket,
         filter: `${FACT}."__pb" = ${i + 1}`,
@@ -1106,21 +1128,17 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
 
   // The fact subquery. A snapshot measure needs each window's latest day, the same day for every member,
   // so it is found here, before any filter narrows the rows.
-  const rows = `SELECT *${factColumns} FROM ${q(stream.table)} WHERE ${factWhere}`;
-  const latest = (over: string): string => `${date} = MAX(${date}) ${over}`;
-  const lastColumns = [
-    ...(buckets.length > 0 ? [`(${latest('OVER (PARTITION BY "__b")')}) AS "__last"`] : []),
-    ...(periodVariance ? [`(${latest('OVER (PARTITION BY "__pb")')}) AS "__plast"`] : []),
-    ...(current
-      ? [`("__cur" AND ${latest('FILTER (WHERE "__cur") OVER ()')}) AS "__lastc"`, `("__prev" AND ${latest('FILTER (WHERE "__prev") OVER ()')}) AS "__lastp"`]
-      : [`(${latest('OVER ()')}) AS "__lastw"`]),
-  ].join(', ');
-  const fact = !uses.has('snapshot') ? `(${rows}) AS ${FACT}`
+  const periodOf = (parts: PeriodBucket[]): string => perBucket(date, parts, (_, i) => i + 1);
+  const fact = !uses.has('snapshot') ? `(SELECT *${factColumns} FROM ${q(stream.table)} WHERE ${factWhere}) AS ${FACT}`
     // One window and no period columns: the only day needed is the latest of all the rows.
-    : buckets.length === 0 && !current ? withLatestDay(q(stream.table), date, factColumns, factWhere)
+    : buckets.length === 0 && !comparison ? withLatestDay(q(stream.table), date, factColumns, factWhere)
     // Period columns over one window: the latest day of each, and of all the rows.
-    : !current ? withLatestDays(q(stream.table), date, perBucket(date, buckets, (_, i) => i + 1), factColumns, factWhere)
-    : `(SELECT *, ${lastColumns} FROM (${rows}) AS s) AS ${FACT}`;
+    : !comparison ? withLatestDays(q(stream.table), date, periodOf(buckets), factColumns, factWhere)
+    // Two windows: the latest day of each, and in a period variance of each period of each.
+    : withLatestDayOfEach(q(stream.table), date, factColumns, factWhere, [
+      { where: inWindow(period.window), flag: '__lastc', ...(periodVariance ? { periods: { by: periodOf(buckets), flag: '__last' } } : {}) },
+      { where: inWindow(comparison), flag: '__lastp', ...(periodVariance ? { periods: { by: periodOf(earlierBuckets), flag: '__plast' } } : {}) },
+    ]);
   const factRows = [`FROM ${fact}`, ...joins.values(), ...(where.length > 0 ? [`WHERE ${where.join(' AND ')}`] : [])];
   // With the member list, the filtered fact rows become a subquery joined to the dimension's own table:
   // "all" keeps both sides, "without" keeps the members no fact row matched.
@@ -1314,13 +1332,11 @@ function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileConte
 
   // The fact subquery: the rows of any window, each flagged with the windows it falls in. A snapshot
   // measure needs each window's latest day, the same day for every member, found before any filter.
-  const flags = windows.map((w, i) => `(${inWindow(w)}) AS ${q(`__w${i + 1}`)}`);
-  const rows = `SELECT *, ${flags.join(', ')} FROM ${q(stream.table)} WHERE ${windows.map((w) => `(${inWindow(w)})`).join(' OR ')}`;
-  const lasts = windows.map((_, i) => {
-    const flag = q(`__w${i + 1}`);
-    return `(${flag} AND ${date} = MAX(${date}) FILTER (WHERE ${flag}) OVER ()) AS ${q(`__l${i + 1}`)}`;
-  });
-  const fact = uses.has('snapshot') ? `(SELECT *, ${lasts.join(', ')} FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+  const flags = `, ${windows.map((w, i) => `(${inWindow(w)}) AS ${q(`__w${i + 1}`)}`).join(', ')}`;
+  const anyWindow = windows.map((w) => `(${inWindow(w)})`).join(' OR ');
+  const fact = uses.has('snapshot')
+    ? withLatestDayOfEach(q(stream.table), date, flags, anyWindow, windows.map((w, i) => ({ where: inWindow(w), flag: `__l${i + 1}` })))
+    : `(SELECT *${flags} FROM ${q(stream.table)} WHERE ${anyWindow}) AS ${FACT}`;
 
   const sql = [
     'WITH g AS (',
