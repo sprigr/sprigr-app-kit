@@ -146,7 +146,17 @@ describe('compileView, dimensions and filters', () => {
 
 describe('compileView refusals', () => {
   it.each([
-    [{ mode: 'matrix' }, 'mode_unsupported'],
+    [{ mode: 'pivot' }, 'mode_unsupported'],
+    [{ mode: 'matrix' }, 'bad_across'],
+    [{ mode: 'matrix', across: { dimension: 'branch' } }, 'bad_across'],
+    [{ mode: 'matrix', across: { dimension: 'product', order: 'random' } }, 'bad_across'],
+    [{ mode: 'matrix', across: { dimension: 'product', limit: 0 } }, 'bad_across'],
+    [{ mode: 'matrix', across: { dimension: 'customer' } }, 'dimension_not_on_stream'],
+    [{ mode: 'matrix', across: { dimension: 'nope' } }, 'unknown_dimension'],
+    [{ mode: 'matrix', across: { dimension: 'product' }, limit: 200 }, 'bad_paging'],
+    [{ mode: 'matrix', across: { dimension: 'product', limit: 2000 } }, 'bad_paging'],
+    [{ mode: 'matrix', across: { dimension: 'product' }, options: { activity: 'all' } }, 'option_unsupported'],
+    [{ mode: 'matrix', across: { dimension: 'product' }, sort: { by: 'period.1.sales', dir: 'asc' } }, 'bad_sort'],
     [{ mode: 'stream', measures: ['sales', 'ordered'] }, 'dimension_not_on_stream'],
     [{ mode: 'stream', group_by: 'product', options: { activity: 'all' } }, 'option_unsupported'],
     [{ mode: 'stream', group_by: 'product', sort: { by: 'period.1.sales', dir: 'asc' } }, 'bad_sort'],
@@ -485,5 +495,75 @@ describe('compileView, stream mode', () => {
   it('sorts by a property', () => {
     const { sql } = compiled({ ...streams, properties: ['name'], sort: { by: 'property.name', dir: 'asc' } });
     expect(sql).toContain('ORDER BY "prop__name" ASC NULLS LAST, "code" ASC');
+  });
+});
+
+describe('compileView, matrix mode', () => {
+  const matrix = { mode: 'matrix', across: { dimension: 'product' } };
+
+  it('groups cells, row totals, column totals and the grand total in one pass, and returns one row per cell', () => {
+    const out = compiled(matrix);
+    expect(out.sql).toBe([
+      'WITH g AS MATERIALIZED (',
+      'SELECT f."branch_code" AS "code", f."product_code" AS "across", CASE WHEN GROUPING(f."product_code") = 0 THEN any_value("d_product"."name") END AS "across__name", CAST(SUM(f."amount") AS DOUBLE) AS "m__sales", CAST(GROUPING(f."branch_code") AS INTEGER) AS "__total", CAST(GROUPING(f."product_code") AS INTEGER) AS "__across_total"',
+      'FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS f',
+      'LEFT JOIN "products" AS "d_product" ON "d_product"."code" = f."product_code"',
+      'GROUP BY GROUPING SETS ((f."branch_code", f."product_code"), (f."branch_code"), (f."product_code"), ())',
+      '), rw AS (',
+      'SELECT "code", row_number() OVER (ORDER BY "m__sales" DESC NULLS LAST, "code" ASC) AS "__row"',
+      'FROM g',
+      'WHERE "__total" = 0 AND "__across_total" = 1',
+      '), cl AS (',
+      'SELECT "across", row_number() OVER (ORDER BY "m__sales" DESC NULLS LAST, "across" ASC) AS "__col"',
+      'FROM g',
+      'WHERE "__total" = 1 AND "__across_total" = 0',
+      ')',
+      'SELECT g.*, COALESCE(rw."__row", 0) AS "__row", COALESCE(cl."__col", 0) AS "__col",',
+      'CAST((SELECT count(*) FROM rw) AS INTEGER) AS "__rows", CAST((SELECT count(*) FROM cl) AS INTEGER) AS "__cols"',
+      'FROM g',
+      'LEFT JOIN rw ON g."__total" = 0 AND rw."code" IS NOT DISTINCT FROM g."code"',
+      'LEFT JOIN cl ON g."__across_total" = 0 AND cl."across" IS NOT DISTINCT FROM g."across"',
+      'WHERE rw."__row" > 0 AND rw."__row" <= 153 AND (g."__across_total" = 1 OR cl."__col" <= 12)',
+      'ORDER BY g."__total" DESC, rw."__row" ASC, g."__across_total" DESC, cl."__col" ASC',
+    ].join('\n'));
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'across', 'across__name', 'm__sales', '__total', '__across_total', '__row', '__col', '__rows', '__cols']);
+    expect(out.across).toEqual({ dimension: 'product', limit: 12 });
+  });
+
+  it('keeps the column totals when asked, and the columns and page it is given', () => {
+    const out = compiled({ ...matrix, across: { dimension: 'product', limit: 3, order: 'code' }, limit: 10, offset: 20, options: { total_row: true } });
+    expect(out.sql).toContain('SELECT "across", row_number() OVER (ORDER BY "across" ASC) AS "__col"');
+    expect(out.sql).toContain('WHERE (g."__total" = 1 OR (rw."__row" > 20 AND rw."__row" <= 30)) AND (g."__across_total" = 1 OR cl."__col" <= 3)');
+    expect(out.across).toEqual({ dimension: 'product', limit: 3 });
+  });
+
+  it('fits a page to the result rows it may return', () => {
+    const wide = compileView(fixtureModel(), { ...base, ...matrix } as ViewState, { today: TODAY, maxRows: Number.POSITIVE_INFINITY });
+    expect(wide.ok ? wide.sql : wide.reason).toContain('rw."__row" <= 200 AND');
+  });
+
+  it('filters rows on their totals, and can read a measure it does not show', () => {
+    const out = compiled({ ...matrix, filters: { op: 'and', rules: [{ measure: 'qty', cmp: '>', value: 5 }] } });
+    expect(out.sql).toContain('WHERE "__total" = 0 AND "__across_total" = 1 AND ("m__qty" > 5)\n), cl AS (');
+    expect(out.sql).toContain('SELECT g.* EXCLUDE ("m__qty"), COALESCE(rw."__row", 0) AS "__row"');
+    expect(out.columns.map((c) => c.name)).not.toContain('m__qty');
+  });
+
+  it('works a formula out at every level from that level\'s own sums', () => {
+    const { sql } = compiled({ ...matrix, measures: ['gp'] });
+    expect(sql).toContain('CAST(((((SUM(f."amount")) - (SUM(f."cost")))) / NULLIF((SUM(f."amount")), 0)) AS DOUBLE) AS "m__gp"');
+  });
+
+  it('shows row properties, sorts by one, and names the columns only when their dimension has names', () => {
+    const out = compiled({ ...matrix, group_by: 'product', across: { dimension: 'branch' }, properties: ['name'], sort: { by: 'property.name', dir: 'asc' } });
+    expect(out.sql).toContain('SELECT f."product_code" AS "code", CASE WHEN GROUPING(f."product_code") = 0 THEN any_value("d_product"."name") END AS "prop__name", f."branch_code" AS "across", CAST(SUM(f."amount") AS DOUBLE) AS "m__sales"');
+    expect(out.sql).toContain('ORDER BY "prop__name" ASC NULLS LAST, "code" ASC) AS "__row"');
+    expect(out.columns.map((c) => c.name).slice(0, 4)).toEqual(['code', 'prop__name', 'across', 'm__sales']);
+  });
+
+  it('reads a snapshot measure on the latest day of the period', () => {
+    const { sql } = compiled({ ...matrix, measures: ['soh'] });
+    expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__lastw") AS DOUBLE) AS "m__soh"');
+    expect(sql).toContain('FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" WHERE');
   });
 });

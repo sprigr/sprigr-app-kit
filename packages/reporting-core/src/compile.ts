@@ -22,6 +22,7 @@
  * windows the same way and adds a stage `v` that subtracts them. Transaction
  * mode lists the fact rows themselves and has no GROUP BY. Stream mode groups
  * each stream in its own stage and folds the stages into one row per member.
+ * Matrix mode groups by two dimensions and returns one row per cell.
  */
 import { emitFormulaSql, parseFormula, type FormulaNode } from './formula';
 import { isFormulaMeasure, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelStream, type ReportingModel } from './model';
@@ -34,10 +35,12 @@ export const ROUTE_MAX_SQL_CHARS = 24_000;
 /** The query route's row cap (`ANALYTICS_QUERY_MAX_ROWS` in sprigr-team). */
 export const ROUTE_MAX_ROWS = 2_000;
 export const DEFAULT_PAGE_ROWS = 200;
+/** How many columns a matrix keeps when the view does not say. */
+export const DEFAULT_ACROSS_MEMBERS = 12;
 const MAX_KEYWORD_CHARS = 200;
 const MAX_FILTER_DEPTH = 3;
 
-export const VIEW_MODES = ['total', 'period', 'variance', 'transaction', 'stream'] as const;
+export const VIEW_MODES = ['total', 'period', 'variance', 'transaction', 'stream', 'matrix'] as const;
 export type ViewMode = (typeof VIEW_MODES)[number];
 export const MEASURE_CMPS = ['=', '<>', '<', '<=', '>', '>='] as const;
 /** The four columns a measure has in variance mode. */
@@ -56,6 +59,11 @@ export interface ViewDimensionRule { dimension: string; property?: string; cmp: 
 export interface ViewMeasureRule { measure: string; cmp: string; value: number; of?: VariancePart }
 export interface ViewFilterGroup { op: 'and' | 'or'; rules: Array<ViewDimensionRule | ViewMeasureRule | ViewFilterGroup> }
 export interface ViewSort { by: string; dir: 'asc' | 'desc' }
+/**
+ * Matrix mode: the dimension whose members become columns. `limit` is how many to keep.
+ * `order` picks them: `value` keeps those with the largest total of the first measure, `code` the first by code.
+ */
+export interface ViewAcross { dimension: string; limit?: number; order?: 'value' | 'code' }
 export interface ViewOptions {
   activity?: 'with' | 'without' | 'all';
   total_row?: boolean;
@@ -78,6 +86,8 @@ export interface ViewState {
   /** Drill path: each step keeps only the selected codes of one dimension. */
   path?: ViewPathStep[];
   group_by: string;
+  /** Matrix mode only: the second dimension. */
+  across?: ViewAcross;
   /** Properties of the group-by dimension to show: `name` or a property key. The code is always returned. */
   properties?: string[];
   /** Transaction mode only: which of the stream's extra columns to list. All of them when absent. */
@@ -108,7 +118,7 @@ export interface CompileContext {
 export interface CompiledColumn {
   /** The column's name in the result. */
   name: string;
-  kind: 'code' | 'property' | 'measure' | 'date' | 'dimension' | 'column' | 'meta';
+  kind: 'code' | 'property' | 'measure' | 'date' | 'dimension' | 'column' | 'across' | 'meta';
   label: string;
   /** For a property column: its key. */
   property?: string;
@@ -119,7 +129,7 @@ export interface CompiledColumn {
   period?: PeriodBucket | null;
   /** For a measure column in variance mode: which of the four it is. */
   part?: VariancePart;
-  /** For a dimension column in a transaction list: the dimension key. */
+  /** For a dimension column in a transaction list, or the column dimension of a matrix: the dimension key. */
   dimension?: string;
   /** For an extra column in a transaction list: its key on the stream. */
   column?: string;
@@ -137,6 +147,8 @@ export interface CompiledView {
   months: { from: string; to: string };
   /** Stream mode: the streams the statement reads, the view's own first. */
   streams?: string[];
+  /** Matrix mode: the column dimension and how many of its members the result keeps. */
+  across?: { dimension: string; limit: number };
 }
 
 const FACT = 'f';
@@ -161,7 +173,8 @@ export function compileView(model: ReportingModel, view: ViewState, ctx: Compile
   try {
     if (!(VIEW_MODES as readonly string[]).includes(view.mode)) fail('mode_unsupported', `mode "${String(view.mode)}" is not compiled yet`);
     if (view.mode === 'transaction') return compileTransactions(model, view, ctx);
-    return view.mode === 'stream' ? compileStreams(model, view, ctx) : compileGrouped(model, view, ctx);
+    if (view.mode === 'stream') return compileStreams(model, view, ctx);
+    return view.mode === 'matrix' ? compileMatrix(model, view, ctx) : compileGrouped(model, view, ctx);
   } catch (err) {
     return refusalOf(err);
   }
@@ -443,6 +456,60 @@ function rankAndPage(source: string, sortName: string, sort: ViewSort, having: s
  */
 interface Slice { bucket: PeriodBucket; filter: string; last: string }
 
+/** What a measure of one stream is computed from. */
+interface MeasureSource {
+  stream: ModelStream;
+  measureByKey: Map<string, ModelMeasure>;
+  parsed: Map<string, FormulaNode>;
+  /** How a count with no column counts the fact rows. */
+  countAll: string;
+  /** Days in the whole window, for a measure not cut to a slice. */
+  days: number;
+  /** The number of period columns, in a period view. */
+  periodCount?: number;
+  /** Gains 'snapshot' when a snapshot measure is read, so the fact rows get their latest-day flags. */
+  uses: Set<'snapshot'>;
+}
+
+/** One measure over a slice, or over the whole window: an aggregate for a base measure, the formula over those aggregates otherwise. */
+function measureOver(src: MeasureSource, key: string, slice: Slice | null, depth = 0): string {
+  if (depth > 20) fail('formula_cycle', `"${key}" refers back to itself`);
+  const measure = src.measureByKey.get(key) ?? fail('formula_unknown_measure', `"${key}" is not a measure`);
+  if (isFormulaMeasure(measure)) {
+    let node = src.parsed.get(key);
+    if (!node) { node = parseFormula(measure.formula); src.parsed.set(key, node); }
+    return emitFormulaSql(node, {
+      measure: (ref) => measureOver(src, ref, slice, depth + 1),
+      days: slice ? slice.bucket.days : src.days,
+      ...(src.periodCount !== undefined ? { periodCount: src.periodCount } : {}),
+    });
+  }
+  if (measure.stream !== src.stream.key) fail('measure_not_on_stream', `"${key}" belongs to stream "${measure.stream}", not "${src.stream.key}"`);
+  const call = aggregateOf(measure, src.countAll);
+  // A level, not a flow: only the rows of the window's latest day count.
+  if (measure.snapshot) {
+    src.uses.add('snapshot');
+    return `${call} FILTER (WHERE ${slice ? slice.last : `${FACT}."__lastw"`})`;
+  }
+  return slice ? `${call} FILTER (WHERE ${slice.filter})` : call;
+}
+
+/** A stream's fact rows in one window, aliased f. With `latest`, each row is flagged when it is on the window's latest day. */
+function factOver(stream: ModelStream, range: PeriodWindow, latest: boolean): string {
+  const date = q(stream.date);
+  const rows = `SELECT * FROM ${q(stream.table)} WHERE ${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
+  return latest ? `(SELECT *, (${date} = MAX(${date}) OVER ()) AS "__lastw" FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+}
+
+/** The properties a view shows beside the code, each once. */
+function shownProperties(view: ViewState): string[] {
+  return (view.properties ?? []).filter((property, i, all) => property !== 'code' && all.indexOf(property) === i);
+}
+
+function propertyLabel(dim: ModelDimension, property: string): string {
+  return property === 'name' ? 'Name' : dim.properties.find((p) => p.key === property)?.label ?? property;
+}
+
 /** Total, period and variance modes: one row per member of the group-by dimension. */
 function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
   const options: ViewOptions = view.options ?? {};
@@ -498,29 +565,17 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
 
   // Measures: an aggregate for a base measure, the formula over those aggregates otherwise.
   const uses = new Set<'snapshot'>();
-  const parsed = new Map<string, FormulaNode>();
-  const measureSql = (key: string, slice: Slice | null, depth: number): string => {
-    if (depth > 20) fail('formula_cycle', `"${key}" refers back to itself`);
-    const measure = measureByKey.get(key) ?? fail('formula_unknown_measure', `"${key}" is not a measure`);
-    if (isFormulaMeasure(measure)) {
-      let node = parsed.get(key);
-      if (!node) { node = parseFormula(measure.formula); parsed.set(key, node); }
-      return emitFormulaSql(node, {
-        measure: (ref) => measureSql(ref, slice, depth + 1),
-        days: slice ? slice.bucket.days : windowDays,
-        ...(view.mode === 'period' ? { periodCount: buckets.length } : {}),
-      });
-    }
-    if (measure.stream !== stream.key) fail('measure_not_on_stream', `"${key}" belongs to stream "${measure.stream}", not "${stream.key}"`);
+  const reads: MeasureSource = {
+    stream,
+    measureByKey,
+    parsed: new Map(),
     // A member with no fact rows still has one row in the join, which a bare COUNT(*) would count.
-    const call = aggregateOf(measure, members ? `COUNT(${FACT}."__in")` : 'COUNT(*)');
-    // A level, not a flow: only the rows of the window's latest day count.
-    if (measure.snapshot) {
-      uses.add('snapshot');
-      return `${call} FILTER (WHERE ${slice ? slice.last : `${FACT}."__lastw"`})`;
-    }
-    return slice ? `${call} FILTER (WHERE ${slice.filter})` : call;
+    countAll: members ? `COUNT(${FACT}."__in")` : 'COUNT(*)',
+    days: windowDays,
+    ...(view.mode === 'period' ? { periodCount: buckets.length } : {}),
+    uses,
   };
+  const measureSql = (key: string, slice: Slice | null): string => measureOver(reads, key, slice);
 
   // The select list and the column map, in display order.
   const columns: CompiledColumn[] = [{ name: 'code', kind: 'code', label: groupDim.label }];
@@ -532,7 +587,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     const expr = `any_value(${members ? members.property(property) : scope.propertyOf(groupDim.key, property)})`;
     const name = `prop__${property}`;
     select.push(`${totalRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
-    const label = property === 'name' ? 'Name' : groupDim.properties.find((p) => p.key === property)?.label ?? property;
+    const label = propertyLabel(groupDim, property);
     columns.push({ name, kind: 'property', label, property });
   });
   const display = slices.map((slice, i) => ({ slice, index: i + 1 }));
@@ -550,12 +605,12 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     const about = { measure: measure.key, format: measure.format };
     if (seen) {
       display.forEach(({ slice, index }) => {
-        put(select, `b${index}__${measure.key}`, double(measureSql(measure.key, slice, 0)), true,
+        put(select, `b${index}__${measure.key}`, double(measureSql(measure.key, slice)), true,
           { ...about, label: `${measure.label} ${slice.bucket.label}`, period: slice.bucket });
       });
     }
     const wholeName = `m__${measure.key}`;
-    put(select, wholeName, double(measureSql(measure.key, current, 0)), seen, {
+    put(select, wholeName, double(measureSql(measure.key, current)), seen, {
       ...about,
       label: view.mode === 'period' ? `${measure.label} Total` : measure.label,
       period: current ? current.bucket : null,
@@ -564,7 +619,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     if (!current || !previous) return;
     const cur = q(wholeName);
     const prev = q(`prev__${measure.key}`);
-    put(select, `prev__${measure.key}`, double(measureSql(measure.key, previous, 0)), seen,
+    put(select, `prev__${measure.key}`, double(measureSql(measure.key, previous)), seen,
       { ...about, label: `${measure.label} ${previous.bucket.label}`, period: previous.bucket, part: 'previous' });
     // A member with nothing in one window still has a variance: the blank counts as 0.
     put(derived, `var__${measure.key}`, `COALESCE(${cur}, 0) - COALESCE(${prev}, 0)`, seen,
@@ -764,13 +819,13 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
     return `any_value(${q(`a__${measure.key}`)})`;
   };
 
-  const properties = (view.properties ?? []).filter((property, i, all) => property !== 'code' && all.indexOf(property) === i);
+  const properties = shownProperties(view);
   const columns: CompiledColumn[] = [{ name: 'code', kind: 'code', label: groupDim.label }];
   const select: string[] = ['"code"'];
   properties.forEach((property) => {
     const name = `prop__${property}`;
     select.push(`any_value(${q(name)}) AS ${q(name)}`);
-    const label = property === 'name' ? 'Name' : groupDim.properties.find((p) => p.key === property)?.label ?? property;
+    const label = propertyLabel(groupDim, property);
     columns.push({ name, kind: 'property', label, property });
   });
   const left: string[] = ['__rn'];
@@ -798,7 +853,6 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
     const scope = i === 0 ? lead : scopeOf(model, { ...view, stream: key });
     const { stream, codeExpr } = scope;
     const mine = needed.get(key) ?? [];
-    const date = q(stream.date);
     const grouping = `GROUPING(${codeExpr})`;
     const part: string[] = [`${codeExpr} AS "code"`];
     properties.forEach((property) => {
@@ -810,15 +864,11 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
       part.push(`${measure.snapshot ? `${call} FILTER (WHERE ${FACT}."__lastw")` : call} AS ${q(`a__${measure.key}`)}`);
     });
     part.push(`${totalRow ? `CAST(${grouping} AS INTEGER)` : '0'} AS "__total"`);
-    const rows = `SELECT * FROM ${q(stream.table)} WHERE ${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
-    // A snapshot measure reads its own stream's latest day in the period.
-    const fact = mine.some((measure) => measure.snapshot)
-      ? `(SELECT *, (${date} = MAX(${date}) OVER ()) AS "__lastw" FROM (${rows}) AS s) AS ${FACT}`
-      : `(${rows}) AS ${FACT}`;
     return [
       `${i === 0 ? 'WITH' : '),'} s${i + 1} AS (`,
       `SELECT ${part.join(', ')}`,
-      `FROM ${fact}`,
+      // A snapshot measure reads its own stream's latest day in the period.
+      `FROM ${factOver(stream, range, mine.some((measure) => measure.snapshot))}`,
       ...scope.joins.values(),
       ...(scope.where.length > 0 ? [`WHERE ${scope.where.join(' AND ')}`] : []),
       totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
@@ -837,4 +887,120 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
   checkLength(sql, ctx);
 
   return { ok: true, sql, columns, window: range, buckets: [], months: monthsRange(range), streams: streamKeys };
+}
+
+/**
+ * Matrix mode: two dimensions, one result row per cell.
+ *
+ * Stage g groups four ways in one pass: each cell, each row's total, each column's total and the grand
+ * total, so a formula is worked out at every level from that level's own sums. Stage rw ranks the rows
+ * by their totals, stage cl ranks the columns, and the result keeps the cells of one page of rows and
+ * the first columns. The grid pivots it: `__row` and `__col` say where a cell goes, 0 meaning a total.
+ */
+function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
+  const options: ViewOptions = view.options ?? {};
+  if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', 'the activity option is not compiled for matrix mode yet');
+  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled yet');
+  const totalRow = options.total_row === true;
+
+  const scope = scopeOf(model, view);
+  const { stream, measureByKey, groupDim } = scope;
+  const across = view.across;
+  if (!across || typeof across.dimension !== 'string') fail('bad_across', 'a matrix needs a second dimension in "across"');
+  const acrossDim = scope.dimension(across.dimension);
+  if (acrossDim.key === groupDim.key) fail('bad_across', 'the second dimension must differ from the first');
+  const order = across.order ?? 'value';
+  if (order !== 'value' && order !== 'code') fail('bad_across', `"${String(order)}" is not a column order`);
+  const shown = shownMeasures(view, measureByKey);
+  const first = shown[0] ?? fail('no_measures', 'a view needs at least one measure');
+  const unseen = scope.filterMeasures
+    .filter((key) => !view.measures.includes(key))
+    .map((key) => measureByKey.get(key) ?? fail('unknown_measure', `no measure "${key}"`));
+  const period = resolvePeriod(view.period, model.periods, ctx.today, { periodToDate: options.period_to_date === true });
+  const range = period.window;
+
+  // Paging. Every row kept costs one result row per column kept, plus one for its total.
+  const maxRows = ctx.maxRows ?? ROUTE_MAX_ROWS;
+  const members = across.limit ?? DEFAULT_ACROSS_MEMBERS;
+  if (!Number.isInteger(members) || members < 1) fail('bad_across', 'across.limit must be a whole number, 1 or more');
+  const room = Math.floor(maxRows / (members + 1)) - (totalRow ? 1 : 0);
+  if (room < 1) fail('bad_paging', `${members} columns leave no room for a row in ${maxRows} result rows`);
+  const limit = view.limit ?? Math.min(DEFAULT_PAGE_ROWS, room);
+  const offset = view.offset ?? 0;
+  if (!Number.isInteger(limit) || limit < 1 || limit > room) fail('bad_paging', `with ${members} columns, limit must be a whole number from 1 to ${room}`);
+  if (!Number.isInteger(offset) || offset < 0) fail('bad_paging', 'offset must be a whole number, 0 or more');
+
+  // The select list and the column map.
+  const rowCode = scope.codeExpr;
+  const colCode = scope.propertyOf(acrossDim.key, 'code');
+  const columns: CompiledColumn[] = [{ name: 'code', kind: 'code', label: groupDim.label }];
+  const select: string[] = [`${rowCode} AS "code"`];
+  shownProperties(view).forEach((property) => {
+    const name = `prop__${property}`;
+    select.push(`CASE WHEN GROUPING(${rowCode}) = 0 THEN any_value(${scope.propertyOf(groupDim.key, property)}) END AS ${q(name)}`);
+    columns.push({ name, kind: 'property', label: propertyLabel(groupDim, property), property });
+  });
+  select.push(`${colCode} AS "across"`);
+  columns.push({ name: 'across', kind: 'across', label: acrossDim.label, dimension: acrossDim.key });
+  if (acrossDim.table && acrossDim.name) {
+    select.push(`CASE WHEN GROUPING(${colCode}) = 0 THEN any_value(${scope.propertyOf(acrossDim.key, 'name')}) END AS "across__name"`);
+    columns.push({ name: 'across__name', kind: 'across', label: propertyLabel(acrossDim, 'name'), dimension: acrossDim.key, property: 'name' });
+  }
+  const uses = new Set<'snapshot'>();
+  const reads: MeasureSource = { stream, measureByKey, parsed: new Map(), countAll: 'COUNT(*)', days: daysBetween(range.from, range.to), uses };
+  const hidden: string[] = [];
+  const addMeasure = (measure: ModelMeasure, seen: boolean): void => {
+    const name = `m__${measure.key}`;
+    select.push(`CAST(${measureOver(reads, measure.key, null)} AS DOUBLE) AS ${q(name)}`);
+    if (seen) columns.push({ name, kind: 'measure', label: measure.label, measure: measure.key, format: measure.format, period: null });
+    else hidden.push(name);
+  };
+  shown.forEach((measure) => addMeasure(measure, true));
+  unseen.forEach((measure) => addMeasure(measure, false));
+  select.push(`CAST(GROUPING(${rowCode}) AS INTEGER) AS "__total"`, `CAST(GROUPING(${colCode}) AS INTEGER) AS "__across_total"`);
+
+  const sort: ViewSort = view.sort ?? { by: `total.${first.key}`, dir: 'desc' };
+  if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
+  const sortName = sortNameOf(sort.by);
+  if (!columns.some((c) => c.name === sortName && c.kind !== 'across')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
+  columns.push(
+    { name: '__total', kind: 'meta', label: 'Total row' },
+    { name: '__across_total', kind: 'meta', label: 'Row total' },
+    { name: '__row', kind: 'meta', label: 'Row number' },
+    { name: '__col', kind: 'meta', label: 'Column number' },
+    { name: '__rows', kind: 'meta', label: 'Row count' },
+    { name: '__cols', kind: 'meta', label: 'Column count' },
+  );
+
+  const paged = `rw."__row" > ${offset} AND rw."__row" <= ${offset + limit}`;
+  const sql = [
+    // Read three times below, so it is computed once.
+    'WITH g AS MATERIALIZED (',
+    `SELECT ${select.join(', ')}`,
+    `FROM ${factOver(stream, range, uses.has('snapshot'))}`,
+    ...scope.joins.values(),
+    ...(scope.where.length > 0 ? [`WHERE ${scope.where.join(' AND ')}`] : []),
+    `GROUP BY GROUPING SETS ((${rowCode}, ${colCode}), (${rowCode}), (${colCode}), ())`,
+    // Rows are ranked, and filtered on a measure, by their totals across every column.
+    '), rw AS (',
+    `SELECT "code", row_number() OVER (ORDER BY ${q(sortName)} ${sort.dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, "code" ASC) AS "__row"`,
+    'FROM g',
+    `WHERE "__total" = 0 AND "__across_total" = 1${scope.having !== null ? ` AND ${scope.having}` : ''}`,
+    '), cl AS (',
+    `SELECT "across", row_number() OVER (ORDER BY ${order === 'value' ? `${q(`m__${first.key}`)} DESC NULLS LAST, ` : ''}"across" ASC) AS "__col"`,
+    'FROM g',
+    'WHERE "__total" = 1 AND "__across_total" = 0',
+    ')',
+    `SELECT g.*${hidden.length > 0 ? ` EXCLUDE (${hidden.map(q).join(', ')})` : ''}, COALESCE(rw."__row", 0) AS "__row", COALESCE(cl."__col", 0) AS "__col",`,
+    'CAST((SELECT count(*) FROM rw) AS INTEGER) AS "__rows", CAST((SELECT count(*) FROM cl) AS INTEGER) AS "__cols"',
+    'FROM g',
+    // A member can have no code, so the joins match a blank to a blank.
+    'LEFT JOIN rw ON g."__total" = 0 AND rw."code" IS NOT DISTINCT FROM g."code"',
+    'LEFT JOIN cl ON g."__across_total" = 0 AND cl."across" IS NOT DISTINCT FROM g."across"',
+    `WHERE ${totalRow ? `(g."__total" = 1 OR (${paged}))` : paged} AND (g."__across_total" = 1 OR cl."__col" <= ${members})`,
+    'ORDER BY g."__total" DESC, rw."__row" ASC, g."__across_total" DESC, cl."__col" ASC',
+  ].join('\n');
+  checkLength(sql, ctx);
+
+  return { ok: true, sql, columns, window: range, buckets: [], months: monthsRange(range), across: { dimension: acrossDim.key, limit: members } };
 }
