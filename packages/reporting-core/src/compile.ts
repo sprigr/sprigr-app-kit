@@ -825,6 +825,16 @@ function withLatestDay(table: string, date: string, columns: string, where: stri
   return `(SELECT *${columns}, (${date} = (SELECT MAX(${date}) FROM ${table} WHERE ${where})) AS "__lastw" FROM ${table} WHERE ${where}) AS ${FACT}`;
 }
 
+/**
+ * Fact rows flagged on the latest day of their period column, and of all of them. A row's period is read off its
+ * date alone, so a period's latest day is a day of no other period, and `IN` over those days picks the rows a
+ * window function over each period would, which ran slower.
+ */
+function withLatestDays(table: string, date: string, period: string, columns: string, where: string): string {
+  const day = `SELECT MAX(${date}) FROM ${table} WHERE ${where}`;
+  return `(SELECT *${columns}, (${date} IN (${day} GROUP BY ${period})) AS "__last", (${date} = (${day})) AS "__lastw" FROM ${table} WHERE ${where}) AS ${FACT}`;
+}
+
 /** A CASE over a fact row's date that gives the rows of each period column their own value. */
 function perBucket(date: string, buckets: PeriodBucket[], value: (bucket: PeriodBucket, index: number) => number): string {
   return `CASE ${buckets.map((b, i) => `WHEN ${date} < ${sqlDate(b.to)} THEN ${value(b, i)}`).join(' ')} END`;
@@ -1108,6 +1118,8 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   const fact = !uses.has('snapshot') ? `(${rows}) AS ${FACT}`
     // One window and no period columns: the only day needed is the latest of all the rows.
     : buckets.length === 0 && !current ? withLatestDay(q(stream.table), date, factColumns, factWhere)
+    // Period columns over one window: the latest day of each, and of all the rows.
+    : !current ? withLatestDays(q(stream.table), date, perBucket(date, buckets, (_, i) => i + 1), factColumns, factWhere)
     : `(SELECT *, ${lastColumns} FROM (${rows}) AS s) AS ${FACT}`;
   const factRows = [`FROM ${fact}`, ...joins.values(), ...(where.length > 0 ? [`WHERE ${where.join(' AND ')}`] : [])];
   // With the member list, the filtered fact rows become a subquery joined to the dimension's own table:
@@ -1675,9 +1687,11 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   if (byPeriod) {
     const date = q(stream.date);
     const perDay = select.some((expr) => expr.includes('"__days"')) ? `, ${perBucket(date, buckets, (b) => b.days)} AS "__days"` : '';
-    const rows = `SELECT *, ${perBucket(date, buckets, (_, i) => i + 1)} AS "__b"${perDay} FROM ${q(stream.table)} WHERE ${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
-    const latest = `(${date} = MAX(${date}) OVER (PARTITION BY "__b")) AS "__last", (${date} = MAX(${date}) OVER ()) AS "__lastw"`;
-    fact = uses.has('snapshot') ? `(SELECT *, ${latest} FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+    const numbered = perBucket(date, buckets, (_, i) => i + 1);
+    const added = `, ${numbered} AS "__b"${perDay}`;
+    const within = `${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
+    fact = uses.has('snapshot') ? withLatestDays(q(stream.table), date, numbered, added, within)
+      : `(SELECT *${added} FROM ${q(stream.table)} WHERE ${within}) AS ${FACT}`;
   }
 
   const paged = `rw."__row" > ${offset} AND rw."__row" <= ${offset + limit}`;

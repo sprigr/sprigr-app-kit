@@ -504,7 +504,10 @@ describe('compileView, snapshot measures', () => {
   it('reads the latest day of each period column', () => {
     const { sql } = compiled({ mode: 'period', measures: ['soh'], period: { preset: 'rolling_3' } });
     expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__b" = 2 AND f."__last") AS DOUBLE) AS "b2__soh"');
-    expect(sql).toContain('("sale_date" = MAX("sale_date") OVER (PARTITION BY "__b")) AS "__last", ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT *, CASE WHEN');
+    const months = 'CASE WHEN "sale_date" < DATE \'2026-10-01\' THEN 1 WHEN "sale_date" < DATE \'2026-11-01\' THEN 2 WHEN "sale_date" < DATE \'2026-12-01\' THEN 3 END';
+    const within = '"sale_date" >= DATE \'2026-09-01\' AND "sale_date" < DATE \'2026-12-01\'';
+    const day = `SELECT MAX("sale_date") FROM "sales_lines" WHERE ${within}`;
+    expect(sql).toContain(`FROM (SELECT *, ${months} AS "__b", ("sale_date" IN (${day} GROUP BY ${months})) AS "__last", ("sale_date" = (${day})) AS "__lastw" FROM "sales_lines" WHERE ${within}) AS f`);
   });
 
   it('reads the latest day of each window in a variance', () => {
@@ -731,7 +734,10 @@ describe('compileView, the long shape of a period view', () => {
   it('reads a snapshot measure on the latest day of the period on a cell, and of the window on a total', () => {
     const { sql } = compiled({ ...view, measures: ['soh'] }, long);
     expect(sql).toContain('CAST(CASE WHEN GROUPING(f."__b") = 0 THEN SUM(f."qty") FILTER (WHERE f."__last") ELSE SUM(f."qty") FILTER (WHERE f."__lastw") END AS DOUBLE) AS "m__soh"');
-    expect(sql).toContain('FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER (PARTITION BY "__b")) AS "__last", ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT *, CASE WHEN');
+    const months = 'CASE WHEN "sale_date" < DATE \'2026-10-01\' THEN 1 WHEN "sale_date" < DATE \'2026-11-01\' THEN 2 WHEN "sale_date" < DATE \'2026-12-01\' THEN 3 END';
+    const within = '"sale_date" >= DATE \'2026-09-01\' AND "sale_date" < DATE \'2026-12-01\'';
+    const day = `SELECT MAX("sale_date") FROM "sales_lines" WHERE ${within}`;
+    expect(sql).toContain(`FROM (SELECT *, ${months} AS "__b", ("sale_date" IN (${day} GROUP BY ${months})) AS "__last", ("sale_date" = (${day})) AS "__lastw" FROM "sales_lines" WHERE ${within}) AS f`);
   });
 
   it('sorts rows by one period of one measure, and numbers the periods newest first when reversed', () => {
