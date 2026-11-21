@@ -24,6 +24,7 @@ run(out.sql, { months: out.months });
 - Tables and columns come from the model and must be plain names. Values a person types (selections, keyword) are emitted as escaped string literals.
 - A table cannot be named `g`, `r`, `v`, `a`, `sm`, `rw`, `cl`, or `s` and a number, in any case. The compiler gives the stages of its statement those names, and DuckDB would read the stage in place of the table. `validateModel` refuses such a model.
 - Every stage of the statement opens as `name AS (`, with nothing between. The route reads any other opening for a table and refuses the statement.
+- A table or column cannot be named for a word the route refuses, such as `set`, `use`, `load`, `copy`, `update` or `delete`, in any case. The route refuses the word even inside a quoted name. `validateModel` refuses such a model with `reserved_name`.
 - A dimension's lookup table must hold one row per code, or sums multiply.
 - "Today" is passed in, in the tenant's time zone.
 

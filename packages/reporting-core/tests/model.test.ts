@@ -39,6 +39,8 @@ describe('validateModel', () => {
     ['a stream table named like a stage of the statement', withChange({ streams: [{ key: 'sales', table: 's2', date: 'd' }] }), 'reserved_table_name'],
     ['a dimension table named like a stage, in any case', withChange({ dimensions: [{ key: 'product', table: 'RW', code: 'code' }] }), 'reserved_table_name'],
     ['a rollup table named like a stage', withRollups([{ key: 'r', table: 'sm', date: 'month' }]), 'reserved_table_name'],
+    ['a column named for a word the route refuses, in any case', withChange({ streams: [{ key: 'sales', table: 'sales_lines', date: 'Update' }] }), 'reserved_name'],
+    ['a table named for a word the route refuses', withChange({ dimensions: [{ key: 'product', table: 'load', code: 'code' }] }), 'reserved_name'],
     ['a model that is not an object', 'nope', 'not_an_object'],
     ['another model version', withChange({ model_version: 2 }), 'unsupported_model_version'],
     ['no streams', { model_version: 1, streams: [], dimensions: [], measures: [] }, 'no_streams'],

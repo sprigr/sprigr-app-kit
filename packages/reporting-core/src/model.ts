@@ -8,7 +8,7 @@
 import { formulaRefs, parseFormula } from './formula';
 import { isIsoDate, type NamedPeriod, type PeriodCalendar } from './periods';
 import { ReportingError } from './reasons';
-import { isIdentifier, isStageName } from './sql';
+import { isIdentifier, isRouteWord, isStageName } from './sql';
 
 export const MODEL_VERSION = 1;
 export const MEASURE_AGGS = ['sum', 'count', 'count_distinct', 'min', 'max', 'avg'] as const;
@@ -102,7 +102,7 @@ export const MODEL_PROBLEMS = [
   'dimension_cycle', 'measure_shape', 'unknown_agg', 'unknown_format', 'formula_invalid', 'formula_unknown_measure',
   'formula_cycle', 'bad_fiscal_month', 'bad_week_start', 'bad_date', 'period_range_inverted',
   'rollup_dimension_not_on_stream', 'rollup_measure_unknown', 'rollup_measure_not_additive',
-  'reserved_table_name',
+  'reserved_table_name', 'reserved_name',
 ] as const;
 export type ModelProblemReason = (typeof MODEL_PROBLEMS)[number];
 
@@ -142,7 +142,11 @@ export function validateModel(input: unknown): ModelValidation {
     return null;
   };
   const ident = (v: unknown, path: string): string | null => {
-    if (isIdentifier(v)) return v;
+    if (isIdentifier(v)) {
+      if (!isRouteWord(v)) return v;
+      bad('reserved_name', path, `"${v}" is a word the query route refuses anywhere in a statement, in quotes or not`);
+      return null;
+    }
     bad(v === undefined ? 'missing_field' : 'bad_identifier', path, 'a table or column must be a plain name');
     return null;
   };
