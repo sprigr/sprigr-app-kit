@@ -4,7 +4,11 @@ import { ReportingError, validateModel, type ReportingModel } from '../src';
 export const MODEL_JSON = {
   model_version: 1,
   streams: [
-    { key: 'sales', label: 'Sales', table: 'sales_lines', date: 'sale_date', dimension_keys: { product: 'product_code', branch: 'branch_code' } },
+    {
+      key: 'sales', label: 'Sales', table: 'sales_lines', date: 'sale_date',
+      dimension_keys: { product: 'product_code', branch: 'branch_code' },
+      columns: [{ key: 'doc', label: 'Document', column: 'doc_no' }],
+    },
     { key: 'orders', label: 'Orders', table: 'order_lines', date: 'order_date', dimension_keys: { product: 'product_code' } },
   ],
   dimensions: [

@@ -25,9 +25,12 @@ export interface ModelStream {
   date: string;
   /** Dimension key to the fact column that holds that dimension's code. */
   dimension_keys: Record<string, string>;
+  /** Other columns of the fact table a transaction list can show: a document number, a reference. */
+  columns: ModelStreamColumn[];
 }
 
 export interface ModelProperty { key: string; label: string; column: string }
+export interface ModelStreamColumn { key: string; label: string; column: string }
 
 export interface ModelDimension {
   key: string;
@@ -187,7 +190,17 @@ export function validateModel(input: unknown): ModelValidation {
       const col = ident(column, colPath);
       if (col !== null) dimension_keys[dimKey] = col;
     });
-    streams.push({ key: k, label: label(raw.label, k), table, date, dimension_keys });
+    const columns: ModelStreamColumn[] = [];
+    const columnKeys = new Set<string>();
+    list(raw.columns).forEach((rawCol, j) => {
+      const colPath = `${path}.columns[${j}]`;
+      if (!isRec(rawCol)) { bad('missing_field', colPath, 'a stream column must be an object'); return; }
+      const ck = key(rawCol.key, `${colPath}.key`);
+      const col = ident(rawCol.column, `${colPath}.column`);
+      if (ck === null || col === null || !unique(columnKeys, ck, `${colPath}.key`)) return;
+      columns.push({ key: ck, label: label(rawCol.label, ck), column: col });
+    });
+    streams.push({ key: k, label: label(raw.label, k), table, date, dimension_keys, columns });
   });
   if (streams.length === 0 && problems.length === 0) bad('no_streams', 'streams', 'a model needs at least one stream');
   const defaultStream = streams[0]?.key;

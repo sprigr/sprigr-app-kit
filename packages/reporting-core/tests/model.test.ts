@@ -19,6 +19,7 @@ describe('validateModel', () => {
     expect(lines && !isFormulaMeasure(lines) ? lines : null).toMatchObject({ agg: 'count', stream: 'sales', format: 'number', snapshot: false });
     expect(model.dimensions.find((d) => d.key === 'department')?.via).toEqual({ dimension: 'product', column: 'dept' });
     expect(model.periods.fiscal_year_start_month).toBe(7);
+    expect(model.streams.map((s) => s.columns)).toEqual([[{ key: 'doc', label: 'Document', column: 'doc_no' }], []]);
   });
 
   it.each([
@@ -28,6 +29,8 @@ describe('validateModel', () => {
     ['a table name that is not plain', withChange({ streams: [{ key: 'sales', table: 'sales_lines; DROP', date: 'sale_date' }] }), 'bad_identifier'],
     ['a key in upper case', withChange({ dimensions: [{ key: 'Product' }] }), 'bad_key'],
     ['a stream keyed on an unknown dimension', withChange({ streams: [{ key: 'sales', table: 't', date: 'd', dimension_keys: { colour: 'c' } }] }), 'unknown_dimension'],
+    ['a stream column that is not a plain name', withChange({ streams: [{ key: 'sales', table: 't', date: 'd', columns: [{ key: 'doc', column: 'doc no' }] }] }), 'bad_identifier'],
+    ['a stream column key used twice', withChange({ streams: [{ key: 'sales', table: 't', date: 'd', columns: [{ key: 'doc', column: 'a' }, { key: 'doc', column: 'b' }] }] }), 'duplicate_key'],
     ['a measure key used twice', withChange({ measures: [{ key: 'a', agg: 'count' }, { key: 'a', agg: 'count' }] }), 'duplicate_key'],
     ['a measure that is both an agg and a formula', withChange({ measures: [{ key: 'a', agg: 'sum', column: 'x', formula: '1' }] }), 'measure_shape'],
     ['an unknown agg', withChange({ measures: [{ key: 'a', agg: 'median', column: 'x' }] }), 'unknown_agg'],

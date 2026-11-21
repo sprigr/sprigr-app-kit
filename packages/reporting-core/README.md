@@ -26,9 +26,13 @@ run(out.sql, { months: out.months });
 
 ## Compiled so far
 
-Modes `total` and `period`; drill path; properties; dimension filters; keyword; sort; paging; total row; the SQL size check.
+Modes `total`, `period`, `variance` and `transaction`; drill path; properties; dimension filters; filters on a measure; keyword; sort; paging; total row; the SQL size check.
 
-Refused with a named reason until built: modes variance, stream, transaction and matrix; filters on a measure; others and average rows; the activity option; snapshot measures; the grid functions RANK, PERCENTILE and FORECAST.LINEAR; a long (one row per period) shape for views too wide for the route's SQL limit.
+- **Variance** reads the period and a comparison window (`compare`: the same dates a year earlier, or the period just before) in one pass. Each measure gets four columns: current, previous, variance and variance percentage (a fraction).
+- **A filter on a measure** drops rows after grouping. It never drops the total row, which stays the total of every member. A measure the view does not show can be filtered on. Dimension rules and measure rules combine with "and" only.
+- **Transaction** lists the fact rows: the date as text, every dimension code of the stream, the stream's extra `columns`, and each measure as that row holds it (a count is 1).
+
+Refused with a named reason until built: modes stream and matrix; others and average rows; the activity option; snapshot measures; a total row on a transaction list; the grid functions RANK, PERCENTILE and FORECAST.LINEAR; a long (one row per period) shape for views too wide for the route's SQL limit.
 
 ## To check against the source system at migration
 
@@ -36,3 +40,5 @@ Refused with a named reason until built: modes variance, stream, transaction and
 - Month presets run to the end of the current month; `period_to_date` stops them at today.
 - `-2^2` is -4.
 - `AVERAGE` and `SUM` skip blanks.
+- In a variance, a blank counts as 0, and the percentage is blank when there is no previous value.
+- With a filter on a measure, the total row is the total of every member, not of the rows left showing.
