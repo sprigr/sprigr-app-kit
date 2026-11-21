@@ -217,6 +217,14 @@ expect(checkConfirmationPolicy({ policy: POLICY, registry, approval })).toEqual(
 
 `conditional` is required, and it is the part the SDK cannot work out for itself: it sees your specs, not a condition you put around the gate. If your app only routes an action through the gate under a condition of its own (a delete that cards only with `force: true`, a payment that cards only with an amount), list it there. The builder never marks it, and the check fails if it is marked, because on the shapes that skip the card the confirmation is the only prompt. The check also fails a key no spec covers and a covered, unconditional action without one (it asks twice). `sprigr-check-write-protection` refuses a key with any other value, or one on a rule that gates nothing. It needs a platform carrying sprigr-team decision 0167; an older one ignores the key and keeps asking twice, so shipping early is harmless.
 
+**Saying an action sends no message.** A workflow's standing-approval card offers "message anyone" unless every call it covers says it delivers no message to a person (sprigr-team decision 0414). A whole tool says so with the manifest's `delivers_message: false`; a dispatcher says it per action with `deliversMessage: false` on the action's rule. Do not write the key by hand: name the actions in `noMessage` and the builder stamps a copy of each rule.
+
+```ts
+export const POLICY = buildConfirmationPolicy({ irreversible, always, approval, noMessage: ['delete_badge', 'delete_form'] });
+```
+
+Name only an action whose record has no assignee and no customer on it: a delete the system can announce to someone does deliver a message. A name with no rule throws, and so does a rule that already says `deliversMessage: true`. `checkConfirmationPolicy` fails the key on the tool-level rule (publish rejects it there) and a value that is not a boolean.
+
 ### Dispatcher tools
 
 A dispatcher (one tool, many actions) cannot wrap handlers, so it builds the gate once and calls it from the dispatch loop:
