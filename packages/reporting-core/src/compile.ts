@@ -71,6 +71,8 @@ export interface ViewOptions {
   others_row?: boolean;
   /** One row holding the mean of each measure column over the member rows. `__total` is 3 on it. */
   average_row?: boolean;
+  /** One row holding the sum of each measure column over the member rows, a ratio included. `__total` is 4 on it. */
+  sum_row?: boolean;
   period_to_date?: boolean;
   /** Newest period first. Changes column order only. */
   reverse_periods?: boolean;
@@ -489,34 +491,40 @@ function keepRows(having: string | null, options: ViewOptions, figures: string[]
 /**
  * How every grouped statement ends: stage r ranks and counts the rows of `source`, then one page is read.
  * A measure filter drops rows here, after grouping, and never drops the total row.
- * `extra.others`: g also holds an others row (`__total` 2). `extra.average`: the measure columns an
- * average row (`__total` 3) is worked out for, over every row the list holds, on any page.
+ * `extra.others`: g also holds an others row (`__total` 2). `extra.average` and `extra.sum`: the measure
+ * columns an average row (`__total` 3) and a sum row (`__total` 4) are worked out for, over every row
+ * the list holds, on any page.
  */
 function rankAndPage(
   source: string, sortName: string, sort: ViewSort, having: string | null, left: string[], offset: number, limit: number,
-  extra: { others: boolean; average: string[] } = { others: false, average: [] },
+  extra: { others: boolean; average: string[]; sum: string[] } = { others: false, average: [], sum: [] },
 ): string[] {
   const summary = extra.others ? '"__total" > 0' : '"__total" = 1';
   const page = `WHERE ${summary} OR ("__rn" > ${offset} AND "__rn" <= ${offset + limit})`;
   const hide = `SELECT * EXCLUDE (${left.map(q).join(', ')}) FROM`;
+  // One stage a summary row: one function over each measure column of the member rows r holds.
+  const over = (stage: string, fn: 'avg' | 'sum', mark: number, names: string[]): string[] => (names.length === 0 ? [] : [
+    `), ${stage} AS (`,
+    `SELECT ${names.map((name) => `${fn}(${q(name)}) AS ${q(name)}`).join(', ')}, ${mark} AS "__total", 0 AS "__rn", CAST(count(*) AS INTEGER) AS "__rows"`,
+    'FROM r',
+    'WHERE "__total" = 0',
+  ]);
+  const stages = [...over('a', 'avg', 3, extra.average), ...over('sm', 'sum', 4, extra.sum)];
   return [
     '), r AS (',
     `SELECT ${source}.*, row_number() OVER (PARTITION BY "__total" ORDER BY ${q(sortName)} ${sort.dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, "code" ASC) AS "__rn",`,
     'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
     `FROM ${source}`,
     ...(having !== null ? [`WHERE ${summary} OR ${having}`] : []),
-    ...(extra.average.length === 0 ? [')', `${hide} r`, page] : [
-      '), a AS (',
-      `SELECT ${extra.average.map((name) => `avg(${q(name)}) AS ${q(name)}`).join(', ')}, 3 AS "__total", 0 AS "__rn", CAST(count(*) AS INTEGER) AS "__rows"`,
-      'FROM r',
-      'WHERE "__total" = 0',
+    ...(stages.length === 0 ? [')', `${hide} r`, page] : [
+      ...stages,
       ')',
       `${hide} (`,
       'SELECT * FROM r',
       page,
-      // The average row has no code and no property, so the columns are matched by name.
-      'UNION ALL BY NAME',
-      'SELECT * FROM a',
+      // A summary row has no code and no property, so the columns are matched by name.
+      ...(extra.average.length > 0 ? ['UNION ALL BY NAME', 'SELECT * FROM a'] : []),
+      ...(extra.sum.length > 0 ? ['UNION ALL BY NAME', 'SELECT * FROM sm'] : []),
       ') AS p',
     ]),
     'ORDER BY "__total" DESC, "__rn" ASC',
@@ -606,6 +614,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   // Members with no activity have no figures, so a list of them has no total row.
   const totalRow = options.total_row === true && activity !== 'without';
   const averageRow = options.average_row === true;
+  const sumRow = options.sum_row === true;
   // A member with no activity has blank figures, which this option would hide again.
   if (options.hide_zero_rows && activity !== 'with') fail('option_unsupported', 'hiding zero rows with the activity option is not compiled yet');
   const averageColumn = options.average_column === true && view.mode === 'period';
@@ -743,8 +752,8 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
   const sortName = sortNameOf(sort.by);
   if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
-  const { limit, offset } = pageOf(view, ctx, (totalRow ? 1 : 0) + (othersRow ? 1 : 0) + (averageRow ? 1 : 0));
-  const averaged = averageRow ? columns.filter((c) => c.kind === 'measure').map((c) => c.name) : [];
+  const { limit, offset } = pageOf(view, ctx, (totalRow ? 1 : 0) + (othersRow ? 1 : 0) + (averageRow ? 1 : 0) + (sumRow ? 1 : 0));
+  const measured = columns.filter((c) => c.kind === 'measure').map((c) => c.name);
   // What "zero" is judged on: each shown measure over the whole period, and over the earlier one in a variance.
   const figures = shown.flatMap((m) => (previous ? [`m__${m.key}`, `prev__${m.key}`] : [`m__${m.key}`]));
 
@@ -782,7 +791,8 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     ] : [totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`]),
     ...(activity === 'without' ? [`HAVING COUNT(${FACT}."__in") = 0`] : []),
     ...(source === 'v' ? ['), v AS (', `SELECT g.*, ${derived.join(', ')}`, 'FROM g'] : []),
-    ...rankAndPage(source, sortName, sort, keepRows(scope.having, options, figures), left, offset, limit, { others: othersRow, average: averaged }),
+    ...rankAndPage(source, sortName, sort, keepRows(scope.having, options, figures), left, offset, limit,
+      { others: othersRow, average: averageRow ? measured : [], sum: sumRow ? measured : [] }),
   ].join('\n');
   checkLength(sql, ctx);
 
@@ -804,7 +814,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
 function compileTransactions(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
   const options: ViewOptions = view.options ?? {};
   if (options.activity !== undefined && options.activity !== 'with') fail('option_unsupported', 'a transaction list shows rows that exist; activity does not apply');
-  if (options.total_row || options.others_row || options.average_row) fail('option_unsupported', 'a transaction list has no total, others or average row');
+  if (options.total_row || options.others_row || options.average_row || options.sum_row) fail('option_unsupported', 'a transaction list has no total, others, average or sum row');
 
   const scope = scopeOf(model, view);
   const { stream, measureByKey } = scope;
@@ -902,8 +912,10 @@ function compileTransactions(model: ReportingModel, view: ViewState, ctx: Compil
 function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
   const options: ViewOptions = view.options ?? {};
   if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', 'the activity option is not compiled for stream mode yet');
-  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled for this mode yet');
+  if (options.others_row) fail('option_unsupported', 'an others row is not compiled for stream mode yet');
   const totalRow = options.total_row === true;
+  const averageRow = options.average_row === true;
+  const sumRow = options.sum_row === true;
 
   // The view's own stream is always read. It also settles the measure filters, which are the same for every stream.
   const lead = scopeOf(model, view);
@@ -957,7 +969,8 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
   if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
   const sortName = sortNameOf(sort.by);
   if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
-  const { limit, offset } = pageOf(view, ctx, totalRow ? 1 : 0);
+  const { limit, offset } = pageOf(view, ctx, (totalRow ? 1 : 0) + (averageRow ? 1 : 0) + (sumRow ? 1 : 0));
+  const measured = columns.filter((c) => c.kind === 'measure').map((c) => c.name);
 
   // One stage per stream: the view's own first, then the others its measures read, in the model's order.
   const streamKeys = [lead.stream.key, ...model.streams.map((s) => s.key).filter((key) => key !== lead.stream.key && needed.has(key))];
@@ -995,7 +1008,8 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
     // By name: each stage has its own sum columns, and a member one stream lacks gets blanks there.
     `FROM (${streamKeys.map((_, i) => `SELECT * FROM s${i + 1}`).join(' UNION ALL BY NAME ')}) AS u`,
     'GROUP BY "code", "__total"',
-    ...rankAndPage('g', sortName, sort, keepRows(lead.having, options, shown.map((m) => `m__${m.key}`)), left, offset, limit),
+    ...rankAndPage('g', sortName, sort, keepRows(lead.having, options, shown.map((m) => `m__${m.key}`)), left, offset, limit,
+      { others: false, average: averageRow ? measured : [], sum: sumRow ? measured : [] }),
   ].join('\n');
   checkLength(sql, ctx);
 
@@ -1018,7 +1032,7 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   const what = byPeriod ? 'the long shape of a period view' : 'matrix mode';
   if (byPeriod && options.average_column) fail('option_unsupported', 'the average column is not compiled for the long shape of a period view yet');
   if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', `the activity option is not compiled for ${what} yet`);
-  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled for this mode yet');
+  if (options.others_row || options.average_row || options.sum_row) fail('option_unsupported', `others, average and sum rows are not compiled for ${what} yet`);
   const totalRow = options.total_row === true;
 
   const scope = scopeOf(model, view);

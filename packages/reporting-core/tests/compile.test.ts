@@ -764,3 +764,61 @@ describe('compileView, the average column and hiding zero rows', () => {
     expect(compiled({ ...list, options: { hide_zero_rows: true } }).sql).toBe(compiled(list).sql);
   });
 });
+
+describe('compileView, the sum row', () => {
+  const streams = { mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'] };
+
+  it('adds a sum row: each measure column added up over every row of the list', () => {
+    const out = compiled({ options: { sum_row: true } });
+    expect(out.sql).toContain([
+      'FROM g',
+      '), sm AS (',
+      'SELECT sum("m__sales") AS "m__sales", 4 AS "__total", 0 AS "__rn", CAST(count(*) AS INTEGER) AS "__rows"',
+      'FROM r',
+      'WHERE "__total" = 0',
+      ')',
+      'SELECT * EXCLUDE ("__rn") FROM (',
+      'SELECT * FROM r',
+      'WHERE "__total" = 1 OR ("__rn" > 0 AND "__rn" <= 200)',
+      'UNION ALL BY NAME',
+      'SELECT * FROM sm',
+      ') AS p',
+      'ORDER BY "__total" DESC, "__rn" ASC',
+    ].join('\n'));
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'm__sales', '__total', '__rows']);
+  });
+
+  it('sits beside the average row, each in its own stage over the same rows', () => {
+    const { sql } = compiled({ measures: ['sales', 'gp'], options: { sum_row: true, average_row: true } });
+    expect(sql).toContain([
+      '), a AS (',
+      'SELECT avg("m__sales") AS "m__sales", avg("m__gp") AS "m__gp", 3 AS "__total", 0 AS "__rn", CAST(count(*) AS INTEGER) AS "__rows"',
+      'FROM r',
+      'WHERE "__total" = 0',
+      '), sm AS (',
+      'SELECT sum("m__sales") AS "m__sales", sum("m__gp") AS "m__gp", 4 AS "__total", 0 AS "__rn", CAST(count(*) AS INTEGER) AS "__rows"',
+      'FROM r',
+      'WHERE "__total" = 0',
+      ')',
+    ].join('\n'));
+    expect(sql).toContain('UNION ALL BY NAME\nSELECT * FROM a\nUNION ALL BY NAME\nSELECT * FROM sm\n) AS p');
+  });
+
+  it('gives stream mode its average and sum rows, over the folded figures', () => {
+    const { sql } = compiled({ ...streams, options: { average_row: true, sum_row: true } });
+    expect(sql).toContain('FROM g\n), a AS (\nSELECT avg("m__sales") AS "m__sales", avg("m__ordered") AS "m__ordered", 3 AS "__total"');
+    expect(sql).toContain('), sm AS (\nSELECT sum("m__sales") AS "m__sales", sum("m__ordered") AS "m__ordered", 4 AS "__total"');
+    expect(sql).toContain('SELECT * EXCLUDE ("__rn") FROM (\nSELECT * FROM r\nWHERE "__total" = 1 OR ("__rn" > 0 AND "__rn" <= 200)');
+  });
+
+  it('counts against the page, and is refused where it is not compiled', () => {
+    const three = { total_row: true, average_row: true, sum_row: true };
+    expect(refusal({ limit: 1998, options: three })).toBe('bad_paging');
+    expect(compiled({ limit: 1997, options: three }).sql).toContain('"__rn" <= 1997)');
+    expect(refusal({ ...streams, limit: 1998, options: three })).toBe('bad_paging');
+    expect(refusal({ ...streams, options: { others_row: true } })).toBe('option_unsupported');
+    expect(refusal({ mode: 'matrix', across: { dimension: 'product' }, options: { sum_row: true } })).toBe('option_unsupported');
+    expect(refusal({ mode: 'period', period: { preset: 'rolling_3' }, options: { sum_row: true } }, { periodShape: 'long' })).toBe('option_unsupported');
+    expect(refusal({ mode: 'transaction', options: { sum_row: true } })).toBe('option_unsupported');
+  });
+});
