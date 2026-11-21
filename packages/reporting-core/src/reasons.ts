@@ -12,7 +12,7 @@ export const REPORTING_REASONS = [
   'no_measures', 'duplicate_measure', 'measure_not_on_stream', 'snapshot_measure_unsupported',
   'dimension_not_on_stream', 'dimension_has_no_table', 'empty_selection', 'filter_too_deep',
   'empty_filter', 'measure_filter_unsupported', 'option_unsupported', 'keyword_too_long',
-  'unknown_column', 'bad_across', 'bad_custom_column', 'bad_sort', 'bad_paging', 'sql_too_long', 'no_rollup',
+  'unknown_column', 'bad_across', 'bad_levels', 'bad_custom_column', 'bad_sort', 'bad_paging', 'sql_too_long', 'no_rollup',
   // grid
   'result_not_long',
 ] as const;

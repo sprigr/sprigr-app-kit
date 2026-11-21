@@ -39,6 +39,8 @@ export const DEFAULT_PAGE_ROWS = 200;
 export const DEFAULT_ACROSS_MEMBERS = 12;
 const MAX_KEYWORD_CHARS = 200;
 const MAX_FILTER_DEPTH = 3;
+/** How many dimensions a nested view can put above its row dimension. */
+const MAX_LEVELS = 5;
 
 export const VIEW_MODES = ['total', 'period', 'variance', 'period_variance', 'transaction', 'stream', 'matrix', 'custom'] as const;
 export type ViewMode = (typeof VIEW_MODES)[number];
@@ -129,6 +131,11 @@ export interface ViewState {
   /** Drill path: each step keeps only the selected codes of one dimension. */
   path?: ViewPathStep[];
   group_by: string;
+  /**
+   * Nested rows: the dimensions above `group_by`, the outermost first. Each member of a level gets a row
+   * of its own holding the subtotal of the rows beneath it, and a row comes right after the row it sits under.
+   */
+  levels?: string[];
   /** Matrix mode only: the second dimension. */
   across?: ViewAcross;
   /** Properties of the group-by dimension to show: `name` or a property key. The code is always returned. */
@@ -168,7 +175,7 @@ export interface CompileContext {
 export interface CompiledColumn {
   /** The column's name in the result. */
   name: string;
-  kind: 'code' | 'property' | 'measure' | 'date' | 'dimension' | 'column' | 'across' | 'meta';
+  kind: 'code' | 'property' | 'measure' | 'date' | 'dimension' | 'column' | 'across' | 'level' | 'meta';
   label: string;
   /** For a property column: its key. */
   property?: string;
@@ -189,6 +196,8 @@ export interface CompiledColumn {
   custom?: string;
   /** For a column of one period in period variance mode: the period's number, from the oldest. */
   bucket?: number;
+  /** For a level column of a nested view: which level it is, 1 the outermost. `dimension` names it, and `property` is `name` on its name column. */
+  level?: number;
 }
 
 export interface CompiledView {
@@ -623,11 +632,28 @@ function keepRows(having: string | null, options: ViewOptions, figures: string[]
  */
 function rankAndPage(
   source: string, sortName: string, sort: ViewSort, having: string | null, left: string[], offset: number, limit: number,
-  extra: { others: boolean; average: string[]; sum: string[] } = { others: false, average: [], sum: [] },
+  extra: { others: boolean; average: string[]; sum: string[]; nest?: { levels: number; byMeasure: boolean } } = { others: false, average: [], sum: [] },
 ): string[] {
   const summary = extra.others ? '"__total" > 0' : '"__total" = 1';
   const page = `WHERE ${summary} OR ("__rn" > ${offset} AND "__rn" <= ${offset + limit})`;
-  const hide = `SELECT * EXCLUDE (${left.map(q).join(', ')}) FROM`;
+  const dir = sort.dir === 'asc' ? 'ASC' : 'DESC';
+  // Nested rows: a row sorts under the rows above it. Each level is ordered by its own subtotal, or by
+  // its code when the sort is not on a measure, and a level's own row comes before the rows beneath it.
+  const levels = Array.from({ length: extra.nest?.levels ?? 0 }, (_, i) => i + 1);
+  const keyed = levels.length > 0 && extra.nest?.byMeasure === true;
+  const order = [
+    ...levels.flatMap((n) => [
+      ...(keyed ? [`${q(`__k${n}`)} ${dir} NULLS LAST`] : []),
+      `${q(`lv${n}`)} ${!keyed && sortName === 'code' ? dir : 'ASC'} NULLS LAST`,
+      `("__level" > ${n}) ASC`,
+    ]),
+    `${q(sortName)} ${dir} NULLS LAST`,
+    '"code" ASC',
+  ].join(', ');
+  // The subtotal of the level a row sits under, read from that level's own row.
+  const keys = levels.map((n) => `max(CASE WHEN "__level" = ${n} THEN ${q(sortName)} END) OVER (PARTITION BY ${levels.slice(0, n).map((m) => q(`lv${m}`)).join(', ')}) AS ${q(`__k${n}`)}`);
+  const ranked = keyed ? 'k' : source;
+  const hide = `SELECT * EXCLUDE (${[...left, ...(keyed ? levels.map((n) => `__k${n}`) : [])].map(q).join(', ')}) FROM`;
   // One stage a summary row: one function over each measure column of the member rows r holds.
   const over = (stage: string, fn: 'avg' | 'sum', mark: number, names: string[]): string[] => (names.length === 0 ? [] : [
     `), ${stage} AS (`,
@@ -638,9 +664,9 @@ function rankAndPage(
   const stages = [...over('a', 'avg', 3, extra.average), ...over('sm', 'sum', 4, extra.sum)];
   return [
     '), r AS (',
-    `SELECT ${source}.*, row_number() OVER (PARTITION BY "__total" ORDER BY ${q(sortName)} ${sort.dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, "code" ASC) AS "__rn",`,
+    `SELECT ${ranked}.*, row_number() OVER (PARTITION BY "__total" ORDER BY ${order}) AS "__rn",`,
     'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
-    `FROM ${source}`,
+    keyed ? `FROM (SELECT ${source}.*, ${keys.join(', ')} FROM ${source}) AS k` : `FROM ${source}`,
     ...(having !== null ? [`WHERE ${summary} OR ${having}`] : []),
     ...(stages.length === 0 ? [')', `${hide} r`, page] : [
       ...stages,
@@ -733,6 +759,60 @@ function propertyLabel(dim: ModelDimension, property: string): string {
   return property === 'name' ? 'Name' : dim.properties.find((p) => p.key === property)?.label ?? property;
 }
 
+/** Nested rows: what the grouped stage adds for the dimensions a view puts above its row dimension. */
+interface Nest {
+  /** How many levels sit above the rows. */
+  count: number;
+  /** The level columns, for the select list. */
+  select: string[];
+  columns: CompiledColumn[];
+  /** `__level`, written after `__total`. */
+  level: string;
+  /** 1 on the total row only, since the outermost level is grouped away nowhere else. */
+  total: string;
+  /** One grouping set a level, then the rows themselves, then the total when the view shows it. */
+  groupBy: (totalRow: boolean) => string;
+}
+
+/**
+ * The levels of a nested view, or null when it has none. Every level is grouped in the same pass as
+ * the rows, so a level's row is the subtotal of the rows beneath it, with formulas worked out from
+ * its own sums. `__level` is 1 on the outermost level's rows, one more on each level below, and 0 on the total row.
+ */
+function nestOf(view: ViewState, scope: Pick<Scope, 'dimension' | 'propertyOf' | 'codeExpr'>): Nest | null {
+  if (view.levels === undefined) return null;
+  const keys: unknown = view.levels;
+  if (!Array.isArray(keys) || keys.length === 0 || keys.length > MAX_LEVELS) fail('bad_levels', `levels lists from 1 to ${MAX_LEVELS} dimensions`);
+  const codes: string[] = [];
+  const select: string[] = [];
+  const columns: CompiledColumn[] = [];
+  (keys as unknown[]).forEach((key, i) => {
+    if (typeof key !== 'string') fail('bad_levels', 'a level is named by its dimension key');
+    const dim = scope.dimension(key);
+    const code = scope.propertyOf(dim.key, 'code');
+    if (code === scope.codeExpr || codes.includes(code)) fail('bad_levels', `"${key}" is the row dimension, or is listed twice`);
+    codes.push(code);
+    const level = i + 1;
+    select.push(`${code} AS ${q(`lv${level}`)}`);
+    columns.push({ name: `lv${level}`, kind: 'level', label: dim.label, dimension: dim.key, level });
+    if (dim.table && dim.code && dim.name) {
+      // Blank on the rows of a level above this one, where this dimension is grouped away.
+      select.push(`CASE WHEN GROUPING(${code}) = 0 THEN any_value(${scope.propertyOf(dim.key, 'name')}) END AS ${q(`lvn${level}`)}`);
+      columns.push({ name: `lvn${level}`, kind: 'level', label: `${dim.label} Name`, dimension: dim.key, level, property: 'name' });
+    }
+  });
+  const all = [...codes, scope.codeExpr];
+  const level = `CAST(${all.length} - (${all.map((code) => `GROUPING(${code})`).join(' + ')}) AS INTEGER) AS "__level"`;
+  return {
+    count: codes.length,
+    select,
+    columns,
+    level,
+    total: `GROUPING(${codes[0] ?? scope.codeExpr})`,
+    groupBy: (totalRow) => `GROUP BY GROUPING SETS (${[...all.map((_, i) => `(${all.slice(0, i + 1).join(', ')})`), ...(totalRow ? ['()'] : [])].join(', ')})`,
+  };
+}
+
 /** Total, period and variance modes: one row per member of the group-by dimension. */
 function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
   const options: ViewOptions = view.options ?? {};
@@ -749,6 +829,14 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
 
   const scope = scopeOf(model, view, activity !== 'with', options.others_row === true);
   const { stream, measureByKey, joins, groupDim, where, members } = scope;
+  const nest = nestOf(view, scope);
+  if (nest) {
+    // Each of these drops or adds rows one at a time, which would leave rows with nothing above them.
+    if (activity !== 'with' || options.others_row || averageRow || sumRow || options.hide_zero_rows) {
+      fail('option_unsupported', 'the activity option, an others, average or sum row and hiding zero rows are not compiled with nested rows yet');
+    }
+    if (scope.having !== null) fail('measure_filter_unsupported', 'a filter on a measure with nested rows is not compiled yet');
+  }
   // The others row is the members the focus leaves out, so it exists only when the view focuses on some.
   // A member with no code is never one the focus picked.
   const focused = scope.focus.length > 0 ? `COALESCE(${scope.focus.join(' AND ')}, FALSE)` : null;
@@ -834,15 +922,15 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   const measureSql = (key: string, slice: Slice | null): string => measureOver(reads, key, slice);
 
   // The select list and the column map, in display order.
-  const columns: CompiledColumn[] = [{ name: 'code', kind: 'code', label: groupDim.label }];
-  const select: string[] = [`${codeExpr} AS "code"`];
+  const columns: CompiledColumn[] = [...(nest?.columns ?? []), { name: 'code', kind: 'code', label: groupDim.label }];
+  const select: string[] = [...(nest?.select ?? []), `${codeExpr} AS "code"`];
   const grouping = `GROUPING(${codeExpr})`;
   (view.properties ?? []).forEach((property, i) => {
     if (property === 'code') return;
     if ((view.properties ?? []).indexOf(property) !== i) return;
     const expr = `any_value(${members ? members.property(property) : scope.propertyOf(groupDim.key, property)})`;
     const name = `prop__${property}`;
-    select.push(`${totalRow || othersRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
+    select.push(`${totalRow || othersRow || nest ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
     const label = propertyLabel(groupDim, property);
     columns.push({ name, kind: 'property', label, property });
   });
@@ -906,15 +994,21 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     select.push(`${focused} AS "__f"`, `CASE WHEN ${grouping} = 0 THEN 0 WHEN "__f" THEN 1 ELSE 2 END AS "__total"`);
     left.push('__f');
   } else {
-    select.push(`${totalRow ? `CAST(${grouping} AS INTEGER)` : '0'} AS "__total"`);
+    select.push(`${totalRow ? `CAST(${nest ? nest.total : grouping} AS INTEGER)` : '0'} AS "__total"`);
   }
-  columns.push({ name: '__total', kind: 'meta', label: 'Total row' }, { name: '__rows', kind: 'meta', label: 'Row count' });
+  columns.push({ name: '__total', kind: 'meta', label: 'Total row' });
+  if (nest) {
+    select.push(nest.level);
+    columns.push({ name: '__level', kind: 'meta', label: 'Level' });
+  }
+  columns.push({ name: '__rows', kind: 'meta', label: 'Row count' });
 
   // Sort and paging.
   const sort: ViewSort = view.sort ?? { by: `total.${shown[0]?.key ?? ''}`, dir: 'desc' };
   if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
   const sortName = sortNameOf(sort.by);
-  if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
+  const sortColumn = columns.find((c) => c.name === sortName && c.kind !== 'meta');
+  if (!sortColumn) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
   const { limit, offset } = pageOf(view, ctx, (totalRow ? 1 : 0) + (othersRow ? 1 : 0) + (averageRow ? 1 : 0) + (sumRow ? 1 : 0));
   const measured = columns.filter((c) => c.kind === 'measure').map((c) => c.name);
   // What "zero" is judged on: each shown measure over the whole period, and over the earlier one in a variance.
@@ -955,11 +1049,13 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
       `GROUP BY GROUPING SETS ((${codeExpr}, "__f"), ("__f"))`,
       // Keeps the focused members and the others row, and the focused members' total when it is shown.
       totalRow ? `HAVING ${grouping} = 1 OR "__f"` : `HAVING "__f" = (${grouping} = 0)`,
-    ] : [totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`]),
+    ] : [nest ? nest.groupBy(totalRow) : totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`]),
     ...(activity === 'without' ? [`HAVING COUNT(${FACT}."__in") = 0`] : []),
     ...(source === 'v' ? ['), v AS (', `SELECT g.*, ${derived.join(', ')}`, 'FROM g'] : []),
-    ...rankAndPage(source, sortName, sort, keepRows(scope.having, options, figures), left, offset, limit,
-      { others: othersRow, average: averageRow ? measured : [], sum: sumRow ? measured : [] }),
+    ...rankAndPage(source, sortName, sort, keepRows(scope.having, options, figures), left, offset, limit, {
+      others: othersRow, average: averageRow ? measured : [], sum: sumRow ? measured : [],
+      ...(nest ? { nest: { levels: nest.count, byMeasure: sortColumn.kind === 'measure' } } : {}),
+    }),
   ].join('\n');
   checkLength(sql, ctx);
 
@@ -998,6 +1094,10 @@ function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileConte
   const scope = scopeOf(model, view);
   if (scope.having !== null) fail('measure_filter_unsupported', 'a filter on a measure in custom mode is not compiled yet');
   const { stream, measureByKey, joins, groupDim, where, codeExpr } = scope;
+  const nest = nestOf(view, scope);
+  if (nest && (averageRow || sumRow || options.hide_zero_rows)) {
+    fail('option_unsupported', 'an average or sum row and hiding zero rows are not compiled with nested rows yet');
+  }
   const listed: ViewCustomColumn[] = Array.isArray(view.custom_columns) ? view.custom_columns : [];
   if (listed.length === 0) fail('bad_custom_column', 'a custom view needs at least one column');
 
@@ -1033,13 +1133,13 @@ function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileConte
   };
 
   // The select list and the column map, in display order.
-  const columns: CompiledColumn[] = [{ name: 'code', kind: 'code', label: groupDim.label }];
-  const select: string[] = [`${codeExpr} AS "code"`];
+  const columns: CompiledColumn[] = [...(nest?.columns ?? []), { name: 'code', kind: 'code', label: groupDim.label }];
+  const select: string[] = [...(nest?.select ?? []), `${codeExpr} AS "code"`];
   const grouping = `GROUPING(${codeExpr})`;
   shownProperties(view).forEach((property) => {
     const expr = `any_value(${scope.propertyOf(groupDim.key, property)})`;
     const name = `prop__${property}`;
-    select.push(`${totalRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
+    select.push(`${totalRow || nest ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
     columns.push({ name, kind: 'property', label: propertyLabel(groupDim, property), property });
   });
   const derived: string[] = [];
@@ -1099,8 +1199,13 @@ function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileConte
     select.push(`${sql} AS ${q(`p${i + 1}`)}`);
     left.push(`p${i + 1}`);
   });
-  select.push(`${totalRow ? `CAST(${grouping} AS INTEGER)` : '0'} AS "__total"`);
-  columns.push({ name: '__total', kind: 'meta', label: 'Total row' }, { name: '__rows', kind: 'meta', label: 'Row count' });
+  select.push(`${totalRow ? `CAST(${nest ? nest.total : grouping} AS INTEGER)` : '0'} AS "__total"`);
+  columns.push({ name: '__total', kind: 'meta', label: 'Total row' });
+  if (nest) {
+    select.push(nest.level);
+    columns.push({ name: '__level', kind: 'meta', label: 'Level' });
+  }
+  columns.push({ name: '__rows', kind: 'meta', label: 'Row count' });
 
   // Sort and paging.
   const sort: ViewSort = view.sort ?? { by: `column.${measured[0]?.slice(3) ?? ''}`, dir: 'desc' };
@@ -1128,12 +1233,14 @@ function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileConte
     `FROM ${fact}`,
     ...joins.values(),
     ...(where.length > 0 ? [`WHERE ${where.join(' AND ')}`] : []),
-    totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
+    nest ? nest.groupBy(totalRow) : totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
     '), v AS (',
     `SELECT g.*, ${derived.join(', ')}`,
     'FROM g',
-    ...rankAndPage('v', sortName, sort, keepRows(null, options, measured), left, offset, limit,
-      { others: false, average: averageRow ? measured : [], sum: sumRow ? measured : [] }),
+    ...rankAndPage('v', sortName, sort, keepRows(null, options, measured), left, offset, limit, {
+      others: false, average: averageRow ? measured : [], sum: sumRow ? measured : [],
+      ...(nest ? { nest: { levels: nest.count, byMeasure: sortName.startsWith('c__') } } : {}),
+    }),
   ].join('\n');
   checkLength(sql, ctx);
 
@@ -1147,6 +1254,7 @@ function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileConte
 /** Transaction mode: the fact rows themselves, newest first, one page at a time. */
 function compileTransactions(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
   const options: ViewOptions = view.options ?? {};
+  if (view.levels !== undefined) fail('option_unsupported', 'a transaction list has no nested rows');
   if (options.activity !== undefined && options.activity !== 'with') fail('option_unsupported', 'a transaction list shows rows that exist; activity does not apply');
   if (options.total_row || options.others_row || options.average_row || options.sum_row) fail('option_unsupported', 'a transaction list has no total, others, average or sum row');
 
@@ -1245,6 +1353,7 @@ function compileTransactions(model: ReportingModel, view: ViewState, ctx: Compil
  */
 function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
   const options: ViewOptions = view.options ?? {};
+  if (view.levels !== undefined) fail('option_unsupported', 'nested rows are not compiled for stream mode yet');
   if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', 'the activity option is not compiled for stream mode yet');
   if (options.others_row) fail('option_unsupported', 'an others row is not compiled for stream mode yet');
   const totalRow = options.total_row === true;
@@ -1364,6 +1473,7 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
 function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileContext, byPeriod = false): Compiled {
   const options: ViewOptions = view.options ?? {};
   const what = byPeriod ? 'the long shape of a period view' : 'matrix mode';
+  if (view.levels !== undefined) fail('option_unsupported', `nested rows are not compiled for ${what} yet`);
   if (byPeriod && options.average_column) fail('option_unsupported', 'the average column is not compiled for the long shape of a period view yet');
   if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', `the activity option is not compiled for ${what} yet`);
   if (options.others_row || options.average_row || options.sum_row) fail('option_unsupported', `others, average and sum rows are not compiled for ${what} yet`);

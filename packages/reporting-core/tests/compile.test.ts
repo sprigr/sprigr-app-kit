@@ -1237,3 +1237,106 @@ describe('compileView, period variance mode', () => {
     expect(out.ok && out.sql).toContain('FROM "sales_month_branch" WHERE');
   });
 });
+
+describe('compileView, nested rows', () => {
+  const nested = { group_by: 'product', levels: ['branch'] };
+
+  it('groups every level in the same pass and returns each row under the row above it', () => {
+    const out = compiled({ ...nested, limit: 50, options: { total_row: true } });
+    expect(out.sql).toBe([
+      'WITH g AS (',
+      'SELECT f."branch_code" AS "lv1", f."product_code" AS "code", CAST(SUM(f."amount") AS DOUBLE) AS "m__sales", '
+        + 'CAST(GROUPING(f."branch_code") AS INTEGER) AS "__total", '
+        + 'CAST(2 - (GROUPING(f."branch_code") + GROUPING(f."product_code")) AS INTEGER) AS "__level"',
+      'FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS f',
+      'GROUP BY GROUPING SETS ((f."branch_code"), (f."branch_code", f."product_code"), ())',
+      '), r AS (',
+      'SELECT k.*, row_number() OVER (PARTITION BY "__total" ORDER BY "__k1" DESC NULLS LAST, "lv1" ASC NULLS LAST, ("__level" > 1) ASC, '
+        + '"m__sales" DESC NULLS LAST, "code" ASC) AS "__rn",',
+      'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
+      'FROM (SELECT g.*, max(CASE WHEN "__level" = 1 THEN "m__sales" END) OVER (PARTITION BY "lv1") AS "__k1" FROM g) AS k',
+      ')',
+      'SELECT * EXCLUDE ("__rn", "__k1") FROM r',
+      'WHERE "__total" = 1 OR ("__rn" > 0 AND "__rn" <= 50)',
+      'ORDER BY "__total" DESC, "__rn" ASC',
+    ].join('\n'));
+    expect(out.columns.map((c) => c.name)).toEqual(['lv1', 'code', 'm__sales', '__total', '__level', '__rows']);
+    expect(out.columns[0]).toEqual({ name: 'lv1', kind: 'level', label: 'Branch', dimension: 'branch', level: 1 });
+    expect(out.tables).toEqual(['sales_lines']);
+  });
+
+  it('takes a level from a parent dimension and names it where it has a name', () => {
+    const out = compiled({ group_by: 'product', levels: ['branch', 'department'], properties: ['name'], sort: { by: 'code', dir: 'desc' } });
+    expect(out.sql).toContain(
+      'SELECT f."branch_code" AS "lv1", "d_product"."dept" AS "lv2", '
+        + 'CASE WHEN GROUPING("d_product"."dept") = 0 THEN any_value("d_department"."name") END AS "lvn2", f."product_code" AS "code", '
+        + 'CASE WHEN GROUPING(f."product_code") = 0 THEN any_value("d_product"."name") END AS "prop__name", '
+        + 'CAST(SUM(f."amount") AS DOUBLE) AS "m__sales", 0 AS "__total", '
+        + 'CAST(3 - (GROUPING(f."branch_code") + GROUPING("d_product"."dept") + GROUPING(f."product_code")) AS INTEGER) AS "__level"',
+    );
+    expect(out.sql).toContain('GROUP BY GROUPING SETS ((f."branch_code"), (f."branch_code", "d_product"."dept"), (f."branch_code", "d_product"."dept", f."product_code"))');
+    // Sorted by code, each level is in code order and no subtotal is looked up.
+    expect(out.sql).toContain(
+      'SELECT g.*, row_number() OVER (PARTITION BY "__total" ORDER BY "lv1" DESC NULLS LAST, ("__level" > 1) ASC, '
+        + '"lv2" DESC NULLS LAST, ("__level" > 2) ASC, "code" DESC NULLS LAST, "code" ASC) AS "__rn",',
+    );
+    expect(out.sql).toContain('FROM g\n)\nSELECT * EXCLUDE ("__rn") FROM r');
+    expect(out.columns.map((c) => c.name)).toEqual(['lv1', 'lv2', 'lvn2', 'code', 'prop__name', 'm__sales', '__total', '__level', '__rows']);
+    expect(out.columns[2]).toEqual({ name: 'lvn2', kind: 'level', label: 'Department Name', dimension: 'department', level: 2, property: 'name' });
+    expect(out.tables).toEqual(['sales_lines', 'products', 'departments']);
+  });
+
+  it('orders each level by its own figure in the column the view is sorted on', () => {
+    const { sql } = compiled({ ...nested, mode: 'variance', levels: ['department', 'branch'], sort: { by: 'variance.sales', dir: 'asc' } });
+    expect(sql).toContain(
+      'FROM (SELECT v.*, max(CASE WHEN "__level" = 1 THEN "var__sales" END) OVER (PARTITION BY "lv1") AS "__k1", '
+        + 'max(CASE WHEN "__level" = 2 THEN "var__sales" END) OVER (PARTITION BY "lv1", "lv2") AS "__k2" FROM v) AS k',
+    );
+    expect(sql).toContain(
+      'ORDER BY "__k1" ASC NULLS LAST, "lv1" ASC NULLS LAST, ("__level" > 1) ASC, "__k2" ASC NULLS LAST, "lv2" ASC NULLS LAST, ("__level" > 2) ASC, '
+        + '"var__sales" ASC NULLS LAST, "code" ASC) AS "__rn",',
+    );
+    expect(sql).toContain('SELECT * EXCLUDE ("__rn", "__k1", "__k2") FROM r');
+  });
+
+  it('nests a custom view the same way', () => {
+    const out = compiled({ ...nested, mode: 'custom', custom_columns: [{ key: 'now', point: { measure: 'sales' } }], options: { total_row: true } });
+    expect(out.sql).toContain('GROUP BY GROUPING SETS ((f."branch_code"), (f."branch_code", f."product_code"), ())');
+    expect(out.sql).toContain('FROM (SELECT v.*, max(CASE WHEN "__level" = 1 THEN "c__now" END) OVER (PARTITION BY "lv1") AS "__k1" FROM v) AS k');
+    expect(out.sql).toContain('SELECT * EXCLUDE ("__rn", "p1", "__k1") FROM r');
+    expect(out.columns.map((c) => c.name)).toEqual(['lv1', 'code', 'c__now', '__total', '__level', '__rows']);
+  });
+
+  it('is answered from a rollup that holds the level', () => {
+    const out = compileRollupView(fixtureModel(), { ...base, levels: ['product'] } as ViewState, { today: TODAY });
+    expect(out.ok && out.rollups).toEqual([{ stream: 'sales', rollup: 'by_product_branch', table: 'sales_month_product_branch' }]);
+  });
+
+  it.each([
+    [{ levels: [] }, 'bad_levels'],
+    [{ levels: 'branch' }, 'bad_levels'],
+    [{ levels: [7] }, 'bad_levels'],
+    [{ levels: ['branch'] }, 'bad_levels'],
+    [{ ...nested, levels: ['branch', 'branch'] }, 'bad_levels'],
+    [{ ...nested, levels: ['branch', 'department', 'customer', 'branch', 'department', 'customer'] }, 'bad_levels'],
+    [{ ...nested, levels: ['nope'] }, 'unknown_dimension'],
+    [{ ...nested, levels: ['customer'] }, 'dimension_not_on_stream'],
+    [{ ...nested, options: { activity: 'all' } }, 'option_unsupported'],
+    [{ ...nested, options: { others_row: true } }, 'option_unsupported'],
+    [{ ...nested, options: { average_row: true } }, 'option_unsupported'],
+    [{ ...nested, options: { sum_row: true } }, 'option_unsupported'],
+    [{ ...nested, options: { hide_zero_rows: true } }, 'option_unsupported'],
+    [{ ...nested, filters: { op: 'and', rules: [{ measure: 'sales', cmp: '>=', value: 1000 }] } }, 'measure_filter_unsupported'],
+    [{ ...nested, mode: 'custom', custom_columns: [{ key: 'now', point: { measure: 'sales' } }], options: { sum_row: true } }, 'option_unsupported'],
+    [{ ...nested, mode: 'transaction' }, 'option_unsupported'],
+    [{ ...nested, mode: 'stream' }, 'option_unsupported'],
+    [{ ...nested, mode: 'matrix', across: { dimension: 'department' } }, 'option_unsupported'],
+  ])('refuses %j with %s', (change, reason) => {
+    expect(refusal(change)).toBe(reason);
+  });
+
+  it('refuses the long shape of a period view', () => {
+    expect(refusal({ ...nested, mode: 'period', period: { preset: 'rolling_3' } }, { periodShape: 'long' })).toBe('option_unsupported');
+    expect(compiled({ ...nested, mode: 'period', period: { preset: 'rolling_3' } }, { periodShape: 'wide' }).sql).toContain('AS "__level"');
+  });
+});
