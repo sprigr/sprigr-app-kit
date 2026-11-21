@@ -54,7 +54,12 @@ export type ViewCompare = 'previous_year' | 'previous_period' | { period: Period
 const PART_PREFIX: Record<VariancePart, string> = { current: 'm__', previous: 'prev__', variance: 'var__', variance_pct: 'varp__' };
 
 export interface ViewPathStep { dimension: string; selected: string[] }
-export interface ViewDimensionRule { dimension: string; property?: string; cmp: 'in' | 'not_in'; values: string[] }
+/**
+ * Keeps the fact rows whose code, or `property`, passes. `in` and `not_in` match whole values.
+ * `contains` and `not_contains` look for text anywhere in the value, whatever its case, and a rule
+ * with several values passes when any one of them is found. A row with no value passes the two "not" rules.
+ */
+export interface ViewDimensionRule { dimension: string; property?: string; cmp: 'in' | 'not_in' | 'contains' | 'not_contains'; values: string[] }
 /**
  * Keeps the rows whose measure passes. It compares the value over the whole
  * period; in variance mode `of` picks which of the four columns.
@@ -481,12 +486,24 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
   const filterMeasures: string[] = [];
   const dimensionLeafWith = (resolve: (dimKey: string, property: string) => string) => (rule: LeafRule): string => {
     if ('measure' in rule) fail('measure_filter_unsupported', 'a measure rule cannot sit in a group of dimension rules');
-    if (rule.cmp !== 'in' && rule.cmp !== 'not_in') fail('empty_filter', `"${String(rule.cmp)}" is not a filter comparison`);
+    const whole = rule.cmp === 'in' || rule.cmp === 'not_in';
+    if (!whole && rule.cmp !== 'contains' && rule.cmp !== 'not_contains') fail('empty_filter', `"${String(rule.cmp)}" is not a filter comparison`);
     const expr = resolve(rule.dimension, rule.property ?? 'code');
-    const values = inList(stringList(rule.values, `the filter on "${String(rule.dimension)}"`));
-    return rule.cmp === 'in'
-      ? `CAST(${expr} AS VARCHAR) IN ${values}`
-      : `(${expr} IS NULL OR CAST(${expr} AS VARCHAR) NOT IN ${values})`;
+    const what = `the filter on "${String(rule.dimension)}"`;
+    const values = stringList(rule.values, what);
+    if (whole) {
+      return rule.cmp === 'in'
+        ? `CAST(${expr} AS VARCHAR) IN ${inList(values)}`
+        : `(${expr} IS NULL OR CAST(${expr} AS VARCHAR) NOT IN ${inList(values)})`;
+    }
+    // Text found anywhere in the value. Finding any one of the texts is enough.
+    const found = values.map((text) => {
+      if (text === '') fail('empty_selection', `${what} holds an empty text to look for`);
+      if (text.length > MAX_KEYWORD_CHARS) fail('keyword_too_long', `${what} holds a text longer than ${MAX_KEYWORD_CHARS} characters`);
+      return `CAST(${expr} AS VARCHAR) ILIKE ${sqlValue(likePattern(text))} ESCAPE '\\'`;
+    });
+    const any = `(${found.join(' OR ')})`;
+    return rule.cmp === 'contains' ? any : `(${expr} IS NULL OR NOT ${any})`;
   };
   const dimensionLeaf = dimensionLeafWith(propertyOf);
   const measureLeaf = (rule: LeafRule): string => {

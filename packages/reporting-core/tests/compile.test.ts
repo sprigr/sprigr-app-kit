@@ -177,6 +177,46 @@ describe('compileView, dimensions and filters', () => {
     expect(() => inlineParams('SELECT ?', ['a', 'b'])).toThrow('bad_params');
   });
 
+  it('looks for text anywhere in a code or a property, whatever its case', () => {
+    const view = {
+      filters: { op: 'or', rules: [
+        { dimension: 'product', cmp: 'contains', values: ['mug'] },
+        { dimension: 'product', property: 'name', cmp: 'contains', values: ['mug', '50%'] },
+      ] },
+    };
+    expect(compiled(view).sql).toContain(
+      'WHERE ((CAST(f."product_code" AS VARCHAR) ILIKE \'%mug%\' ESCAPE \'\\\') OR '
+        + '(CAST("d_product"."name" AS VARCHAR) ILIKE \'%mug%\' ESCAPE \'\\\' OR CAST("d_product"."name" AS VARCHAR) ILIKE \'%50\\%%\' ESCAPE \'\\\'))',
+    );
+    const out = unwritten(view);
+    expect(out.params).toEqual(['%mug%', '%mug%', '%50\\%%']);
+    expect(out.sql).not.toContain('mug');
+  });
+
+  it('keeps rows with no value under not_contains', () => {
+    const { sql } = compiled({ filters: { op: 'and', rules: [{ dimension: 'branch', cmp: 'not_contains', values: ['x'] }] } });
+    expect(sql).toContain('WHERE ((f."branch_code" IS NULL OR NOT (CAST(f."branch_code" AS VARCHAR) ILIKE \'%x%\' ESCAPE \'\\\')))');
+  });
+
+  it('takes a contains rule on a data point and on a member list', () => {
+    const rule = { dimension: 'product', property: 'name', cmp: 'contains', values: ['mug'] };
+    const found = '(CAST("d_product"."name" AS VARCHAR) ILIKE \'%mug%\' ESCAPE \'\\\')';
+    expect(compiled({ mode: 'custom', custom_columns: [{ key: 'mugs', point: { measure: 'sales', where: rule } }] }).sql)
+      .toContain(`FILTER (WHERE f."__w1" AND ${found})`);
+    expect(compiled({ group_by: 'product', options: { activity: 'all' }, filters: { op: 'and', rules: [rule] } }).sql)
+      .toContain('(CAST("mb"."name" AS VARCHAR) ILIKE \'%mug%\' ESCAPE \'\\\')');
+  });
+
+  it.each([
+    [{ dimension: 'product', cmp: 'contains', values: [] }, 'empty_selection'],
+    [{ dimension: 'product', cmp: 'contains', values: [''] }, 'empty_selection'],
+    [{ dimension: 'product', cmp: 'contains', values: ['k'.repeat(201)] }, 'keyword_too_long'],
+    [{ dimension: 'product', cmp: 'starts', values: ['k'] }, 'empty_filter'],
+    [{ dimension: 'customer', cmp: 'contains', values: ['k'] }, 'dimension_not_on_stream'],
+  ])('refuses the rule %j with %s', (rule, reason) => {
+    expect(refusal({ filters: { op: 'and', rules: [rule] } })).toBe(reason);
+  });
+
   it('ignores an empty top-level filter', () => {
     expect(compiled({ filters: { op: 'and', rules: [] } }).sql).toBe(compiled().sql);
   });
