@@ -813,8 +813,16 @@ function measureOver(src: MeasureSource, key: string, slice: Slice | null, depth
 /** A stream's fact rows in one window, aliased f. With `latest`, each row is flagged when it is on the window's latest day. */
 function factOver(stream: ModelStream, range: PeriodWindow, latest: boolean): string {
   const date = q(stream.date);
-  const rows = `SELECT * FROM ${q(stream.table)} WHERE ${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
-  return latest ? `(SELECT *, (${date} = MAX(${date}) OVER ()) AS "__lastw" FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+  const within = `${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
+  return latest ? withLatestDay(q(stream.table), date, '', within) : `(SELECT * FROM ${q(stream.table)} WHERE ${within}) AS ${FACT}`;
+}
+
+/**
+ * Fact rows flagged when they are on the latest day of all of them. A scalar subquery finds the day: a window
+ * function over the same rows holds every row to do it, and ran slower, more so over a longer period.
+ */
+function withLatestDay(table: string, date: string, columns: string, where: string): string {
+  return `(SELECT *${columns}, (${date} = (SELECT MAX(${date}) FROM ${table} WHERE ${where})) AS "__lastw" FROM ${table} WHERE ${where}) AS ${FACT}`;
 }
 
 /** A CASE over a fact row's date that gives the rows of each period column their own value. */
@@ -1097,7 +1105,10 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
       ? [`("__cur" AND ${latest('FILTER (WHERE "__cur") OVER ()')}) AS "__lastc"`, `("__prev" AND ${latest('FILTER (WHERE "__prev") OVER ()')}) AS "__lastp"`]
       : [`(${latest('OVER ()')}) AS "__lastw"`]),
   ].join(', ');
-  const fact = uses.has('snapshot') ? `(SELECT *, ${lastColumns} FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+  const fact = !uses.has('snapshot') ? `(${rows}) AS ${FACT}`
+    // One window and no period columns: the only day needed is the latest of all the rows.
+    : buckets.length === 0 && !current ? withLatestDay(q(stream.table), date, factColumns, factWhere)
+    : `(SELECT *, ${lastColumns} FROM (${rows}) AS s) AS ${FACT}`;
   const factRows = [`FROM ${fact}`, ...joins.values(), ...(where.length > 0 ? [`WHERE ${where.join(' AND ')}`] : [])];
   // With the member list, the filtered fact rows become a subquery joined to the dimension's own table:
   // "all" keeps both sides, "without" keeps the members no fact row matched.

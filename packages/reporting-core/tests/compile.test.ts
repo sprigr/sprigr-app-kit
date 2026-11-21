@@ -497,7 +497,7 @@ describe('compileView, snapshot measures', () => {
   it('reads the latest day of the period, found before any filter narrows the rows', () => {
     const { sql } = compiled({ measures: ['soh', 'sales'], path: [{ dimension: 'branch', selected: ['1'] }] });
     expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__lastw") AS DOUBLE) AS "m__soh"');
-    expect(sql).toContain('FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS s) AS f');
+    expect(sql).toContain('FROM (SELECT *, ("sale_date" = (SELECT MAX("sale_date") FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\')) AS "__lastw" FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS f');
     expect(sql).toContain('CAST(SUM(f."amount") AS DOUBLE) AS "m__sales"');
   });
 
@@ -573,7 +573,7 @@ describe('compileView, stream mode', () => {
   it('reads a snapshot measure on its own stream\'s latest day', () => {
     const { sql } = compiled({ ...streams, measures: ['soh', 'ordered'] });
     expect(sql).toContain('SUM(f."qty") FILTER (WHERE f."__lastw") AS "a__soh"');
-    expect(sql).toContain(`FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" WHERE "sale_date" ${NOVEMBER}`);
+    expect(sql).toContain(`FROM (SELECT *, ("sale_date" = (SELECT MAX("sale_date") FROM "sales_lines" WHERE "sale_date" ${NOVEMBER}`);
     expect(sql).toContain(`FROM (SELECT * FROM "order_lines" WHERE "order_date" ${NOVEMBER}`);
   });
 
@@ -668,7 +668,7 @@ describe('compileView, matrix mode', () => {
   it('reads a snapshot measure on the latest day of the period', () => {
     const { sql } = compiled({ ...matrix, measures: ['soh'] });
     expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__lastw") AS DOUBLE) AS "m__soh"');
-    expect(sql).toContain('FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" WHERE');
+    expect(sql).toContain('FROM (SELECT *, ("sale_date" = (SELECT MAX("sale_date") FROM "sales_lines" WHERE');
   });
 });
 
@@ -1421,8 +1421,9 @@ describe('compileView, member rules', () => {
   it('tests a snapshot measure on the latest day of the rule\'s dates', () => {
     const { sql } = compiled(only({ dimension: 'product', measure: 'soh', cmp: '>', value: 0 }));
     expect(sql).toContain(
-      'FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" '
-        + 'WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS s) AS f '
+      'FROM (SELECT *, ("sale_date" = (SELECT MAX("sale_date") FROM "sales_lines" '
+        + 'WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\')) AS "__lastw" FROM "sales_lines" '
+        + 'WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS f '
         + 'GROUP BY f."product_code" HAVING SUM(f."qty") FILTER (WHERE f."__lastw") > 0)',
     );
   });
