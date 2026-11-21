@@ -153,7 +153,7 @@ describe('compileView refusals', () => {
     [{ measures: [] }, 'no_measures'],
     [{ measures: ['sales', 'sales'] }, 'duplicate_measure'],
     [{ measures: ['nope'] }, 'unknown_measure'],
-    [{ measures: ['soh'] }, 'snapshot_measure_unsupported'],
+    [{ mode: 'transaction', measures: ['soh'] }, 'snapshot_measure_unsupported'],
     [{ measures: ['ordered'] }, 'measure_not_on_stream'],
     [{ group_by: 'customer' }, 'dimension_not_on_stream'],
     [{ group_by: 'nope' }, 'unknown_dimension'],
@@ -179,7 +179,8 @@ describe('compileView refusals', () => {
     [{ limit: 2000, options: { total_row: true } }, 'bad_paging'],
     [{ offset: -1 }, 'bad_paging'],
     [{ period: { named: 'nope' } }, 'unknown_period'],
-    [{ options: { activity: 'without' } }, 'option_unsupported'],
+    [{ options: { activity: 'sometimes' } }, 'option_unsupported'],
+    [{ options: { activity: 'all' } }, 'dimension_has_no_table'],
     [{ options: { others_row: true } }, 'option_unsupported'],
     [{ keyword: 'k'.repeat(201) }, 'keyword_too_long'],
   ])('refuses %j with %s', (change, reason) => {
@@ -319,5 +320,82 @@ describe('compileView, transaction mode', () => {
     const { sql } = compiled({ ...view, path: [{ dimension: 'department', selected: ['010'] }] });
     expect(sql).toContain('LEFT JOIN "products" AS "d_product" ON "d_product"."code" = f."product_code"');
     expect(sql).toContain('WHERE CAST("d_product"."dept" AS VARCHAR) IN (\'010\')');
+  });
+});
+
+describe('compileView, the activity option', () => {
+  const view = { group_by: 'product', properties: ['name'], measures: ['sales', 'lines'] };
+
+  it('joins the filtered fact rows to the dimension\'s own table and keeps both sides under "all"', () => {
+    const { sql } = compiled({ ...view, options: { activity: 'all', total_row: true }, path: [{ dimension: 'branch', selected: ['1'] }] });
+    expect(sql).toContain([
+      'FROM "products" AS "mb"',
+      'FULL JOIN (',
+      'SELECT f.*, f."product_code" AS "__code", 1 AS "__in"',
+      'FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS f',
+      'WHERE CAST(f."branch_code" AS VARCHAR) IN (\'1\')',
+      ') AS f ON f."__code" = "mb"."code"',
+      'GROUP BY GROUPING SETS ((COALESCE("mb"."code", f."__code")), ())',
+    ].join('\n'));
+    expect(sql).toContain('SELECT COALESCE("mb"."code", f."__code") AS "code", CASE WHEN GROUPING(COALESCE("mb"."code", f."__code")) = 0 THEN any_value("mb"."name") END AS "prop__name"');
+  });
+
+  it('does not count the row a member with no fact rows has in the join', () => {
+    expect(compiled({ ...view, options: { activity: 'all' } }).sql).toContain('CAST(COUNT(f."__in") AS DOUBLE) AS "m__lines"');
+    expect(compiled(view).sql).toContain('CAST(COUNT(*) AS DOUBLE) AS "m__lines"');
+  });
+
+  it('lists only the members no fact row matched under "without", with no total row', () => {
+    const { sql } = compiled({ ...view, options: { activity: 'without', total_row: true } });
+    expect(sql).toContain('LEFT JOIN (');
+    expect(sql).toContain('GROUP BY COALESCE("mb"."code", f."__code")\nHAVING COUNT(f."__in") = 0\n), r AS (');
+    expect(sql).toContain('0 AS "__total"');
+  });
+
+  it('narrows the member list by the keyword and by the filters the member\'s table can answer', () => {
+    const { sql } = compiled({
+      ...view,
+      options: { activity: 'without' },
+      keyword: 'mug',
+      filters: { op: 'and', rules: [
+        { dimension: 'department', property: 'name', cmp: 'in', values: ['Gifts'] },
+        { dimension: 'branch', cmp: 'in', values: ['1'] },
+      ] },
+    });
+    expect(sql).toContain('LEFT JOIN "departments" AS "mb_department" ON "mb_department"."code" = "mb"."dept"');
+    expect(sql).toContain('WHERE f."__in" IS NOT NULL OR ((CAST("mb_department"."name" AS VARCHAR) IN (\'Gifts\')) AND (CAST("mb"."code" AS VARCHAR) ILIKE \'%mug%\' ESCAPE \'\\\' OR "mb"."name" ILIKE \'%mug%\' ESCAPE \'\\\'))');
+  });
+
+  it('leaves the member list open when an "or" holds a rule the member\'s table cannot answer', () => {
+    const { sql } = compiled({ ...view, options: { activity: 'all' }, filters: { op: 'or', rules: [
+      { dimension: 'product', property: 'brand', cmp: 'in', values: ['Acme'] },
+      { dimension: 'branch', cmp: 'in', values: ['1'] },
+    ] } });
+    expect(sql).not.toContain('"__in" IS NOT NULL OR');
+  });
+});
+
+describe('compileView, snapshot measures', () => {
+  it('reads the latest day of the period, found before any filter narrows the rows', () => {
+    const { sql } = compiled({ measures: ['soh', 'sales'], path: [{ dimension: 'branch', selected: ['1'] }] });
+    expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__lastw") AS DOUBLE) AS "m__soh"');
+    expect(sql).toContain('FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS s) AS f');
+    expect(sql).toContain('CAST(SUM(f."amount") AS DOUBLE) AS "m__sales"');
+  });
+
+  it('reads the latest day of each period column', () => {
+    const { sql } = compiled({ mode: 'period', measures: ['soh'], period: { preset: 'rolling_3' } });
+    expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__b" = 2 AND f."__last") AS DOUBLE) AS "b2__soh"');
+    expect(sql).toContain('("sale_date" = MAX("sale_date") OVER (PARTITION BY "__b")) AS "__last", ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT *, CASE WHEN');
+  });
+
+  it('reads the latest day of each window in a variance', () => {
+    const { sql } = compiled({ mode: 'variance', measures: ['soh'] });
+    expect(sql).toContain('("__cur" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__cur") OVER ()) AS "__lastc", ("__prev" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__prev") OVER ()) AS "__lastp"');
+    expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__lastp") AS DOUBLE) AS "prev__soh"');
+  });
+
+  it('adds nothing to a view with no snapshot measure', () => {
+    expect(compiled().sql).not.toContain('__lastw');
   });
 });

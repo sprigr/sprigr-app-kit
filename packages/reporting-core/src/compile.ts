@@ -180,9 +180,22 @@ interface Scope {
   having: string | null;
   /** Keys of the measures that condition reads. */
   filterMeasures: string[];
+  /** Set when the view also lists members with nothing in the period. */
+  members: MemberList | null;
 }
 
-function scopeOf(model: ReportingModel, view: ViewState): Scope {
+/** The group-by dimension's own table, aliased "mb": one row per member, whether or not it has fact rows. */
+interface MemberList {
+  table: string;
+  /** The member's code, read from that table. */
+  code: string;
+  joins: string[];
+  /** Which members to list: the keyword, and the path steps and filters the member's own table can answer. */
+  conds: string[];
+  property: (property: string) => string;
+}
+
+function scopeOf(model: ReportingModel, view: ViewState, withMembers = false): Scope {
   const stream: ModelStream = model.streams.find((s) => s.key === view.stream) ?? fail('unknown_stream', `no stream "${String(view.stream)}"`);
   const dimByKey = new Map(model.dimensions.map((d) => [d.key, d]));
   const measureByKey = new Map(model.measures.map((m) => [m.key, m]));
@@ -206,17 +219,59 @@ function scopeOf(model: ReportingModel, view: ViewState): Scope {
     const parent = dimension(dim.via.dimension);
     return `${join(parent, codeOf(parent.key, depth + 1))}.${q(dim.via.column)}`;
   };
+  const columnOf = (dim: ModelDimension, property: string): string => {
+    const column = property === 'name' ? dim.name : dim.properties.find((p) => p.key === property)?.column;
+    return column ?? fail('unknown_property', `"${dim.key}" has no property "${String(property)}"`);
+  };
   const propertyOf = (dimKey: string, property: string): string => {
     const code = codeOf(dimKey);
     if (property === 'code') return code;
     const dim = dimension(dimKey);
-    const column = property === 'name' ? dim.name : dim.properties.find((p) => p.key === property)?.column;
-    if (column === undefined) fail('unknown_property', `"${dimKey}" has no property "${String(property)}"`);
+    const column = columnOf(dim, property);
     return `${join(dim, code)}.${q(column)}`;
   };
 
   const groupDim = dimension(view.group_by);
   const codeExpr = codeOf(groupDim.key);
+
+  // The member list resolves a dimension from the group-by dimension's own table instead of from a fact row.
+  const membersOf = () => {
+    const table = groupDim.table;
+    const codeColumn = groupDim.code;
+    if (!table || !codeColumn) fail('dimension_has_no_table', `"${groupDim.key}" has no table to list its members from`);
+    const root = q('mb');
+    const joinsHere = new Map<string, string>();
+    /** True when the member's table can answer for a dimension: it is the group-by dimension or one above it. */
+    const reaches = (key: string, depth = 0): boolean => {
+      if (key === groupDim.key) return true;
+      const via = dimByKey.get(key)?.via;
+      return via !== undefined && depth < 20 && reaches(via.dimension, depth + 1);
+    };
+    const tableOf = (dim: ModelDimension, code: string): string => {
+      if (dim.key === groupDim.key) return root;
+      if (!dim.table || !dim.code) fail('dimension_has_no_table', `"${dim.key}" has no table to read from`);
+      const a = q(`mb_${dim.key}`);
+      if (!joinsHere.has(a)) joinsHere.set(a, `LEFT JOIN ${q(dim.table)} AS ${a} ON ${a}.${q(dim.code)} = ${code}`);
+      return a;
+    };
+    const codeHere = (key: string): string => {
+      const dim = dimension(key);
+      if (dim.key === groupDim.key) return `${root}.${q(codeColumn)}`;
+      const via = dim.via ?? fail('dimension_not_on_stream', `"${key}" is not above "${groupDim.key}"`);
+      const parent = dimension(via.dimension);
+      return `${tableOf(parent, codeHere(parent.key))}.${q(via.column)}`;
+    };
+    const propertyHere = (dimKey: string, property: string): string => {
+      const code = codeHere(dimKey);
+      if (property === 'code') return code;
+      const dim = dimension(dimKey);
+      const column = columnOf(dim, property);
+      return `${tableOf(dim, code)}.${q(column)}`;
+    };
+    const conds: string[] = [];
+    return { table, joinsHere, reaches, codeHere, propertyHere, conds };
+  };
+  const mb = withMembers ? membersOf() : null;
 
   // The drill path.
   const where: string[] = [];
@@ -224,19 +279,21 @@ function scopeOf(model: ReportingModel, view: ViewState): Scope {
   (view.path ?? []).forEach((step) => {
     const values = stringList(step?.selected, `the drill step on "${String(step?.dimension)}"`);
     where.push(`CAST(${codeOf(step.dimension)} AS VARCHAR) IN ${inList(values)}`);
+    if (mb && mb.reaches(step.dimension)) mb.conds.push(`CAST(${mb.codeHere(step.dimension)} AS VARCHAR) IN ${inList(values)}`);
   });
 
   // Filters. A dimension rule tests fact rows; a measure rule tests grouped rows.
   const filterMeasures: string[] = [];
-  const dimensionLeaf = (rule: LeafRule): string => {
+  const dimensionLeafWith = (resolve: (dimKey: string, property: string) => string) => (rule: LeafRule): string => {
     if ('measure' in rule) fail('measure_filter_unsupported', 'a measure rule cannot sit in a group of dimension rules');
     if (rule.cmp !== 'in' && rule.cmp !== 'not_in') fail('empty_filter', `"${String(rule.cmp)}" is not a filter comparison`);
-    const expr = propertyOf(rule.dimension, rule.property ?? 'code');
+    const expr = resolve(rule.dimension, rule.property ?? 'code');
     const values = inList(stringList(rule.values, `the filter on "${String(rule.dimension)}"`));
     return rule.cmp === 'in'
       ? `CAST(${expr} AS VARCHAR) IN ${values}`
       : `(${expr} IS NULL OR CAST(${expr} AS VARCHAR) NOT IN ${values})`;
   };
+  const dimensionLeaf = dimensionLeafWith(propertyOf);
   const measureLeaf = (rule: LeafRule): string => {
     if (!('measure' in rule)) fail('measure_filter_unsupported', 'a dimension rule cannot sit in a group of measure rules');
     if (!(MEASURE_CMPS as readonly string[]).includes(rule.cmp)) fail('measure_filter_unsupported', `"${String(rule.cmp)}" is not a comparison`);
@@ -274,6 +331,16 @@ function scopeOf(model: ReportingModel, view: ViewState): Scope {
     }
     if (onRows.length > 0) where.push(groupSql({ op: top.op, rules: onRows }, 0, dimensionLeaf));
     if (onGroups.length > 0) having = groupSql({ op: top.op, rules: onGroups }, 0, measureLeaf);
+    if (mb && onRows.length > 0) {
+      const answerable = (rule: LeafRule | ViewFilterGroup): boolean => (
+        isGroup(rule) ? rule.rules.every(answerable) : !('measure' in rule) && mb.reaches(rule.dimension)
+      );
+      const mine = onRows.filter(answerable);
+      // Under "or", one rule the member's table cannot answer leaves the member list open.
+      if (mine.length > 0 && (top.op === 'and' || mine.length === onRows.length)) {
+        mb.conds.push(groupSql({ op: top.op, rules: mine }, 0, dimensionLeafWith(mb.propertyHere)));
+      }
+    }
   }
 
   // The keyword.
@@ -284,9 +351,21 @@ function scopeOf(model: ReportingModel, view: ViewState): Scope {
     const targets = [`CAST(${codeExpr} AS VARCHAR) ILIKE ${pattern}`];
     if (groupDim.table && groupDim.name) targets.push(`${propertyOf(groupDim.key, 'name')} ILIKE ${pattern}`);
     where.push(`(${targets.join(' OR ')})`);
+    if (mb) {
+      const mine = [`CAST(${mb.codeHere(groupDim.key)} AS VARCHAR) ILIKE ${pattern}`];
+      if (groupDim.name) mine.push(`${mb.propertyHere(groupDim.key, 'name')} ILIKE ${pattern}`);
+      mb.conds.push(`(${mine.join(' OR ')})`);
+    }
   }
 
-  return { stream, measureByKey, joins, dimension, propertyOf, groupDim, codeExpr, where, having, filterMeasures };
+  const members: MemberList | null = mb && {
+    table: mb.table,
+    code: mb.codeHere(groupDim.key),
+    joins: [...mb.joinsHere.values()],
+    conds: mb.conds,
+    property: (property) => mb.propertyHere(groupDim.key, property),
+  };
+  return { stream, measureByKey, joins, dimension, propertyOf, groupDim, codeExpr, where, having, filterMeasures, members };
 }
 
 function shownMeasures(view: ViewState, measureByKey: Map<string, ModelMeasure>): ModelMeasure[] {
@@ -313,18 +392,25 @@ function checkLength(sql: string, ctx: CompileContext): void {
   }
 }
 
-/** One window of dates a measure is computed over, and the condition that picks its fact rows. */
-interface Slice { bucket: PeriodBucket; filter: string }
+/**
+ * One window of dates a measure is computed over: the condition that picks its
+ * fact rows, and the one that picks the rows of its latest day (for a snapshot measure).
+ */
+interface Slice { bucket: PeriodBucket; filter: string; last: string }
 
 /** Total, period and variance modes: one row per member of the group-by dimension. */
 function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
   const options: ViewOptions = view.options ?? {};
-  if (options.activity !== undefined && options.activity !== 'with') fail('option_unsupported', 'only activity "with" is compiled yet');
+  const activity = options.activity ?? 'with';
+  if (activity !== 'with' && activity !== 'without' && activity !== 'all') fail('option_unsupported', `"${String(activity)}" is not an activity option`);
   if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled yet');
-  const totalRow = options.total_row === true;
+  // Members with no activity have no figures, so a list of them has no total row.
+  const totalRow = options.total_row === true && activity !== 'without';
 
-  const scope = scopeOf(model, view);
-  const { stream, measureByKey, joins, groupDim, codeExpr, where } = scope;
+  const scope = scopeOf(model, view, activity !== 'with');
+  const { stream, measureByKey, joins, groupDim, where, members } = scope;
+  // With the member list joined in, a row's code comes from whichever side has it.
+  const codeExpr = members ? `COALESCE(${members.code}, ${FACT}."__code")` : scope.codeExpr;
   const shown = shownMeasures(view, measureByKey);
   // A measure a filter reads but the view does not show is computed, then left out of the result.
   const unseen = scope.filterMeasures
@@ -337,7 +423,11 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   const windowDays = period.buckets.reduce((sum, b) => sum + b.days, 0);
   const date = q(stream.date);
   const inWindow = (w: PeriodWindow): string => `${date} >= ${sqlDate(w.from)} AND ${date} < ${sqlDate(w.to)}`;
-  const slices: Slice[] = buckets.map((bucket, i) => ({ bucket, filter: `${FACT}."__b" = ${i + 1}` }));
+  const slices: Slice[] = buckets.map((bucket, i) => ({
+    bucket,
+    filter: `${FACT}."__b" = ${i + 1}`,
+    last: `${FACT}."__b" = ${i + 1} AND ${FACT}."__last"`,
+  }));
   let factColumns = buckets.length === 0 ? ''
     : `, CASE ${buckets.map((b, i) => `WHEN ${date} < ${sqlDate(b.to)} THEN ${i + 1}`).join(' ')} END AS "__b"`;
   let factWhere = inWindow(period.window);
@@ -350,15 +440,19 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     if (compare !== 'previous_year' && compare !== 'previous_period') fail('option_unsupported', `"${String(compare)}" is not a comparison`);
     comparison = comparisonWindow(period.window, compare);
     const whole = (key: string, label: string, w: PeriodWindow): PeriodBucket => ({ key, label, from: w.from, to: w.to, days: daysBetween(w.from, w.to) });
-    current = { bucket: whole('current', 'Current', period.window), filter: `${FACT}."__cur"` };
-    previous = { bucket: whole('previous', compare === 'previous_year' ? 'Previous year' : 'Previous period', comparison), filter: `${FACT}."__prev"` };
+    current = { bucket: whole('current', 'Current', period.window), filter: `${FACT}."__cur"`, last: `${FACT}."__lastc"` };
+    previous = {
+      bucket: whole('previous', compare === 'previous_year' ? 'Previous year' : 'Previous period', comparison),
+      filter: `${FACT}."__prev"`,
+      last: `${FACT}."__lastp"`,
+    };
     // Two flags, not one number: a period longer than a year overlaps the year before it.
     factColumns = `, (${inWindow(period.window)}) AS "__cur", (${inWindow(comparison)}) AS "__prev"`;
     factWhere = `(${inWindow(period.window)}) OR (${inWindow(comparison)})`;
   }
-  const fact = `(SELECT *${factColumns} FROM ${q(stream.table)} WHERE ${factWhere}) AS ${FACT}`;
 
   // Measures: an aggregate for a base measure, the formula over those aggregates otherwise.
+  const uses = new Set<'snapshot'>();
   const parsed = new Map<string, FormulaNode>();
   const measureSql = (key: string, slice: Slice | null, depth: number): string => {
     if (depth > 20) fail('formula_cycle', `"${key}" refers back to itself`);
@@ -373,11 +467,16 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
       });
     }
     if (measure.stream !== stream.key) fail('measure_not_on_stream', `"${key}" belongs to stream "${measure.stream}", not "${stream.key}"`);
-    if (measure.snapshot) fail('snapshot_measure_unsupported', `"${key}" is a snapshot measure, which is not compiled yet`);
     const column = measure.column === undefined ? '' : `${FACT}.${q(measure.column)}`;
-    const call = measure.agg === 'count' ? (column === '' ? 'COUNT(*)' : `COUNT(${column})`)
+    // A member with no fact rows still has one row in the join, which a bare COUNT(*) would count.
+    const call = measure.agg === 'count' ? (column !== '' ? `COUNT(${column})` : members ? `COUNT(${FACT}."__in")` : 'COUNT(*)')
       : measure.agg === 'count_distinct' ? `COUNT(DISTINCT ${column})`
         : `${measure.agg.toUpperCase()}(${column})`;
+    // A level, not a flow: only the rows of the window's latest day count.
+    if (measure.snapshot) {
+      uses.add('snapshot');
+      return `${call} FILTER (WHERE ${slice ? slice.last : `${FACT}."__lastw"`})`;
+    }
     return slice ? `${call} FILTER (WHERE ${slice.filter})` : call;
   };
 
@@ -388,7 +487,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   (view.properties ?? []).forEach((property, i) => {
     if (property === 'code') return;
     if ((view.properties ?? []).indexOf(property) !== i) return;
-    const expr = `any_value(${scope.propertyOf(groupDim.key, property)})`;
+    const expr = `any_value(${members ? members.property(property) : scope.propertyOf(groupDim.key, property)})`;
     const name = `prop__${property}`;
     select.push(`${totalRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
     const label = property === 'name' ? 'Name' : groupDim.properties.find((p) => p.key === property)?.label ?? property;
@@ -452,15 +551,35 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
   const { limit, offset } = pageOf(view, ctx, totalRow ? 1 : 0);
 
+  // The fact subquery. A snapshot measure needs each window's latest day, the same day for every member,
+  // so it is found here, before any filter narrows the rows.
+  const rows = `SELECT *${factColumns} FROM ${q(stream.table)} WHERE ${factWhere}`;
+  const latest = (over: string): string => `${date} = MAX(${date}) ${over}`;
+  const lastColumns = view.mode === 'variance'
+    ? `("__cur" AND ${latest('FILTER (WHERE "__cur") OVER ()')}) AS "__lastc", ("__prev" AND ${latest('FILTER (WHERE "__prev") OVER ()')}) AS "__lastp"`
+    : `${buckets.length > 0 ? `(${latest('OVER (PARTITION BY "__b")')}) AS "__last", ` : ''}(${latest('OVER ()')}) AS "__lastw"`;
+  const fact = uses.has('snapshot') ? `(SELECT *, ${lastColumns} FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+  const factRows = [`FROM ${fact}`, ...joins.values(), ...(where.length > 0 ? [`WHERE ${where.join(' AND ')}`] : [])];
+  // With the member list, the filtered fact rows become a subquery joined to the dimension's own table:
+  // "all" keeps both sides, "without" keeps the members no fact row matched.
+  const from = !members ? factRows : [
+    `FROM ${q(members.table)} AS "mb"`,
+    `${activity === 'all' ? 'FULL' : 'LEFT'} JOIN (`,
+    `SELECT ${FACT}.*, ${scope.codeExpr} AS "__code", 1 AS "__in"`,
+    ...factRows,
+    `) AS ${FACT} ON ${FACT}."__code" = ${members.code}`,
+    ...members.joins,
+    ...(members.conds.length > 0 ? [`WHERE ${FACT}."__in" IS NOT NULL OR (${members.conds.join(' AND ')})`] : []),
+  ];
+
   // A measure filter drops rows after grouping and never drops the total row, which stays the total of every member.
   const source = derived.length > 0 ? 'v' : 'g';
   const sql = [
     'WITH g AS (',
     `SELECT ${select.join(', ')}`,
-    `FROM ${fact}`,
-    ...joins.values(),
-    ...(where.length > 0 ? [`WHERE ${where.join(' AND ')}`] : []),
+    ...from,
     totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
+    ...(activity === 'without' ? [`HAVING COUNT(${FACT}."__in") = 0`] : []),
     ...(source === 'v' ? ['), v AS (', `SELECT g.*, ${derived.join(', ')}`, 'FROM g'] : []),
     '), r AS (',
     `SELECT ${source}.*, row_number() OVER (PARTITION BY "__total" ORDER BY ${q(sortName)} ${sort.dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, "code" ASC) AS "__rn",`,
