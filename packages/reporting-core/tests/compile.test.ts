@@ -1380,3 +1380,91 @@ describe('compileView, nested rows', () => {
     expect(compiled({ ...nested, mode: 'period', period: { preset: 'rolling_3' } }, { periodShape: 'wide' }).sql).toContain('AS "__level"');
   });
 });
+
+describe('compileView, member rules', () => {
+  const LAST_FISCAL_YEAR = { custom: { from: '2025-07-01', to: '2026-06-30' } };
+  const sold = { dimension: 'product', measure: 'sales', cmp: '>', value: 100, period: LAST_FISCAL_YEAR };
+  const only = (rule: unknown) => ({ filters: { op: 'and', rules: [rule] } });
+
+  it('keeps the rows of the members that pass a test over dates of their own', () => {
+    const out = compiled(only(sold));
+    expect(out.sql).toContain(
+      'WHERE (CAST(f."product_code" AS VARCHAR) IN (SELECT CAST(f."product_code" AS VARCHAR) '
+        + 'FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2025-07-01\' AND "sale_date" < DATE \'2026-07-01\') AS f '
+        + 'GROUP BY f."product_code" HAVING SUM(f."amount") > 100))',
+    );
+    // The view still groups by branch over its own month, and the months read cover the rule's dates.
+    expect(out.sql).toContain('GROUP BY f."branch_code"\n');
+    expect(out.window).toEqual({ from: '2026-11-01', to: '2026-12-01' });
+    expect(out.ruleWindows).toEqual([{ from: '2025-07-01', to: '2026-07-01' }]);
+    expect(out.months).toEqual({ from: '2025-07', to: '2026-11' });
+    expect(out.params).toEqual([]);
+  });
+
+  it('reads the view\'s own period when the rule gives none, and joins for itself', () => {
+    const out = compiled({ filters: { op: 'or', rules: [
+      { dimension: 'branch', cmp: 'in', values: ['B1'] },
+      { dimension: 'department', measure: 'gp', cmp: '<', value: 0.2 },
+    ] } });
+    expect(out.sql).toContain(
+      'OR CAST("d_product"."dept" AS VARCHAR) IN (SELECT CAST("d_product"."dept" AS VARCHAR) '
+        + 'FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS f '
+        + 'LEFT JOIN "products" AS "d_product" ON "d_product"."code" = f."product_code" GROUP BY "d_product"."dept" HAVING ',
+    );
+    expect(out.sql).toContain(' < 0.2))');
+    expect(out.sql.split('LEFT JOIN "products" AS "d_product"')).toHaveLength(3);
+    expect(out.ruleWindows).toEqual([{ from: '2026-11-01', to: '2026-12-01' }]);
+    expect(out.months).toEqual({ from: '2026-11', to: '2026-11' });
+    expect(out.tables).toEqual(['sales_lines', 'products']);
+  });
+
+  it('tests a snapshot measure on the latest day of the rule\'s dates', () => {
+    const { sql } = compiled(only({ dimension: 'product', measure: 'soh', cmp: '>', value: 0 }));
+    expect(sql).toContain(
+      'FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" '
+        + 'WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS s) AS f '
+        + 'GROUP BY f."product_code" HAVING SUM(f."qty") FILTER (WHERE f."__lastw") > 0)',
+    );
+  });
+
+  it('works in every mode that filters fact rows, and beside a filter on a measure', () => {
+    expect(compiled({ ...only(sold), mode: 'transaction' }).sql).toContain('HAVING SUM(f."amount") > 100)');
+    expect(compiled({ ...only(sold), mode: 'custom', custom_columns: [{ key: 'now', point: { measure: 'sales' } }] }).sql).toContain('HAVING SUM(f."amount") > 100)');
+    expect(compiled({ ...only(sold), mode: 'matrix', across: { dimension: 'product' } }).sql).toContain('HAVING SUM(f."amount") > 100)');
+    const both = compiled({ filters: { op: 'and', rules: [sold, { measure: 'sales', cmp: '>=', value: 1000 }] } });
+    expect(both.sql).toContain('HAVING SUM(f."amount") > 100)');
+    expect(both.sql).toContain('WHERE "__total" = 1 OR ("m__sales" >= 1000)');
+  });
+
+  it('narrows the member list of the activity option when the rule is on the row dimension or one above it', () => {
+    const { sql } = compiled({ ...only(sold), group_by: 'product', options: { activity: 'without' } });
+    expect(sql).toContain('(CAST("mb"."code" AS VARCHAR) IN (SELECT CAST(f."product_code" AS VARCHAR) FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2025-07-01\'');
+    const branch = compiled({ ...only({ ...sold, dimension: 'branch' }), group_by: 'product', options: { activity: 'without' } });
+    expect(branch.sql).not.toContain('"mb"."code" AS VARCHAR) IN (SELECT');
+  });
+
+  it('is answered from a rollup only when the rule\'s dates are whole months too', () => {
+    const roll = (rule: unknown) => compileRollupView(fixtureModel(), { ...base, ...only(rule) } as ViewState, { today: TODAY });
+    const whole = roll(sold);
+    expect(whole.ok && whole.rollups).toEqual([{ stream: 'sales', rollup: 'by_product_branch', table: 'sales_month_product_branch' }]);
+    expect(whole.ok && whole.sql).toContain('FROM (SELECT * FROM "sales_month_product_branch" WHERE "month" >= DATE \'2025-07-01\' AND "month" < DATE \'2026-07-01\') AS f GROUP BY');
+    const week = roll({ ...sold, period: { custom: { from: '2026-11-02', to: '2026-11-08' } } });
+    expect(week.ok ? 'did not refuse' : week.reason).toBe('no_rollup');
+  });
+
+  it.each([
+    [{ ...sold, cmp: 'like' }, 'measure_filter_unsupported'],
+    [{ ...sold, measure: 'nope' }, 'unknown_measure'],
+    [{ ...sold, measure: 'ordered' }, 'measure_not_on_stream'],
+    [{ ...sold, dimension: 'customer' }, 'dimension_not_on_stream'],
+    [{ ...sold, dimension: 'nope' }, 'unknown_dimension'],
+    [{ ...sold, value: 'x' }, 'bad_number'],
+  ])('refuses the rule %j with %s', (rule, reason) => {
+    expect(refusal(only(rule))).toBe(reason);
+  });
+
+  it('refuses a member rule on a data point, and in a view of more than one stream', () => {
+    expect(refusal({ mode: 'custom', custom_columns: [{ key: 'a', point: { measure: 'sales', where: sold } }] })).toBe('bad_custom_column');
+    expect(refusal({ ...only(sold), mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'] })).toBe('measure_not_on_stream');
+  });
+});

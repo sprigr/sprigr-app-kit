@@ -65,7 +65,14 @@ export interface ViewDimensionRule { dimension: string; property?: string; cmp: 
  * period; in variance mode `of` picks which of the four columns.
  */
 export interface ViewMeasureRule { measure: string; cmp: string; value: number; of?: VariancePart }
-export interface ViewFilterGroup { op: 'and' | 'or'; rules: Array<ViewDimensionRule | ViewMeasureRule | ViewFilterGroup> }
+/**
+ * Keeps the fact rows whose member of `dimension` passes a test of its own: `measure`, worked out for
+ * that member over `period` (the view's period when absent), compared with `value`. Such as the products
+ * that sold more than 100 last year, whatever the view then groups by. The test reads every row of the
+ * view's stream in those dates, whatever else the view filters on. It sits where a dimension rule can.
+ */
+export interface ViewMemberRule { dimension: string; measure: string; cmp: string; value: number; period?: PeriodSpec }
+export interface ViewFilterGroup { op: 'and' | 'or'; rules: Array<ViewDimensionRule | ViewMeasureRule | ViewMemberRule | ViewFilterGroup> }
 export interface ViewSort { by: string; dir: 'asc' | 'desc' }
 /**
  * Matrix mode: the dimension whose members become columns. `limit` is how many to keep.
@@ -220,6 +227,8 @@ export interface CompiledView {
   buckets: PeriodBucket[];
   /** Inclusive `YYYY-MM` range the statement reads, for the query route's `months` argument. */
   months: { from: string; to: string };
+  /** The dates each member rule in the view's filters reads, when it has any. `months` covers them. */
+  ruleWindows?: PeriodWindow[];
   /**
    * Every table the statement reads, fact or rollup tables and dimension tables, in the order it
    * first reads them. A caller that holds its own copy of the data loads these.
@@ -271,7 +280,13 @@ export function compileView(model: ReportingModel, view: ViewState, ctx: Compile
     const { sql, params } = bindValues(out.sql);
     // Only a name the model gives a table counts.
     const known = new Set([...model.streams.map((s) => s.table), ...model.dimensions.flatMap((d) => (d.table ? [d.table] : []))]);
-    return { ...out, sql, params, tables: tablesIn(sql).filter((table) => known.has(table)) };
+    // A member rule reads dates of its own, which the months read must cover.
+    const ruleWindows = memberWindows(model, view, ctx);
+    const months = ruleWindows.map((w) => monthsRange(w)).reduce(
+      (all, m) => ({ from: m.from < all.from ? m.from : all.from, to: m.to > all.to ? m.to : all.to }),
+      out.months,
+    );
+    return { ...out, sql, params, months, ...(ruleWindows.length > 0 ? { ruleWindows } : {}), tables: tablesIn(sql).filter((table) => known.has(table)) };
   } catch (err) {
     return refusalOf(err);
   }
@@ -315,7 +330,7 @@ export function compileRollupView(model: ReportingModel, view: ViewState, ctx: C
   if (!plain.ok) return plain;
   const none = (detail: string): Refusal => ({ ok: false, reason: 'no_rollup', detail });
   if (view.mode === 'transaction') return none('a transaction list reads the rows themselves');
-  const windows: PeriodWindow[] = [plain.window, ...(plain.comparison ? [plain.comparison] : []), ...plain.buckets, ...(plain.windows ?? [])];
+  const windows: PeriodWindow[] = [plain.window, ...(plain.comparison ? [plain.comparison] : []), ...plain.buckets, ...(plain.windows ?? []), ...(plain.ruleWindows ?? [])];
   if (!windows.every((w) => w.from.endsWith('-01') && w.to.endsWith('-01'))) {
     return none('a rollup holds whole months, and this period does not start and end on the first of a month');
   }
@@ -353,7 +368,28 @@ function onRollup(model: ReportingModel, streamKey: string, rollup: ModelRollup)
   };
 }
 
-type LeafRule = ViewDimensionRule | ViewMeasureRule;
+type LeafRule = ViewDimensionRule | ViewMeasureRule | ViewMemberRule;
+
+/** True for a rule that tests a member by a measure of its own: it names both a dimension and a measure. */
+function isMemberRule(rule: LeafRule): rule is ViewMemberRule {
+  return typeof rule === 'object' && rule !== null && 'measure' in rule && 'dimension' in rule;
+}
+
+/** The dates a member rule reads: its own period, or the view's. */
+function memberWindow(model: ReportingModel, view: ViewState, ctx: CompileContext, rule: ViewMemberRule): PeriodWindow {
+  return resolvePeriod(rule.period ?? view.period, model.periods, ctx.today, { periodToDate: view.options?.period_to_date === true }).window;
+}
+
+/** The dates of every member rule in the view's filters, in the order the rules are written. */
+function memberWindows(model: ReportingModel, view: ViewState, ctx: CompileContext): PeriodWindow[] {
+  const found: PeriodWindow[] = [];
+  const walk = (rule: LeafRule | ViewFilterGroup): void => {
+    if (isGroup(rule)) (Array.isArray(rule.rules) ? rule.rules : []).forEach(walk);
+    else if (isMemberRule(rule)) found.push(memberWindow(model, view, ctx, rule));
+  };
+  if (view.filters) walk(view.filters);
+  return found;
+}
 
 /** What every mode needs from a view: its stream, dimensions resolved to SQL, and its filters. */
 interface Scope {
@@ -393,7 +429,7 @@ interface MemberList {
   property: (property: string) => string;
 }
 
-function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, splitFocus = false): Scope {
+function scopeOf(model: ReportingModel, view: ViewState, ctx: CompileContext, withMembers = false, splitFocus = false): Scope {
   const stream: ModelStream = model.streams.find((s) => s.key === view.stream) ?? fail('unknown_stream', `no stream "${String(view.stream)}"`);
   const dimByKey = new Map(model.dimensions.map((d) => [d.key, d]));
   const measureByKey = new Map(model.measures.map((m) => [m.key, m]));
@@ -402,20 +438,20 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
   const joins = new Map<string, string>();
   const alias = (dim: ModelDimension): string => q(`d_${dim.key}`);
   const dimension = (key: string): ModelDimension => dimByKey.get(key) ?? fail('unknown_dimension', `no dimension "${String(key)}"`);
-  const join = (dim: ModelDimension, codeExpr: string): string => {
+  const join = (dim: ModelDimension, codeExpr: string, into = joins): string => {
     if (!dim.table || !dim.code) fail('dimension_has_no_table', `"${dim.key}" has no table to read from`);
     const a = alias(dim);
-    if (!joins.has(a)) joins.set(a, `LEFT JOIN ${q(dim.table)} AS ${a} ON ${a}.${q(dim.code)} = ${codeExpr}`);
+    if (!into.has(a)) into.set(a, `LEFT JOIN ${q(dim.table)} AS ${a} ON ${a}.${q(dim.code)} = ${codeExpr}`);
     return a;
   };
-  const codeOf = (key: string, depth = 0): string => {
+  const codeOf = (key: string, depth = 0, into = joins): string => {
     if (depth > 20) fail('unknown_dimension', `the via chain of "${key}" does not end`);
     const dim = dimension(key);
     const direct = stream.dimension_keys[key];
     if (direct !== undefined) return `${FACT}.${q(direct)}`;
     if (!dim.via) fail('dimension_not_on_stream', `stream "${stream.key}" has no "${key}"`);
     const parent = dimension(dim.via.dimension);
-    return `${join(parent, codeOf(parent.key, depth + 1))}.${q(dim.via.column)}`;
+    return `${join(parent, codeOf(parent.key, depth + 1, into), into)}.${q(dim.via.column)}`;
   };
   const columnOf = (dim: ModelDimension, property: string): string => {
     const column = property === 'name' ? dim.name : dim.properties.find((p) => p.key === property)?.column;
@@ -484,7 +520,26 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
 
   // Filters. A dimension rule tests fact rows; a measure rule tests grouped rows.
   const filterMeasures: string[] = [];
+  // A member rule: the members that pass are found in a pass of their own over the stream, and a fact
+  // row is kept when its member is one of them. Inside that pass f is its own rows and the joins are its own.
+  const memberLeaf = (rule: ViewMemberRule, outer: string): string => {
+    if (!(MEASURE_CMPS as readonly string[]).includes(rule.cmp)) fail('measure_filter_unsupported', `"${String(rule.cmp)}" is not a comparison`);
+    if (!measureByKey.has(rule.measure)) fail('unknown_measure', `no measure "${String(rule.measure)}"`);
+    const window = memberWindow(model, view, ctx, rule);
+    const own = new Map<string, string>();
+    const member = codeOf(rule.dimension, 0, own);
+    const uses = new Set<'snapshot'>();
+    const reads: MeasureSource = { stream, measureByKey, parsed: new Map(), countAll: 'COUNT(*)', days: daysBetween(window.from, window.to), uses };
+    const figure = measureOver(reads, rule.measure, null);
+    const passing = [
+      `SELECT CAST(${member} AS VARCHAR) FROM ${factOver(stream, window, uses.has('snapshot'))}`,
+      ...own.values(),
+      `GROUP BY ${member} HAVING ${figure} ${rule.cmp} ${sqlNumber(rule.value)}`,
+    ].join(' ');
+    return `CAST(${outer} AS VARCHAR) IN (${passing})`;
+  };
   const dimensionLeafWith = (resolve: (dimKey: string, property: string) => string) => (rule: LeafRule): string => {
+    if (isMemberRule(rule)) return memberLeaf(rule, resolve(rule.dimension, 'code'));
     if ('measure' in rule) fail('measure_filter_unsupported', 'a measure rule cannot sit in a group of dimension rules');
     const whole = rule.cmp === 'in' || rule.cmp === 'not_in';
     if (!whole && rule.cmp !== 'contains' && rule.cmp !== 'not_contains') fail('empty_filter', `"${String(rule.cmp)}" is not a filter comparison`);
@@ -507,7 +562,7 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
   };
   const dimensionLeaf = dimensionLeafWith(propertyOf);
   const measureLeaf = (rule: LeafRule): string => {
-    if (!('measure' in rule)) fail('measure_filter_unsupported', 'a dimension rule cannot sit in a group of measure rules');
+    if (!('measure' in rule) || isMemberRule(rule)) fail('measure_filter_unsupported', 'a dimension rule cannot sit in a group of measure rules');
     if (!(MEASURE_CMPS as readonly string[]).includes(rule.cmp)) fail('measure_filter_unsupported', `"${String(rule.cmp)}" is not a comparison`);
     const part: VariancePart = rule.of ?? 'current';
     if (!(VARIANCE_PARTS as readonly string[]).includes(part)) fail('measure_filter_unsupported', `"${String(part)}" is not a variance column`);
@@ -517,7 +572,7 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
     return `${q(`${PART_PREFIX[part]}${measure.key}`)} ${rule.cmp} ${sqlNumber(rule.value)}`;
   };
   const kindOf = (rule: LeafRule | ViewFilterGroup, depth: number): 'dimension' | 'measure' => {
-    if (!isGroup(rule)) return 'measure' in rule ? 'measure' : 'dimension';
+    if (!isGroup(rule)) return 'measure' in rule && !isMemberRule(rule) ? 'measure' : 'dimension';
     if (depth > MAX_FILTER_DEPTH) fail('filter_too_deep', `filters nest deeper than ${MAX_FILTER_DEPTH} levels`);
     const kinds = new Set((Array.isArray(rule.rules) ? rule.rules : []).map((r) => kindOf(r, depth + 1)));
     if (kinds.size > 1) fail('measure_filter_unsupported', 'below the top level a filter group holds dimension rules or measure rules, not both');
@@ -545,7 +600,7 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
     if (onGroups.length > 0) having = groupSql({ op: top.op, rules: onGroups }, 0, measureLeaf);
     if (mb && onRows.length > 0) {
       const answerable = (rule: LeafRule | ViewFilterGroup): boolean => (
-        isGroup(rule) ? rule.rules.every(answerable) : !('measure' in rule) && mb.reaches(rule.dimension)
+        isGroup(rule) ? rule.rules.every(answerable) : (isMemberRule(rule) || !('measure' in rule)) && mb.reaches(rule.dimension)
       );
       const mine = onRows.filter(answerable);
       // Under "or", one rule the member's table cannot answer leaves the member list open.
@@ -844,7 +899,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   if (options.hide_zero_rows && activity !== 'with') fail('option_unsupported', 'hiding zero rows with the activity option is not compiled yet');
   const averageColumn = options.average_column === true && view.mode === 'period';
 
-  const scope = scopeOf(model, view, activity !== 'with', options.others_row === true);
+  const scope = scopeOf(model, view, ctx, activity !== 'with', options.others_row === true);
   const { stream, measureByKey, joins, groupDim, where, members } = scope;
   const nest = nestOf(view, scope);
   if (nest) {
@@ -1108,7 +1163,7 @@ function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileConte
   const averageRow = options.average_row === true;
   const sumRow = options.sum_row === true;
 
-  const scope = scopeOf(model, view);
+  const scope = scopeOf(model, view, ctx);
   if (scope.having !== null) fail('measure_filter_unsupported', 'a filter on a measure in custom mode is not compiled yet');
   const { stream, measureByKey, joins, groupDim, where, codeExpr } = scope;
   const nest = nestOf(view, scope);
@@ -1138,7 +1193,7 @@ function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileConte
     if (typeof point !== 'object' || point === null) fail('bad_custom_column', `${what} has no data point`);
     const measure = measureByKey.get(point.measure) ?? fail('unknown_measure', `no measure "${String(point.measure)}"`);
     const { window, number } = windowOf(point.period);
-    if (point.where !== undefined && (typeof point.where !== 'object' || point.where === null)) fail('bad_custom_column', `the rule of ${what} is not a dimension rule`);
+    if (point.where !== undefined && (typeof point.where !== 'object' || point.where === null || 'measure' in point.where)) fail('bad_custom_column', `the rule of ${what} is not a dimension rule`);
     const rule = point.where === undefined ? '' : ` AND ${scope.dimensionRule(point.where)}`;
     const bucket: PeriodBucket = {
       key: `w${number}`, label: `${window.from} to ${addDays(window.to, -1)}`, from: window.from, to: window.to, days: daysBetween(window.from, window.to),
@@ -1275,7 +1330,7 @@ function compileTransactions(model: ReportingModel, view: ViewState, ctx: Compil
   if (options.activity !== undefined && options.activity !== 'with') fail('option_unsupported', 'a transaction list shows rows that exist; activity does not apply');
   if (options.total_row || options.others_row || options.average_row || options.sum_row) fail('option_unsupported', 'a transaction list has no total, others, average or sum row');
 
-  const scope = scopeOf(model, view);
+  const scope = scopeOf(model, view, ctx);
   const { stream, measureByKey } = scope;
   if (scope.having !== null) fail('measure_filter_unsupported', 'a transaction list cannot be filtered on a measure');
   const shown = shownMeasures(view, measureByKey);
@@ -1378,7 +1433,7 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
   const sumRow = options.sum_row === true;
 
   // The view's own stream is always read. It also settles the measure filters, which are the same for every stream.
-  const lead = scopeOf(model, view);
+  const lead = scopeOf(model, view, ctx);
   const { measureByKey, groupDim } = lead;
   const shown = shownMeasures(view, measureByKey);
   const unseen = lead.filterMeasures
@@ -1436,7 +1491,7 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
   const streamKeys = [lead.stream.key, ...model.streams.map((s) => s.key).filter((key) => key !== lead.stream.key && needed.has(key))];
   const stages = streamKeys.flatMap((key, i) => {
     // A stream that lacks a dimension the view uses refuses here, by name.
-    const scope = i === 0 ? lead : scopeOf(model, { ...view, stream: key });
+    const scope = i === 0 ? lead : scopeOf(model, { ...view, stream: key }, ctx);
     const { stream, codeExpr } = scope;
     const mine = needed.get(key) ?? [];
     const grouping = `GROUPING(${codeExpr})`;
@@ -1496,7 +1551,7 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   if (options.others_row || options.average_row || options.sum_row) fail('option_unsupported', `others, average and sum rows are not compiled for ${what} yet`);
   const totalRow = options.total_row === true;
 
-  const scope = scopeOf(model, view);
+  const scope = scopeOf(model, view, ctx);
   const { stream, measureByKey, groupDim } = scope;
   const shown = shownMeasures(view, measureByKey);
   const first = shown[0] ?? fail('no_measures', 'a view needs at least one measure');
