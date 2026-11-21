@@ -7,6 +7,12 @@ function withChange(change: Record<string, unknown>): unknown {
   return { ...structuredClone(MODEL_JSON), ...change };
 }
 
+/** The fixture with the first stream's rollups replaced. */
+function withRollups(rollups: unknown[]): unknown {
+  const model = structuredClone(MODEL_JSON);
+  return { ...model, streams: [{ ...model.streams[0], rollups }, ...model.streams.slice(1)] };
+}
+
 function problemsOf(input: unknown): string[] {
   const checked = validateModel(input);
   return checked.ok ? [] : checked.problems.map((p) => p.reason);
@@ -20,9 +26,16 @@ describe('validateModel', () => {
     expect(model.dimensions.find((d) => d.key === 'department')?.via).toEqual({ dimension: 'product', column: 'dept' });
     expect(model.periods.fiscal_year_start_month).toBe(7);
     expect(model.streams.map((s) => s.columns)).toEqual([[{ key: 'doc', label: 'Document', column: 'doc_no' }], []]);
+    expect(model.streams.map((s) => s.rollups.map((r) => r.key))).toEqual([['by_product_branch', 'by_branch'], ['by_product']]);
   });
 
   it.each([
+    ['a rollup keeping a dimension its stream lacks', withRollups([{ key: 'r', table: 't', date: 'month', dimension_keys: { customer: 'c' } }]), 'rollup_dimension_not_on_stream'],
+    ['a rollup carrying a formula', withRollups([{ key: 'r', table: 't', date: 'month', measure_columns: { gp: 'gp' } }]), 'rollup_measure_unknown'],
+    ['a rollup carrying a measure of another stream', withRollups([{ key: 'r', table: 't', date: 'month', measure_columns: { ordered: 'amount' } }]), 'rollup_measure_unknown'],
+    ['a rollup carrying a snapshot', withRollups([{ key: 'r', table: 't', date: 'month', measure_columns: { soh: 'qty' } }]), 'rollup_measure_not_additive'],
+    ['a rollup key used twice', withRollups([{ key: 'r', table: 't', date: 'month' }, { key: 'r', table: 'u', date: 'month' }]), 'duplicate_key'],
+    ['a rollup with no month column', withRollups([{ key: 'r', table: 't' }]), 'missing_field'],
     ['a model that is not an object', 'nope', 'not_an_object'],
     ['another model version', withChange({ model_version: 2 }), 'unsupported_model_version'],
     ['no streams', { model_version: 1, streams: [], dimensions: [], measures: [] }, 'no_streams'],

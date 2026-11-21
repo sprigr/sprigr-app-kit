@@ -8,8 +8,20 @@ export const MODEL_JSON = {
       key: 'sales', label: 'Sales', table: 'sales_lines', date: 'sale_date',
       dimension_keys: { product: 'product_code', branch: 'branch_code' },
       columns: [{ key: 'doc', label: 'Document', column: 'doc_no' }],
+      // The wider rollup is listed first, to show the order listed is not what picks one.
+      rollups: [
+        {
+          key: 'by_product_branch', table: 'sales_month_product_branch', date: 'month',
+          dimension_keys: { product: 'product_code', branch: 'branch_code' },
+          measure_columns: { sales: 'amount', cost: 'cost', qty: 'qty', lines: 'line_count' },
+        },
+        { key: 'by_branch', table: 'sales_month_branch', date: 'month', dimension_keys: { branch: 'branch_code' }, measure_columns: { sales: 'amount', lines: 'line_count' } },
+      ],
     },
-    { key: 'orders', label: 'Orders', table: 'order_lines', date: 'order_date', dimension_keys: { product: 'product_code' } },
+    {
+      key: 'orders', label: 'Orders', table: 'order_lines', date: 'order_date', dimension_keys: { product: 'product_code' },
+      rollups: [{ key: 'by_product', table: 'orders_month_product', date: 'month', dimension_keys: { product: 'product_code' }, measure_columns: { ordered: 'amount' } }],
+    },
   ],
   dimensions: [
     { key: 'product', label: 'Product', table: 'products', code: 'code', name: 'name', properties: [{ key: 'brand', label: 'Brand', column: 'brand' }] },

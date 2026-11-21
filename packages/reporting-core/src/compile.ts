@@ -25,7 +25,7 @@
  * Matrix mode groups by two dimensions and returns one row per cell.
  */
 import { emitFormulaSql, parseFormula, type FormulaNode } from './formula';
-import { isFormulaMeasure, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelStream, type ReportingModel } from './model';
+import { isFormulaMeasure, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelRollup, type ModelStream, type ReportingModel } from './model';
 import { comparisonWindow, daysBetween, monthsRange, resolvePeriod, type PeriodBucket, type PeriodSpec, type PeriodWindow } from './periods';
 import { ReportingError, refusalOf, type Refusal, type ReportingReason } from './reasons';
 import { likeContains, quoteIdent as q, sqlDate, sqlNumber, sqlString } from './sql';
@@ -172,7 +172,11 @@ export interface CompiledView {
   shape?: 'long';
   /** With `shape`: the rows a page holds, fitted to the row cap. It can be fewer than the view asked for. */
   limit?: number;
+  /** From `compileRollupView`: the rollup each stream is read from, in the order the statement reads them. */
+  rollups?: CompiledRollup[];
 }
+
+export interface CompiledRollup { stream: string; rollup: string; table: string }
 
 const FACT = 'f';
 
@@ -216,6 +220,59 @@ export function compileView(model: ReportingModel, view: ViewState, ctx: Compile
   } catch (err) {
     return refusalOf(err);
   }
+}
+
+/**
+ * The same view answered from rollup tables, which is what a browser holds, or `no_rollup` when a
+ * stream the view reads has no rollup with every dimension and measure the view needs.
+ *
+ * A rollup holds whole months, so each window and period of the view must start and end on the first
+ * of a month. A transaction list and a snapshot measure are never answered from a rollup. Of the
+ * rollups that can answer, the one with the fewest dimensions is read, then the first listed.
+ * The statement still joins the dimension tables, so the caller needs those beside the rollup.
+ */
+export function compileRollupView(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView | Refusal {
+  // A view that does not compile at all refuses with its own reason, not for want of a rollup.
+  const plain = compileView(model, view, ctx);
+  if (!plain.ok) return plain;
+  const none = (detail: string): Refusal => ({ ok: false, reason: 'no_rollup', detail });
+  if (view.mode === 'transaction') return none('a transaction list reads the rows themselves');
+  const windows: PeriodWindow[] = [plain.window, ...(plain.comparison ? [plain.comparison] : []), ...plain.buckets];
+  if (!windows.every((w) => w.from.endsWith('-01') && w.to.endsWith('-01'))) {
+    return none('a rollup holds whole months, and this period does not start and end on the first of a month');
+  }
+  let rolled = model;
+  const rollups: CompiledRollup[] = [];
+  for (const key of plain.streams ?? [view.stream]) {
+    const listed = model.streams.find((s) => s.key === key)?.rollups ?? [];
+    const smallestFirst = [...listed].sort((a, b) => Object.keys(a.dimension_keys).length - Object.keys(b.dimension_keys).length);
+    // Each stream is grouped on its own, so a rollup that answers with the other streams left as they are answers with them rolled too.
+    const pick = smallestFirst.find((rollup) => compileView(onRollup(model, key, rollup), view, ctx).ok);
+    if (!pick) return none(`no rollup of "${key}" holds every dimension and measure this view reads`);
+    rolled = onRollup(rolled, key, pick);
+    rollups.push({ stream: key, rollup: pick.key, table: pick.table });
+  }
+  const out = compileView(rolled, view, ctx);
+  return out.ok ? { ...out, rollups } : out;
+}
+
+/**
+ * The model with one stream read from a rollup of it: the rollup's table and month column, the
+ * dimensions it keeps, and the measures it carries. A measure it does not carry is left out, so a
+ * view that reads one refuses.
+ */
+function onRollup(model: ReportingModel, streamKey: string, rollup: ModelRollup): ReportingModel {
+  const carried = new Map(Object.entries(rollup.measure_columns));
+  return {
+    ...model,
+    streams: model.streams.map((s) => (s.key !== streamKey ? s
+      : { ...s, table: rollup.table, date: rollup.date, dimension_keys: rollup.dimension_keys, columns: [], rollups: [] })),
+    measures: model.measures.flatMap((m): ModelMeasure[] => {
+      if (isFormulaMeasure(m) || m.stream !== streamKey) return [m];
+      const column = carried.get(m.key);
+      return column === undefined ? [] : [{ ...m, column, rolled: true }];
+    }),
+  };
 }
 
 type LeafRule = ViewDimensionRule | ViewMeasureRule;
@@ -458,7 +515,8 @@ function checkLength(sql: string, ctx: CompileContext): void {
 /** A base measure's aggregate over the fact rows. `countAll` counts rows for a count with no column. */
 function aggregateOf(measure: ModelBaseMeasure, countAll: string): string {
   const column = measure.column === undefined ? '' : `${FACT}.${q(measure.column)}`;
-  return measure.agg === 'count' ? (column !== '' ? `COUNT(${column})` : countAll)
+  // Read from a rollup, a count's column already holds the count for each row, so those are added up.
+  return measure.agg === 'count' ? (measure.rolled ? `SUM(${column})` : column !== '' ? `COUNT(${column})` : countAll)
     : measure.agg === 'count_distinct' ? `COUNT(DISTINCT ${column})`
       : `${measure.agg.toUpperCase()}(${column})`;
 }
@@ -581,7 +639,9 @@ function measureOver(src: MeasureSource, key: string, slice: Slice | null, depth
     const whole = `${call} FILTER (WHERE ${FACT}."__lastw")`;
     return src.cellWhen !== undefined ? `CASE WHEN ${src.cellWhen} THEN ${call} FILTER (WHERE ${FACT}."__last") ELSE ${whole} END` : whole;
   }
-  return slice ? `${call} FILTER (WHERE ${slice.filter})` : call;
+  const over = slice ? `${call} FILTER (WHERE ${slice.filter})` : call;
+  // A count of no rows is 0, where a sum of no rows is blank; a count read from a rollup stays a count.
+  return measure.agg === 'count' && measure.rolled ? `COALESCE(${over}, 0)` : over;
 }
 
 /** A stream's fact rows in one window, aliased f. With `latest`, each row is flagged when it is on the window's latest day. */

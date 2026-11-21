@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileView, type CompiledView, type ViewState } from '../src';
+import { compileRollupView, compileView, type CompiledView, type ViewState } from '../src';
 import { fixtureModel } from './fixture';
 
 const TODAY = '2026-11-21';
@@ -820,5 +820,77 @@ describe('compileView, the sum row', () => {
     expect(refusal({ mode: 'matrix', across: { dimension: 'product' }, options: { sum_row: true } })).toBe('option_unsupported');
     expect(refusal({ mode: 'period', period: { preset: 'rolling_3' }, options: { sum_row: true } }, { periodShape: 'long' })).toBe('option_unsupported');
     expect(refusal({ mode: 'transaction', options: { sum_row: true } })).toBe('option_unsupported');
+  });
+});
+
+describe('compileRollupView', () => {
+  const NOVEMBER = 'WHERE "month" >= DATE \'2026-11-01\' AND "month" < DATE \'2026-12-01\') AS f';
+
+  function rolled(change: Record<string, unknown> = {}): CompiledView {
+    const out = compileRollupView(fixtureModel(), { ...base, ...change } as ViewState, { today: TODAY });
+    if (!out.ok) throw new Error(`refused: ${out.reason}: ${out.detail}`);
+    return out;
+  }
+  function unrolled(change: Record<string, unknown>): string {
+    const out = compileRollupView(fixtureModel(), { ...base, ...change } as ViewState, { today: TODAY });
+    return out.ok ? 'did not refuse' : out.reason;
+  }
+
+  it('compiles the same statement over the rollup with the fewest dimensions that covers the view', () => {
+    const out = rolled();
+    expect(out.rollups).toEqual([{ stream: 'sales', rollup: 'by_branch', table: 'sales_month_branch' }]);
+    expect(out.sql).toBe(compiled().sql.replace('"sales_lines"', '"sales_month_branch"').replaceAll('"sale_date"', '"month"'));
+    expect(out.columns).toEqual(compiled().columns);
+  });
+
+  it('moves to a wider rollup for a dimension, a parent dimension or a measure the smaller one lacks', () => {
+    const wide = [{ stream: 'sales', rollup: 'by_product_branch', table: 'sales_month_product_branch' }];
+    expect(rolled({ group_by: 'product' }).rollups).toEqual(wide);
+    expect(rolled({ group_by: 'department' }).rollups).toEqual(wide);
+    expect(rolled({ path: [{ dimension: 'product', selected: ['P1'] }] }).rollups).toEqual(wide);
+    expect(rolled({ measures: ['qty'] }).rollups).toEqual(wide);
+    const gp = rolled({ measures: ['gp'] });
+    expect(gp.rollups).toEqual(wide);
+    expect(gp.sql).toContain(`FROM (SELECT * FROM "sales_month_product_branch" ${NOVEMBER}`);
+  });
+
+  it('adds up a count the rollup holds, and keeps it 0 where no row falls', () => {
+    const { sql } = rolled({ mode: 'period', measures: ['lines'], period: { preset: 'rolling_3' } });
+    expect(sql).toContain('CAST(COALESCE(SUM(f."line_count") FILTER (WHERE f."__b" = 2), 0) AS DOUBLE) AS "b2__lines"');
+    expect(sql).toContain('CAST(COALESCE(SUM(f."line_count"), 0) AS DOUBLE) AS "m__lines"');
+    expect(sql).toContain('CASE WHEN "month" < DATE \'2026-10-01\' THEN 1 WHEN "month" < DATE \'2026-11-01\' THEN 2 WHEN "month" < DATE \'2026-12-01\' THEN 3 END AS "__b"');
+  });
+
+  it('reads a variance and another stream from their rollups', () => {
+    expect(rolled({ mode: 'variance' }).rollups).toEqual([{ stream: 'sales', rollup: 'by_branch', table: 'sales_month_branch' }]);
+    expect(rolled({ stream: 'orders', group_by: 'product', measures: ['ordered'] }).rollups).toEqual([{ stream: 'orders', rollup: 'by_product', table: 'orders_month_product' }]);
+  });
+
+  it('picks a rollup for each stream a stream view reads', () => {
+    const out = rolled({ mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'] });
+    expect(out.rollups).toEqual([
+      { stream: 'sales', rollup: 'by_product_branch', table: 'sales_month_product_branch' },
+      { stream: 'orders', rollup: 'by_product', table: 'orders_month_product' },
+    ]);
+    expect(out.sql).toContain(`FROM (SELECT * FROM "sales_month_product_branch" ${NOVEMBER}`);
+    expect(out.sql).toContain(`FROM (SELECT * FROM "orders_month_product" ${NOVEMBER}`);
+    expect(out.streams).toEqual(['sales', 'orders']);
+  });
+
+  it('says no rollup answers a snapshot, a transaction list or a part month', () => {
+    expect(unrolled({ measures: ['soh'] })).toBe('no_rollup');
+    expect(unrolled({ mode: 'transaction' })).toBe('no_rollup');
+    expect(unrolled({ options: { period_to_date: true } })).toBe('no_rollup');
+    expect(unrolled({ mode: 'period', period: { preset: 'rolling_3' }, options: { period_to_date: true } })).toBe('no_rollup');
+  });
+
+  it('refuses a view that does not compile at all with that view\'s own reason', () => {
+    expect(unrolled({ group_by: 'customer' })).toBe('dimension_not_on_stream');
+    expect(unrolled({ measures: ['nope'] })).toBe('unknown_measure');
+  });
+
+  it('leaves compileView reading the fact table', () => {
+    expect(compiled().sql).toContain('FROM "sales_lines"');
+    expect(compiled().rollups).toBeUndefined();
   });
 });

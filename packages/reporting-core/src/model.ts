@@ -27,6 +27,27 @@ export interface ModelStream {
   dimension_keys: Record<string, string>;
   /** Other columns of the fact table a transaction list can show: a document number, a reference. */
   columns: ModelStreamColumn[];
+  /** Tables that hold this stream already added up by month. A view one of them covers can be answered from it. */
+  rollups: ModelRollup[];
+}
+
+/**
+ * One rollup of a stream: its figures added up by month and by some of the stream's dimensions.
+ * It is small enough to hand to a browser, where the fact table is not.
+ */
+export interface ModelRollup {
+  key: string;
+  table: string;
+  /** Its date column: the first day of the month a row covers. */
+  date: string;
+  /** The stream's dimensions the rollup keeps: dimension key to the rollup column that holds the code. */
+  dimension_keys: Record<string, string>;
+  /**
+   * The stream's measures the rollup carries: measure key to the rollup column that holds it for the row's
+   * month. A sum or a count is added up again, a least or greatest value is taken again. A snapshot, a
+   * distinct count and an average cannot be rebuilt from months, so a rollup never carries one.
+   */
+  measure_columns: Record<string, string>;
 }
 
 export interface ModelProperty { key: string; label: string; column: string }
@@ -54,6 +75,8 @@ export interface ModelBaseMeasure {
   format: MeasureFormat;
   /** A level, not a flow (stock on hand): the latest value in a period, never a sum over time. */
   snapshot: boolean;
+  /** Set by the compiler when it reads a rollup, never read from a model: `column` already holds this count for each row. */
+  rolled?: boolean;
 }
 
 export interface ModelFormulaMeasure {
@@ -78,6 +101,7 @@ export const MODEL_PROBLEMS = [
   'duplicate_key', 'unknown_stream', 'unknown_dimension', 'dimension_table_incomplete', 'via_parent_has_no_table',
   'dimension_cycle', 'measure_shape', 'unknown_agg', 'unknown_format', 'formula_invalid', 'formula_unknown_measure',
   'formula_cycle', 'bad_fiscal_month', 'bad_week_start', 'bad_date', 'period_range_inverted',
+  'rollup_dimension_not_on_stream', 'rollup_measure_unknown', 'rollup_measure_not_additive',
 ] as const;
 export type ModelProblemReason = (typeof MODEL_PROBLEMS)[number];
 
@@ -92,6 +116,10 @@ function isRec(v: unknown): v is Rec {
 }
 function list(v: unknown): unknown[] {
   return Array.isArray(v) ? v : [];
+}
+/** True when `record` has `k` as its own entry, so a key such as "constructor" finds nothing. */
+function has(record: Record<string, unknown>, k: string): boolean {
+  return Object.prototype.hasOwnProperty.call(record, k);
 }
 
 export function isFormulaMeasure(m: ModelMeasure): m is ModelFormulaMeasure {
@@ -200,7 +228,31 @@ export function validateModel(input: unknown): ModelValidation {
       if (ck === null || col === null || !unique(columnKeys, ck, `${colPath}.key`)) return;
       columns.push({ key: ck, label: label(rawCol.label, ck), column: col });
     });
-    streams.push({ key: k, label: label(raw.label, k), table, date, dimension_keys, columns });
+    const rollups: ModelRollup[] = [];
+    const rollupKeys = new Set<string>();
+    list(raw.rollups).forEach((rawRollup, j) => {
+      const rollupPath = `${path}.rollups[${j}]`;
+      if (!isRec(rawRollup)) { bad('missing_field', rollupPath, 'a rollup must be an object'); return; }
+      const rk = key(rawRollup.key, `${rollupPath}.key`);
+      const rollupTable = ident(rawRollup.table, `${rollupPath}.table`);
+      const rollupDate = ident(rawRollup.date, `${rollupPath}.date`);
+      if (rk === null || rollupTable === null || rollupDate === null || !unique(rollupKeys, rk, `${rollupPath}.key`)) return;
+      const kept: Record<string, string> = {};
+      Object.entries(isRec(rawRollup.dimension_keys) ? rawRollup.dimension_keys : {}).forEach(([dimKey, column]) => {
+        const colPath = `${rollupPath}.dimension_keys.${dimKey}`;
+        if (!has(dimension_keys, dimKey)) { bad('rollup_dimension_not_on_stream', colPath, `the stream has no dimension "${dimKey}"`); return; }
+        const col = ident(column, colPath);
+        if (col !== null) kept[dimKey] = col;
+      });
+      // Which measures these may be is checked once the measures are read, below.
+      const measure_columns: Record<string, string> = {};
+      Object.entries(isRec(rawRollup.measure_columns) ? rawRollup.measure_columns : {}).forEach(([measureKey, column]) => {
+        const col = ident(column, `${rollupPath}.measure_columns.${measureKey}`);
+        if (col !== null) measure_columns[measureKey] = col;
+      });
+      rollups.push({ key: rk, table: rollupTable, date: rollupDate, dimension_keys: kept, measure_columns });
+    });
+    streams.push({ key: k, label: label(raw.label, k), table, date, dimension_keys, columns, rollups });
   });
   if (streams.length === 0 && problems.length === 0) bad('no_streams', 'streams', 'a model needs at least one stream');
   const defaultStream = streams[0]?.key;
@@ -240,6 +292,19 @@ export function validateModel(input: unknown): ModelValidation {
 
   // Formulas: each must parse, name only measures, and not loop.
   const measureByKey = new Map(measures.map((m) => [m.key, m]));
+
+  // Rollups: each measure one carries must be its stream's own, and one that months can be added up to.
+  streams.forEach((stream) => {
+    stream.rollups.forEach((rollup) => {
+      Object.keys(rollup.measure_columns).forEach((measureKey) => {
+        const path = `streams.${stream.key}.rollups.${rollup.key}.measure_columns.${measureKey}`;
+        const m = measureByKey.get(measureKey);
+        if (!m || isFormulaMeasure(m) || m.stream !== stream.key) { bad('rollup_measure_unknown', path, `"${measureKey}" is not a base measure of this stream`); return; }
+        if (m.snapshot || m.agg === 'count_distinct' || m.agg === 'avg') bad('rollup_measure_not_additive', path, 'a snapshot, a distinct count or an average cannot be rebuilt from months');
+      });
+    });
+  });
+
   const refsOf = new Map<string, string[]>();
   measures.forEach((m) => {
     if (!isFormulaMeasure(m)) return;

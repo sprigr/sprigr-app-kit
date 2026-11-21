@@ -7,7 +7,7 @@ Pure reporting core. No IO, no clock, no tenant names. It turns a saved view int
 | `model` | `validateModel(json)`: a tenant's dimensions, measures, streams and calendar, checked. `measureAvailability(model, schema)`: which measures a role can use, given the columns its build holds. |
 | `formula` | `parseFormula`, `emitFormulaSql`: formula measures over other measures. Closed function list, typed, every division guarded. |
 | `periods` | `resolvePeriod`, `splitWindow`, `comparisonWindow`, `monthsRange`: presets, custom and named periods, period columns. |
-| `compile` | `compileView(model, view, { today })`: the statement, the column map, and the `months` range. |
+| `compile` | `compileView(model, view, { today })`: the statement, the column map, and the `months` range. `compileRollupView`: the same view over a monthly rollup, for the browser. |
 
 ```ts
 const checked = validateModel(json);
@@ -23,6 +23,26 @@ run(out.sql, { months: out.months });
 - Tables and columns come from the model and must be plain names. Values a person types (selections, keyword) are emitted as escaped string literals.
 - A dimension's lookup table must hold one row per code, or sums multiply.
 - "Today" is passed in, in the tenant's time zone.
+
+## Rollups
+
+The fact table is too big to hand to a browser; a rollup of it by month is not. A stream lists its rollups in the model:
+
+```json
+{ "key": "by_branch", "table": "sales_month_branch", "date": "month",
+  "dimension_keys": { "branch": "branch_code" },
+  "measure_columns": { "sales": "amount", "lines": "line_count" } }
+```
+
+`date` holds the first day of each row's month. `dimension_keys` are the stream's dimensions the rollup keeps. `measure_columns` are the stream's base measures it carries, each already worked out for the row's month; a sum or a count is added up again and a least or greatest value taken again. A snapshot, a distinct count and an average cannot be rebuilt from months, and `validateModel` refuses a rollup that lists one.
+
+`compileRollupView(model, view, ctx)` compiles the view over rollups in place of fact tables. The statement is the one `compileView` writes, with the table, the date column and the measure columns swapped, so both return the same rows. `rollups` in the result names the rollup read for each stream. It refuses `no_rollup`, and the caller then runs the view through the route, when:
+
+- a stream the view reads has no rollup holding every dimension and measure the view needs (a dimension reached through a parent needs the parent, and a formula needs every measure it reads);
+- a window or period of the view does not start and end on the first of a month, such as a period to date, a week or a custom range of days;
+- the view is a transaction list or reads a snapshot measure.
+
+Of the rollups that can answer, the one with the fewest dimensions is read, then the first listed. A view that does not compile at all refuses with its own reason. The statement still joins the dimension tables for names, properties and parent dimensions, so the caller loads those beside the rollup.
 
 ## Compiled so far
 
