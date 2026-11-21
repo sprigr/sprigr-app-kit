@@ -1,7 +1,7 @@
 /** Every way this package refuses. A caller can switch on `reason`. */
 export const REPORTING_REASONS = [
   // sql
-  'bad_identifier', 'bad_number', 'bad_date',
+  'bad_identifier', 'bad_number', 'bad_date', 'bad_params',
   // formula
   'formula_empty', 'formula_too_long', 'formula_syntax', 'formula_unknown_function', 'formula_arity',
   'formula_type', 'formula_function_unsupported', 'formula_unknown_measure', 'formula_cycle',

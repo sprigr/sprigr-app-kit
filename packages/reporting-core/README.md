@@ -7,7 +7,7 @@ Pure reporting core. No IO, no clock, no tenant names. It turns a saved view int
 | `model` | `validateModel(json)`: a tenant's dimensions, measures, streams and calendar, checked. `measureAvailability(model, schema)`: which measures a role can use, given the columns its build holds. |
 | `formula` | `parseFormula`, `emitFormulaSql`: formula measures over other measures. Closed function list, typed, every division guarded. |
 | `periods` | `resolvePeriod`, `splitWindow`, `comparisonWindow`, `monthsRange`: presets, custom and named periods, period columns. |
-| `compile` | `compileView(model, view, { today })`: the statement, the column map, the `months` range and the `tables` it reads. `compileRollupView`: the same view over a monthly rollup, for the browser. |
+| `compile` | `compileView(model, view, { today })`: the statement, the typed values it reads (`params`), the column map, the `months` range and the `tables` it reads. `compileRollupView`: the same view over a monthly rollup, for the browser. |
 | `grid` | `pivotLong(compiled, rows)`: the rows of a long result folded to one grid row per member with one cell per column. |
 
 ```ts
@@ -15,13 +15,15 @@ const checked = validateModel(json);
 if (!checked.ok) return checked.problems;
 const out = compileView(checked.model, view, { today: '2026-11-21' });
 if (!out.ok) return out.reason; // a closed set, see REPORTING_REASONS
-run(out.sql, { months: out.months });
+run(out.sql, { params: out.params, months: out.months });
 ```
 
 ## Rules
 
 - The compiler never decides who may see a column or a row. It runs against the tables the caller's role holds.
-- Tables and columns come from the model and must be plain names. Values a person types (selections, keyword) are emitted as escaped string literals.
+- Tables and columns come from the model and must be plain names.
+- A value a person types (a selection, the keyword) is never statement text. The statement holds a `?` for each and `params` holds the values as strings, in the order the statement reads them. Send both to an engine that binds values. `inlineParams(sql, params)` writes them in as escaped literals for an engine or route that takes none; the route then refuses a value that holds `--` or looks like a file or web location.
+- The length check counts the statement with its values written in, so it fits either way it is sent.
 - A table cannot be named `g`, `r`, `v`, `a`, `sm`, `rw`, `cl`, or `s` and a number, in any case. The compiler gives the stages of its statement those names, and DuckDB would read the stage in place of the table. `validateModel` refuses such a model.
 - Every stage of the statement opens as `name AS (`, with nothing between. The route reads any other opening for a table and refuses the statement.
 - A table or column cannot be named for a word the route refuses, such as `set`, `use`, `load`, `copy`, `update` or `delete`, in any case. The route refuses the word even inside a quoted name. `validateModel` refuses such a model with `reserved_name`.

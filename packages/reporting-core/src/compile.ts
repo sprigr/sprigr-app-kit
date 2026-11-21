@@ -28,7 +28,7 @@ import { emitFormulaSql, parseFormula, type FormulaNode } from './formula';
 import { MEASURE_FORMATS, isFormulaMeasure, type MeasureFormat, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelRollup, type ModelStream, type ReportingModel } from './model';
 import { addDays, comparisonWindow, daysBetween, monthsRange, resolvePeriod, splitWindow, type PeriodBucket, type PeriodSpec, type PeriodWindow } from './periods';
 import { ReportingError, refusalOf, type Refusal, type ReportingReason } from './reasons';
-import { isIdentifier, likeContains, quoteIdent as q, sqlDate, sqlNumber, sqlString, tablesIn } from './sql';
+import { bindValues, isIdentifier, likePattern, quoteIdent as q, sqlDate, sqlNumber, sqlValue, tablesIn, writtenLength } from './sql';
 
 /** The query route refuses longer SQL (`ANALYTICS_QUERY_MAX_SQL_CHARS` in sprigr-team). */
 export const ROUTE_MAX_SQL_CHARS = 24_000;
@@ -193,7 +193,10 @@ export interface CompiledColumn {
 
 export interface CompiledView {
   ok: true;
+  /** The statement, with a `?` wherever it reads a value a person typed. */
   sql: string;
+  /** The typed values (selections, the keyword pattern), one for each `?`, in the order the statement reads them. */
+  params: string[];
   columns: CompiledColumn[];
   window: PeriodWindow;
   /** Variance mode: the window the period is compared with. */
@@ -227,8 +230,8 @@ export interface CompiledView {
 
 export interface CompiledRollup { stream: string; rollup: string; table: string }
 
-/** What each mode's compiler returns; `compileView` adds the table list. */
-type Compiled = Omit<CompiledView, 'tables'>;
+/** What each mode's compiler returns, typed values still held in the statement; `compileView` lifts them out and adds the table list. */
+type Compiled = Omit<CompiledView, 'tables' | 'params'>;
 
 const FACT = 'f';
 
@@ -251,9 +254,10 @@ function stringList(values: unknown, what: string): string[] {
 export function compileView(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView | Refusal {
   try {
     const out = compileMode(model, view, ctx);
-    // Only a name the model gives a table counts, whatever else the statement text holds.
+    const { sql, params } = bindValues(out.sql);
+    // Only a name the model gives a table counts.
     const known = new Set([...model.streams.map((s) => s.table), ...model.dimensions.flatMap((d) => (d.table ? [d.table] : []))]);
-    return { ...out, tables: tablesIn(out.sql).filter((table) => known.has(table)) };
+    return { ...out, sql, params, tables: tablesIn(sql).filter((table) => known.has(table)) };
   } catch (err) {
     return refusalOf(err);
   }
@@ -456,7 +460,7 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
   // The drill path.
   const where: string[] = [];
   const focus: string[] = [];
-  const inList = (values: string[]): string => `(${values.map(sqlString).join(', ')})`;
+  const inList = (values: string[]): string => `(${values.map(sqlValue).join(', ')})`;
   (view.path ?? []).forEach((step) => {
     const values = stringList(step?.selected, `the drill step on "${String(step?.dimension)}"`);
     const kept = `CAST(${codeOf(step.dimension)} AS VARCHAR) IN ${inList(values)}`;
@@ -529,7 +533,7 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
   const keyword = typeof view.keyword === 'string' ? view.keyword.trim() : '';
   if (keyword.length > MAX_KEYWORD_CHARS) fail('keyword_too_long', `the keyword is longer than ${MAX_KEYWORD_CHARS} characters`);
   if (keyword !== '') {
-    const pattern = `${likeContains(keyword)} ESCAPE '\\'`;
+    const pattern = `${sqlValue(likePattern(keyword))} ESCAPE '\\'`;
     const targets = [`CAST(${codeExpr} AS VARCHAR) ILIKE ${pattern}`];
     if (groupDim.table && groupDim.name) targets.push(`${propertyOf(groupDim.key, 'name')} ILIKE ${pattern}`);
     where.push(`(${targets.join(' OR ')})`);
@@ -569,8 +573,10 @@ function pageOf(view: ViewState, ctx: CompileContext, reserved: number): { limit
 
 function checkLength(sql: string, ctx: CompileContext): void {
   const maxSqlChars = ctx.maxSqlChars ?? ROUTE_MAX_SQL_CHARS;
-  if (sql.length > maxSqlChars) {
-    fail('sql_too_long', `the statement is ${sql.length} characters, the limit is ${maxSqlChars}; use fewer periods, measures or selected values`);
+  // Counted with the values written in, so the statement fits whichever way the caller sends it.
+  const length = writtenLength(sql);
+  if (length > maxSqlChars) {
+    fail('sql_too_long', `the statement is ${length} characters, the limit is ${maxSqlChars}; use fewer periods, measures or selected values`);
   }
 }
 

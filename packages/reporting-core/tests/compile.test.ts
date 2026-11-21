@@ -1,14 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { compileRollupView, compileView, isStageName, tablesIn, type CompiledView, type ViewState } from '../src';
+import { compileRollupView, compileView, inlineParams, isStageName, tablesIn, type CompiledView, type ViewState } from '../src';
 import { fixtureModel } from './fixture';
 
 const TODAY = '2026-11-21';
 const base: ViewState = { mode: 'total', stream: 'sales', measures: ['sales'], period: { preset: 'current_month' }, group_by: 'branch' };
 
-function compiled(change: Record<string, unknown> = {}, ctx: { maxSqlChars?: number; maxRows?: number; periodShape?: 'wide' | 'long' } = {}): CompiledView {
+/** A view as the compiler returns it, a `?` for each typed value. */
+function unwritten(change: Record<string, unknown> = {}, ctx: { maxSqlChars?: number; maxRows?: number; periodShape?: 'wide' | 'long' } = {}): CompiledView {
   const out = compileView(fixtureModel(), { ...base, ...change } as ViewState, { today: TODAY, ...ctx });
   if (!out.ok) throw new Error(`refused: ${out.reason}: ${out.detail}`);
   return out;
+}
+
+/** The same view with its typed values written into the statement, which is the form most of these tests read. */
+function compiled(change: Record<string, unknown> = {}, ctx: { maxSqlChars?: number; maxRows?: number; periodShape?: 'wide' | 'long' } = {}): CompiledView {
+  const out = unwritten(change, ctx);
+  return { ...out, sql: inlineParams(out.sql, out.params) };
 }
 
 function refusal(change: Record<string, unknown>, ctx: { maxSqlChars?: number; maxRows?: number; periodShape?: 'wide' | 'long' } = {}): string {
@@ -137,6 +144,37 @@ describe('compileView, dimensions and filters', () => {
 
   it('keeps a quote in a selected value inside its literal', () => {
     expect(compiled({ path: [{ dimension: 'branch', selected: ["x' OR 1=1 --"] }] }).sql).toContain("IN ('x'' OR 1=1 --')");
+  });
+
+  it('writes a ? for each typed value and returns the values beside the statement', () => {
+    const out = unwritten({ group_by: 'product', path: [{ dimension: 'branch', selected: ["x' OR 1=1 --", 'Home/Garden'] }], keyword: "koala's 50%" });
+    expect(out.sql).not.toMatch(/Garden|koala|1=1/);
+    expect(out.sql.match(/\?/g)).toHaveLength(out.params.length);
+    expect(new Set(out.params)).toEqual(new Set(["x' OR 1=1 --", 'Home/Garden', "%koala's 50\\%%"]));
+    const sql = inlineParams(out.sql, out.params);
+    expect(sql).toContain("IN ('x'' OR 1=1 --', 'Home/Garden')");
+    expect(sql).toContain("ILIKE '%koala''s 50\\%%' ESCAPE '\\'");
+  });
+
+  it('returns no values for a view with nothing typed', () => {
+    const out = unwritten();
+    expect(out.params).toEqual([]);
+    expect(out.sql).not.toContain('?');
+  });
+
+  it('returns a typed value whole, whatever characters it holds', () => {
+    const odd = ['a\u0001b\u0002c\u0003d', '\u00031', '?'];
+    const out = unwritten({ path: [{ dimension: 'product', selected: odd }] });
+    expect(new Set(out.params)).toEqual(new Set(odd));
+    expect(out.sql).not.toMatch(/[\u0001-\u0003]/);
+    expect(out.sql.match(/\?/g)).toHaveLength(out.params.length);
+  });
+
+  it('writes values into a statement, leaving a ? in a literal or a quoted name alone', () => {
+    expect(inlineParams('SELECT \'?\' AS "a?b" FROM "t" WHERE x = ? AND y IN (?, ?)', ["it's", 'b', 'c?']))
+      .toBe('SELECT \'?\' AS "a?b" FROM "t" WHERE x = \'it\'\'s\' AND y IN (\'b\', \'c?\')');
+    expect(() => inlineParams('SELECT ?', [])).toThrow('bad_params');
+    expect(() => inlineParams('SELECT ?', ['a', 'b'])).toThrow('bad_params');
   });
 
   it('ignores an empty top-level filter', () => {
@@ -855,7 +893,7 @@ describe('compileRollupView', () => {
   function rolled(change: Record<string, unknown> = {}): CompiledView {
     const out = compileRollupView(fixtureModel(), { ...base, ...change } as ViewState, { today: TODAY });
     if (!out.ok) throw new Error(`refused: ${out.reason}: ${out.detail}`);
-    return out;
+    return { ...out, sql: inlineParams(out.sql, out.params) };
   }
   function unrolled(change: Record<string, unknown>): string {
     const out = compileRollupView(fixtureModel(), { ...base, ...change } as ViewState, { today: TODAY });

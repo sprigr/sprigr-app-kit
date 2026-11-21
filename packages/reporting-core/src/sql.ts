@@ -29,8 +29,53 @@ export function sqlDate(iso: string): string {
 }
 
 /** A `%keyword%` pattern with the wildcards in the keyword itself escaped. Use with `ESCAPE '\'`. */
-export function likeContains(keyword: string): string {
-  return sqlString(`%${keyword.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
+export function likePattern(keyword: string): string {
+  return `%${keyword.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
+// A typed value sits in the unfinished statement between two marks. A mark inside the value is escaped.
+const HELD_VALUE_RX = /\u0001([^\u0002]*)\u0002/g;
+const unheld = (held: string): string => held.replace(/\u0003([123])/g, (_, n: string) => String.fromCharCode(Number(n)));
+
+/**
+ * A value a person typed, such as a selected code or a keyword pattern, as it sits in a statement
+ * that is still being put together. It never becomes statement text: `bindValues` puts a `?` in
+ * its place and hands the value back beside the statement.
+ */
+export function sqlValue(value: string): string {
+  return `\u0001${value.replace(/[\u0001-\u0003]/g, (c) => `\u0003${c.charCodeAt(0)}`)}\u0002`;
+}
+
+/** The finished statement, a `?` for each typed value, and the values in the order the statement reads them. */
+export function bindValues(held: string): { sql: string; params: string[] } {
+  const params: string[] = [];
+  const sql = held.replace(HELD_VALUE_RX, (_, value: string) => {
+    params.push(unheld(value));
+    return '?';
+  });
+  return { sql, params };
+}
+
+/** How long an unfinished statement is with every value written in, the longest form a caller can send. */
+export function writtenLength(held: string): number {
+  return held.replace(HELD_VALUE_RX, (_, value: string) => sqlString(unheld(value))).length;
+}
+
+/**
+ * The statement with each `?` replaced by its value as a string literal, for an engine or a route
+ * that takes no values beside the statement. A `?` inside a literal or a quoted name is left alone.
+ */
+export function inlineParams(sql: string, params: readonly string[]): string {
+  let next = 0;
+  const written = sql.replace(/'(?:[^']|'')*'|"(?:[^"]|"")*"|\?/g, (token) => {
+    if (token !== '?') return token;
+    const value = params[next];
+    next += 1;
+    if (typeof value !== 'string') throw new ReportingError('bad_params', `the statement reads more values than the ${params.length} given`);
+    return sqlString(value);
+  });
+  if (next !== params.length) throw new ReportingError('bad_params', `the statement reads ${next} values and ${params.length} were given`);
+  return written;
 }
 
 /** The names the compiler gives the stages of its own statement (its WITH names). */
