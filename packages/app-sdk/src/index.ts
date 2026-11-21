@@ -7,7 +7,7 @@
 export { constantTimeEqual, hmacSha256Hex, randomHex } from './crypto';
 export { encodeState, decodeState, encodeStateWithinEnvelope, oauthStateEnvelopeOverhead, OAUTH_STATE_ENVELOPE_MAX_CHARS } from './state';
 export type { OAuthState, EncodeStateWithinEnvelopeOptions, EncodedStateWithinEnvelope } from './state';
-export { fetchWithRetry } from './fetch';
+export { fetchWithRetry, FetchDeadlineError, isFetchDeadlineError } from './fetch';
 export type { FetchWithRetryOptions } from './fetch';
 export { invokeWithBusyRetry, isPlatformBusyError, PLATFORM_D1_EXPORT_BUSY_CODE } from './invoke-retry';
 export type { InvokeWithBusyRetryOptions, SprigrInvokeEnv } from './invoke-retry';
