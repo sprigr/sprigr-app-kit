@@ -28,7 +28,7 @@ import { emitFormulaSql, parseFormula, type FormulaNode } from './formula';
 import { isFormulaMeasure, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelRollup, type ModelStream, type ReportingModel } from './model';
 import { comparisonWindow, daysBetween, monthsRange, resolvePeriod, type PeriodBucket, type PeriodSpec, type PeriodWindow } from './periods';
 import { ReportingError, refusalOf, type Refusal, type ReportingReason } from './reasons';
-import { likeContains, quoteIdent as q, sqlDate, sqlNumber, sqlString } from './sql';
+import { likeContains, quoteIdent as q, sqlDate, sqlNumber, sqlString, tablesIn } from './sql';
 
 /** The query route refuses longer SQL (`ANALYTICS_QUERY_MAX_SQL_CHARS` in sprigr-team). */
 export const ROUTE_MAX_SQL_CHARS = 24_000;
@@ -161,6 +161,11 @@ export interface CompiledView {
   buckets: PeriodBucket[];
   /** Inclusive `YYYY-MM` range the statement reads, for the query route's `months` argument. */
   months: { from: string; to: string };
+  /**
+   * Every table the statement reads, fact or rollup tables and dimension tables, in the order it
+   * first reads them. A caller that holds its own copy of the data loads these.
+   */
+  tables: string[];
   /** Stream mode: the streams the statement reads, the view's own first. */
   streams?: string[];
   /** Matrix mode: the column dimension and how many of its members the result keeps. */
@@ -177,6 +182,9 @@ export interface CompiledView {
 }
 
 export interface CompiledRollup { stream: string; rollup: string; table: string }
+
+/** What each mode's compiler returns; `compileView` adds the table list. */
+type Compiled = Omit<CompiledView, 'tables'>;
 
 const FACT = 'f';
 
@@ -198,27 +206,34 @@ function stringList(values: unknown, what: string): string[] {
 
 export function compileView(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView | Refusal {
   try {
-    if (!(VIEW_MODES as readonly string[]).includes(view.mode)) fail('mode_unsupported', `mode "${String(view.mode)}" is not compiled yet`);
-    if (view.mode === 'transaction') return compileTransactions(model, view, ctx);
-    if (view.mode === 'stream') return compileStreams(model, view, ctx);
-    if (view.mode === 'matrix') return compileMatrix(model, view, ctx);
-    if (view.mode !== 'period' || ctx.periodShape === 'wide') return compileGrouped(model, view, ctx);
-    if (ctx.periodShape === 'long') return compileMatrix(model, view, ctx, true);
-    // One column per period while that fits; one row per member and period when the statement would be too long.
-    try {
-      return compileGrouped(model, view, ctx);
-    } catch (tooLong) {
-      if (!(tooLong instanceof ReportingError) || tooLong.reason !== 'sql_too_long') throw tooLong;
-      try {
-        return compileMatrix(model, view, ctx, true);
-      } catch (err) {
-        // The long shape cannot take this view either, so the first refusal is the one to report.
-        if (err instanceof ReportingError) throw tooLong;
-        throw err;
-      }
-    }
+    const out = compileMode(model, view, ctx);
+    // Only a name the model gives a table counts, whatever else the statement text holds.
+    const known = new Set([...model.streams.map((s) => s.table), ...model.dimensions.flatMap((d) => (d.table ? [d.table] : []))]);
+    return { ...out, tables: tablesIn(out.sql).filter((table) => known.has(table)) };
   } catch (err) {
     return refusalOf(err);
+  }
+}
+
+function compileMode(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
+  if (!(VIEW_MODES as readonly string[]).includes(view.mode)) fail('mode_unsupported', `mode "${String(view.mode)}" is not compiled yet`);
+  if (view.mode === 'transaction') return compileTransactions(model, view, ctx);
+  if (view.mode === 'stream') return compileStreams(model, view, ctx);
+  if (view.mode === 'matrix') return compileMatrix(model, view, ctx);
+  if (view.mode !== 'period' || ctx.periodShape === 'wide') return compileGrouped(model, view, ctx);
+  if (ctx.periodShape === 'long') return compileMatrix(model, view, ctx, true);
+  // One column per period while that fits; one row per member and period when the statement would be too long.
+  try {
+    return compileGrouped(model, view, ctx);
+  } catch (tooLong) {
+    if (!(tooLong instanceof ReportingError) || tooLong.reason !== 'sql_too_long') throw tooLong;
+    try {
+      return compileMatrix(model, view, ctx, true);
+    } catch (err) {
+      // The long shape cannot take this view either, so the first refusal is the one to report.
+      if (err instanceof ReportingError) throw tooLong;
+      throw err;
+    }
   }
 }
 
@@ -666,7 +681,7 @@ function propertyLabel(dim: ModelDimension, property: string): string {
 }
 
 /** Total, period and variance modes: one row per member of the group-by dimension. */
-function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
+function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
   const options: ViewOptions = view.options ?? {};
   const activity = options.activity ?? 'with';
   if (activity !== 'with' && activity !== 'without' && activity !== 'all') fail('option_unsupported', `"${String(activity)}" is not an activity option`);
@@ -871,7 +886,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
 }
 
 /** Transaction mode: the fact rows themselves, newest first, one page at a time. */
-function compileTransactions(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
+function compileTransactions(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
   const options: ViewOptions = view.options ?? {};
   if (options.activity !== undefined && options.activity !== 'with') fail('option_unsupported', 'a transaction list shows rows that exist; activity does not apply');
   if (options.total_row || options.others_row || options.average_row || options.sum_row) fail('option_unsupported', 'a transaction list has no total, others, average or sum row');
@@ -969,7 +984,7 @@ function compileTransactions(model: ReportingModel, view: ViewState, ctx: Compil
  * so no fact row of one stream is ever joined to a fact row of another. Stage g stacks those results,
  * folds them to one row per member, and works the formulas out from the folded sums.
  */
-function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
+function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
   const options: ViewOptions = view.options ?? {};
   if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', 'the activity option is not compiled for stream mode yet');
   if (options.others_row) fail('option_unsupported', 'an others row is not compiled for stream mode yet');
@@ -1087,7 +1102,7 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
  * by their totals, stage cl numbers the columns, and the result keeps the cells of one page of rows and
  * the columns kept. The grid pivots it: `__row` and `__col` say where a cell goes, 0 meaning a total.
  */
-function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileContext, byPeriod = false): CompiledView {
+function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileContext, byPeriod = false): Compiled {
   const options: ViewOptions = view.options ?? {};
   const what = byPeriod ? 'the long shape of a period view' : 'matrix mode';
   if (byPeriod && options.average_column) fail('option_unsupported', 'the average column is not compiled for the long shape of a period view yet');

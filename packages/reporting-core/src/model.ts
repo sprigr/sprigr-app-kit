@@ -8,7 +8,7 @@
 import { formulaRefs, parseFormula } from './formula';
 import { isIsoDate, type NamedPeriod, type PeriodCalendar } from './periods';
 import { ReportingError } from './reasons';
-import { isIdentifier } from './sql';
+import { isIdentifier, isStageName } from './sql';
 
 export const MODEL_VERSION = 1;
 export const MEASURE_AGGS = ['sum', 'count', 'count_distinct', 'min', 'max', 'avg'] as const;
@@ -102,6 +102,7 @@ export const MODEL_PROBLEMS = [
   'dimension_cycle', 'measure_shape', 'unknown_agg', 'unknown_format', 'formula_invalid', 'formula_unknown_measure',
   'formula_cycle', 'bad_fiscal_month', 'bad_week_start', 'bad_date', 'period_range_inverted',
   'rollup_dimension_not_on_stream', 'rollup_measure_unknown', 'rollup_measure_not_additive',
+  'reserved_table_name',
 ] as const;
 export type ModelProblemReason = (typeof MODEL_PROBLEMS)[number];
 
@@ -145,6 +146,13 @@ export function validateModel(input: unknown): ModelValidation {
     bad(v === undefined ? 'missing_field' : 'bad_identifier', path, 'a table or column must be a plain name');
     return null;
   };
+  /** A table: a plain name that is not one the compiler gives a stage of its own statement. */
+  const tableName = (v: unknown, path: string): string | null => {
+    const name = ident(v, path);
+    if (name === null || !isStageName(name)) return name;
+    bad('reserved_table_name', path, `"${name}" is a name the compiler gives a stage of its statement, so the table would not be read`);
+    return null;
+  };
   const label = (v: unknown, fallback: string): string => (typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, 120) : fallback);
   const unique = (seen: Set<string>, k: string, path: string): boolean => {
     if (seen.has(k)) { bad('duplicate_key', path, `"${k}" is used twice`); return false; }
@@ -162,7 +170,7 @@ export function validateModel(input: unknown): ModelValidation {
     if (k === null || !unique(dimKeys, k, `${path}.key`)) return;
     const dim: ModelDimension = { key: k, label: label(raw.label, k), properties: [] };
     if (raw.table !== undefined) {
-      const table = ident(raw.table, `${path}.table`);
+      const table = tableName(raw.table, `${path}.table`);
       const code = ident(raw.code, `${path}.code`);
       if (table !== null && code !== null) { dim.table = table; dim.code = code; }
       if (raw.name !== undefined) { const name = ident(raw.name, `${path}.name`); if (name !== null) dim.name = name; }
@@ -208,7 +216,7 @@ export function validateModel(input: unknown): ModelValidation {
     const path = `streams[${i}]`;
     if (!isRec(raw)) { bad('missing_field', path, 'a stream must be an object'); return; }
     const k = key(raw.key, `${path}.key`);
-    const table = ident(raw.table, `${path}.table`);
+    const table = tableName(raw.table, `${path}.table`);
     const date = ident(raw.date, `${path}.date`);
     if (k === null || table === null || date === null || !unique(streamKeys, k, `${path}.key`)) return;
     const dimension_keys: Record<string, string> = {};
@@ -234,7 +242,7 @@ export function validateModel(input: unknown): ModelValidation {
       const rollupPath = `${path}.rollups[${j}]`;
       if (!isRec(rawRollup)) { bad('missing_field', rollupPath, 'a rollup must be an object'); return; }
       const rk = key(rawRollup.key, `${rollupPath}.key`);
-      const rollupTable = ident(rawRollup.table, `${rollupPath}.table`);
+      const rollupTable = tableName(rawRollup.table, `${rollupPath}.table`);
       const rollupDate = ident(rawRollup.date, `${rollupPath}.date`);
       if (rk === null || rollupTable === null || rollupDate === null || !unique(rollupKeys, rk, `${rollupPath}.key`)) return;
       const kept: Record<string, string> = {};

@@ -32,3 +32,28 @@ export function sqlDate(iso: string): string {
 export function likeContains(keyword: string): string {
   return sqlString(`%${keyword.replace(/[\\%_]/g, (c) => `\\${c}`)}%`);
 }
+
+/** The names the compiler gives the stages of its own statement (its WITH names). */
+const STAGE_NAME_RX = /^(?:g|r|v|a|sm|rw|cl|s\d+)$/i;
+
+/**
+ * True for a name a table must not have. DuckDB looks a table name up among the statement's stages
+ * first, whatever its case, so a table called `s1` would be read as the stage `s1`.
+ */
+export function isStageName(name: string): boolean {
+  return STAGE_NAME_RX.test(name);
+}
+
+/**
+ * The tables a compiled statement reads, in the order it first reads them. The compiler quotes
+ * every table and never quotes a stage, so a quoted name after FROM or JOIN is a table. Text inside
+ * a string literal is skipped.
+ */
+export function tablesIn(sql: string): string[] {
+  const bare = sql.replace(/'(?:[^']|'')*'/g, "''");
+  const found = new Set<string>();
+  for (const match of bare.matchAll(/\b(?:FROM|JOIN)\s+"([A-Za-z_][A-Za-z0-9_]*)"/g)) {
+    if (match[1] !== undefined) found.add(match[1]);
+  }
+  return [...found];
+}

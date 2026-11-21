@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileRollupView, compileView, type CompiledView, type ViewState } from '../src';
+import { compileRollupView, compileView, isStageName, tablesIn, type CompiledView, type ViewState } from '../src';
 import { fixtureModel } from './fixture';
 
 const TODAY = '2026-11-21';
@@ -892,5 +892,48 @@ describe('compileRollupView', () => {
   it('leaves compileView reading the fact table', () => {
     expect(compiled().sql).toContain('FROM "sales_lines"');
     expect(compiled().rollups).toBeUndefined();
+  });
+});
+
+describe('the tables a statement reads', () => {
+  it('lists the fact table and each dimension table once, in the order read', () => {
+    expect(compiled().tables).toEqual(['sales_lines']);
+    expect(compiled({ group_by: 'department', properties: ['name'] }).tables).toEqual(['sales_lines', 'products', 'departments']);
+    const streams = compiled({ mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'], properties: ['name'], options: { total_row: true } });
+    expect(streams.tables).toEqual(['sales_lines', 'products', 'order_lines']);
+  });
+
+  it('lists the member table an activity view reads', () => {
+    const out = compiled({ group_by: 'product', properties: ['name'], measures: ['sales', 'lines'], options: { activity: 'all', total_row: true }, path: [{ dimension: 'branch', selected: ['1'] }] });
+    expect(out.tables).toEqual(['products', 'sales_lines']);
+  });
+
+  it('does not take a table from text a person typed', () => {
+    const out = compiled({ group_by: 'product', properties: ['name'], keyword: 'x FROM "departments" y' });
+    expect(out.sql).toContain('FROM "departments"');
+    expect(out.tables).toEqual(['sales_lines', 'products']);
+  });
+
+  it('lists the rollup in place of the fact table', () => {
+    const out = compileRollupView(fixtureModel(), { ...base, group_by: 'department', properties: ['name'] } as ViewState, { today: TODAY });
+    expect(out.ok ? out.tables : out.reason).toEqual(['sales_month_product_branch', 'products', 'departments']);
+  });
+
+  it('reads quoted names after FROM and JOIN, outside string literals', () => {
+    expect(tablesIn('SELECT * FROM "t1" AS f LEFT JOIN "t2" AS "d" ON "d"."code" = f."k" JOIN "t1" AS x ON true')).toEqual(['t1', 't2']);
+    expect(tablesIn('WITH g AS (SELECT * FROM "t1" WHERE n = \'it\'\'s FROM "t2"\' AND m IS NOT DISTINCT FROM g."code") SELECT * FROM g')).toEqual(['t1']);
+  });
+
+  it('gives its stages only names a model table cannot have', () => {
+    const views = [
+      {}, { options: { average_row: true, sum_row: true } }, { mode: 'variance' },
+      { mode: 'period', period: { preset: 'rolling_3' }, options: { average_column: true } },
+      { mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'] }, { mode: 'matrix', across: { dimension: 'product' } },
+    ];
+    const names = views.flatMap((view) => [...compiled(view).sql.matchAll(/(?:WITH|\),) (\w+) AS (?:MATERIALIZED )?\(/g)].map((m) => m[1] ?? ''));
+    expect(names).toEqual(expect.arrayContaining(['g', 'r', 'a', 'sm', 's1', 's2']));
+    expect(names.filter((name) => !isStageName(name))).toEqual([]);
+    expect(['sales_lines', 'groups', 's', 'sm_2', 'ar'].filter(isStageName)).toEqual([]);
+    expect(['S1', 's12', 'G', 'rw'].filter(isStageName)).toEqual(['S1', 's12', 'G', 'rw']);
   });
 });

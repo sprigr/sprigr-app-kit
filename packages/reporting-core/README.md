@@ -7,7 +7,7 @@ Pure reporting core. No IO, no clock, no tenant names. It turns a saved view int
 | `model` | `validateModel(json)`: a tenant's dimensions, measures, streams and calendar, checked. `measureAvailability(model, schema)`: which measures a role can use, given the columns its build holds. |
 | `formula` | `parseFormula`, `emitFormulaSql`: formula measures over other measures. Closed function list, typed, every division guarded. |
 | `periods` | `resolvePeriod`, `splitWindow`, `comparisonWindow`, `monthsRange`: presets, custom and named periods, period columns. |
-| `compile` | `compileView(model, view, { today })`: the statement, the column map, and the `months` range. `compileRollupView`: the same view over a monthly rollup, for the browser. |
+| `compile` | `compileView(model, view, { today })`: the statement, the column map, the `months` range and the `tables` it reads. `compileRollupView`: the same view over a monthly rollup, for the browser. |
 
 ```ts
 const checked = validateModel(json);
@@ -21,6 +21,7 @@ run(out.sql, { months: out.months });
 
 - The compiler never decides who may see a column or a row. It runs against the tables the caller's role holds.
 - Tables and columns come from the model and must be plain names. Values a person types (selections, keyword) are emitted as escaped string literals.
+- A table cannot be named `g`, `r`, `v`, `a`, `sm`, `rw`, `cl`, or `s` and a number, in any case. The compiler gives the stages of its statement those names, and DuckDB would read the stage in place of the table. `validateModel` refuses such a model.
 - A dimension's lookup table must hold one row per code, or sums multiply.
 - "Today" is passed in, in the tenant's time zone.
 
@@ -42,7 +43,7 @@ The fact table is too big to hand to a browser; a rollup of it by month is not. 
 - a window or period of the view does not start and end on the first of a month, such as a period to date, a week or a custom range of days;
 - the view is a transaction list or reads a snapshot measure.
 
-Of the rollups that can answer, the one with the fewest dimensions is read, then the first listed. A view that does not compile at all refuses with its own reason. The statement still joins the dimension tables for names, properties and parent dimensions, so the caller loads those beside the rollup.
+Of the rollups that can answer, the one with the fewest dimensions is read, then the first listed. A view that does not compile at all refuses with its own reason. The statement still joins the dimension tables for names, properties and parent dimensions, so the caller loads those beside the rollup. `tables` in the result lists every table the statement reads, rollups and dimension tables alike, in the order it first reads them.
 
 ## Compiled so far
 
