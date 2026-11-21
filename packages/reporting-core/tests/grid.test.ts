@@ -52,6 +52,21 @@ describe('pivotLong, a matrix', () => {
     ]);
   });
 
+  it('keeps a column no member of the page has a cell in, and shows no total row the view did not ask for', () => {
+    const view = compiled();
+    expect(view.sql).toContain('WHERE ((g."__total" = 1 AND g."__across_total" = 0) OR (rw."__row" > 0 AND rw."__row" <= 152))');
+    const grid = pivotLong(view, [
+      line(null, 'P1', 200, 0, 1, { across__name: 'Koala' }),
+      line(null, 'P2', 30, 0, 2, { across__name: 'Wombat' }),
+      line(2, null, 50, 2, 0),
+      line(2, 'P1', 50, 2, 1, { across__name: 'Koala' }),
+    ]);
+    expect(grid.columns.map((c) => c.label)).toEqual(['Koala', 'Wombat']);
+    expect(grid.rows).toEqual([
+      { code: 2, total: false, number: 2, properties: {}, cells: [{ m__sales: 50 }, null], totals: { m__sales: 50 } },
+    ]);
+  });
+
   it('gives an empty grid for no rows', () => {
     expect(pivotLong(compiled(), [])).toMatchObject({ columns: [], rows: [], rowCount: 0, columnCount: 0 });
   });

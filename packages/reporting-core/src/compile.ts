@@ -1159,8 +1159,11 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   }
 
   // Paging. Every row kept costs one result row per column kept, plus one for its total, so a page is fitted to the row cap.
+  // A matrix always returns its column totals, which name its columns; a period view needs them only for the total row.
   const maxRows = ctx.maxRows ?? ROUTE_MAX_ROWS;
-  const room = Math.floor(maxRows / (keep + 1)) - (totalRow ? 1 : 0);
+  const columnTotals = totalRow || !byPeriod;
+  const reserved = (columnTotals ? keep : 0) + (totalRow ? 1 : 0);
+  const room = Math.floor((maxRows - reserved) / (keep + 1));
   if (room < 1) fail('bad_paging', `${keep} columns leave no room for a row in ${maxRows} result rows`);
   const asked = view.limit ?? DEFAULT_PAGE_ROWS;
   const offset = view.offset ?? 0;
@@ -1228,6 +1231,8 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   }
 
   const paged = `rw."__row" > ${offset} AND rw."__row" <= ${offset + limit}`;
+  // The rows returned beside the page: the whole total row, or just the column totals, or none.
+  const beside = totalRow ? 'g."__total" = 1' : columnTotals ? '(g."__total" = 1 AND g."__across_total" = 0)' : null;
   const kept = keepRows(scope.having, options, shown.map((m) => `m__${m.key}`));
   const sql = [
     // Read three times below, so it is computed once.
@@ -1253,7 +1258,7 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
     // A member can have no code, so the joins match a blank to a blank.
     'LEFT JOIN rw ON g."__total" = 0 AND rw."code" IS NOT DISTINCT FROM g."code"',
     'LEFT JOIN cl ON g."__across_total" = 0 AND cl."across" IS NOT DISTINCT FROM g."across"',
-    `WHERE ${totalRow ? `(g."__total" = 1 OR (${paged}))` : paged} AND (g."__across_total" = 1 OR cl."__col" <= ${keep})`,
+    `WHERE ${beside !== null ? `(${beside} OR (${paged}))` : paged} AND (g."__across_total" = 1 OR cl."__col" <= ${keep})`,
     'ORDER BY g."__total" DESC, rw."__row" ASC, g."__across_total" DESC, cl."__col" ASC',
   ].join('\n');
   checkLength(sql, ctx);

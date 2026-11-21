@@ -62,8 +62,8 @@ function toNumber(value: unknown): number | null {
  * Fold the rows of a long result into a grid.
  *
  * A period view lists every period as a column, whether or not a row falls in it. A matrix lists
- * the columns its rows hold: with `options.total_row` that is every column kept, and without it a
- * column no member of this page has a cell in is left out.
+ * the columns kept, read from the column totals every page of its result carries. The total row is
+ * in the grid only when the result holds the grand total, which is when the view asked for it.
  */
 export function pivotLong(compiled: CompiledView, rows: ResultRow[]): Grid {
   if (compiled.shape !== 'long') throw new ReportingError('result_not_long', 'only a long result is pivoted; this one already has one row per member');
@@ -93,6 +93,8 @@ export function pivotLong(compiled: CompiledView, rows: ResultRow[]): Grid {
 
   const members = new Map<number, GridRow>();
   let total: GridRow | null = null;
+  // A matrix always carries its column totals, to name its columns. They make a total row only with the grand total.
+  let grand = false;
   for (const row of rows) {
     const isTotal = flag(row, '__total');
     const number = isTotal ? 0 : toNumber(row.__row) ?? 0;
@@ -104,7 +106,8 @@ export function pivotLong(compiled: CompiledView, rows: ResultRow[]): Grid {
     }
     if (flag(row, '__across_total')) {
       target.totals = figures(row);
-      if (!isTotal) for (const property of properties) target.properties[property.name] = row[property.name] ?? null;
+      if (isTotal) grand = true;
+      else for (const property of properties) target.properties[property.name] = row[property.name] ?? null;
     } else {
       const place = placeOf.get(toNumber(row.__col) ?? 0);
       if (place !== undefined) target.cells[place] = figures(row);
@@ -115,7 +118,7 @@ export function pivotLong(compiled: CompiledView, rows: ResultRow[]): Grid {
   const first = rows[0];
   return {
     columns,
-    rows: total ? [total, ...listed] : listed,
+    rows: total && grand ? [total, ...listed] : listed,
     measures,
     rowCount: toNumber(first?.__rows) ?? 0,
     columnCount: toNumber(first?.__cols) ?? columns.length,

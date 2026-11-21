@@ -523,7 +523,7 @@ describe('compileView, matrix mode', () => {
       'FROM g',
       'LEFT JOIN rw ON g."__total" = 0 AND rw."code" IS NOT DISTINCT FROM g."code"',
       'LEFT JOIN cl ON g."__across_total" = 0 AND cl."across" IS NOT DISTINCT FROM g."across"',
-      'WHERE rw."__row" > 0 AND rw."__row" <= 153 AND (g."__across_total" = 1 OR cl."__col" <= 12)',
+      'WHERE ((g."__total" = 1 AND g."__across_total" = 0) OR (rw."__row" > 0 AND rw."__row" <= 152)) AND (g."__across_total" = 1 OR cl."__col" <= 12)',
       'ORDER BY g."__total" DESC, rw."__row" ASC, g."__across_total" DESC, cl."__col" ASC',
     ].join('\n'));
     expect(out.columns.map((c) => c.name)).toEqual(['code', 'across', 'across__name', 'm__sales', '__total', '__across_total', '__row', '__col', '__rows', '__cols']);
@@ -539,7 +539,7 @@ describe('compileView, matrix mode', () => {
 
   it('fits a page to the result rows it may return', () => {
     const wide = compileView(fixtureModel(), { ...base, ...matrix } as ViewState, { today: TODAY, maxRows: Number.POSITIVE_INFINITY });
-    expect(wide.ok ? wide.sql : wide.reason).toContain('rw."__row" <= 200 AND');
+    expect(wide.ok ? wide.sql : wide.reason).toContain('rw."__row" <= 200)) AND');
   });
 
   it('filters rows on their totals, and can read a measure it does not show', () => {
