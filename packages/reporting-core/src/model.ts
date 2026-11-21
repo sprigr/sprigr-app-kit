@@ -71,6 +71,8 @@ export interface ModelBaseMeasure {
   agg: MeasureAgg;
   /** Absent only for `count`. */
   column?: string;
+  /** A second column of the same row: the measure reads `column` times this one, row by row (units times a unit cost). */
+  times?: string;
   stream: string;
   format: MeasureFormat;
   /** A level, not a flow (stock on hand): the latest value in a period, never a sum over time. */
@@ -282,7 +284,7 @@ export function validateModel(input: unknown): ModelValidation {
       else bad('unknown_format', `${path}.format`, `format must be one of ${MEASURE_FORMATS.join(', ')}`);
     }
     const hasFormula = raw.formula !== undefined;
-    const hasAgg = raw.agg !== undefined || raw.column !== undefined;
+    const hasAgg = raw.agg !== undefined || raw.column !== undefined || raw.times !== undefined;
     if (hasFormula === hasAgg) { bad('measure_shape', path, 'a measure is either an agg over a column or a formula, not both and not neither'); return; }
     if (hasFormula) {
       if (typeof raw.formula !== 'string') { bad('formula_invalid', `${path}.formula`, 'a formula must be text'); return; }
@@ -298,6 +300,13 @@ export function validateModel(input: unknown): ModelValidation {
       const column = ident(raw.column, `${path}.column`);
       if (column === null) return;
       measure.column = column;
+    }
+    if (raw.times !== undefined) {
+      // A count of a product is the count of its rows, so the second column would be read for nothing.
+      if (agg === 'count' || agg === 'count_distinct') { bad('measure_shape', `${path}.times`, 'a count cannot multiply two columns'); return; }
+      const times = ident(raw.times, `${path}.times`);
+      if (times === null) return;
+      measure.times = times;
     }
     measures.push(measure);
   });
@@ -395,7 +404,8 @@ export function measureAvailability(model: ReportingModel, schema: Record<string
       } else {
         const stream = streamByKey.get(m.stream);
         const cols = stream ? columns.get(stream.table.toLowerCase()) : undefined;
-        result = !!stream && !!cols && cols.has(stream.date.toLowerCase()) && (m.column === undefined || cols.has(m.column.toLowerCase()));
+        result = !!stream && !!cols && cols.has(stream.date.toLowerCase()) && (m.column === undefined || cols.has(m.column.toLowerCase()))
+          && (m.times === undefined || cols.has(m.times.toLowerCase()));
       }
     }
     memo.set(k, result);

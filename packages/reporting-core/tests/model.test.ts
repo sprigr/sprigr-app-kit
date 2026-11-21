@@ -53,6 +53,11 @@ describe('validateModel', () => {
     ['a measure that is both an agg and a formula', withChange({ measures: [{ key: 'a', agg: 'sum', column: 'x', formula: '1' }] }), 'measure_shape'],
     ['an unknown agg', withChange({ measures: [{ key: 'a', agg: 'median', column: 'x' }] }), 'unknown_agg'],
     ['a sum with no column', withChange({ measures: [{ key: 'a', agg: 'sum' }] }), 'missing_field'],
+    ['a count that multiplies two columns', withChange({ measures: [{ key: 'a', agg: 'count', column: 'x', times: 'y' }] }), 'measure_shape'],
+    ['a distinct count that multiplies two columns', withChange({ measures: [{ key: 'a', agg: 'count_distinct', column: 'x', times: 'y' }] }), 'measure_shape'],
+    ['a second column that is not a plain name', withChange({ measures: [{ key: 'a', agg: 'sum', column: 'x', times: 'y z' }] }), 'bad_identifier'],
+    ['a second column named for a word the route refuses', withChange({ measures: [{ key: 'a', agg: 'sum', column: 'x', times: 'update' }] }), 'reserved_name'],
+    ['a second column on a formula', withChange({ measures: [{ key: 'a', agg: 'count' }, { key: 'b', formula: 'a + 1', times: 'y' }] }), 'measure_shape'],
     ['a measure on an unknown stream', withChange({ measures: [{ key: 'a', agg: 'count', stream: 'nope' }] }), 'unknown_stream'],
     ['a formula that does not parse', withChange({ measures: [{ key: 'a', agg: 'count' }, { key: 'b', formula: 'a -' }] }), 'formula_invalid'],
     ['a formula naming no measure', withChange({ measures: [{ key: 'a', agg: 'count' }, { key: 'b', formula: 'a - nope' }] }), 'formula_unknown_measure'],
@@ -87,5 +92,14 @@ describe('measureAvailability', () => {
   it('hides a measure whose column the role does not hold, and every formula built on it', () => {
     const seen = measureAvailability(fixtureModel(), { sales_lines: ['sale_date', 'product_code', 'amount', 'qty'] });
     expect(seen).toMatchObject({ sales: true, qty: true, lines: true, cost: false, profit: false, gp: false, ordered: false });
+  });
+
+  it('hides a measure of two columns when the role holds only one of them', () => {
+    const checked = validateModel(withChange({ measures: [...MODEL_JSON.measures, { key: 'value', agg: 'sum', column: 'qty', times: 'unit_cost' }] }));
+    if (!checked.ok) throw new Error(JSON.stringify(checked.problems));
+    const value = checked.model.measures.find((m) => m.key === 'value');
+    expect(value && !isFormulaMeasure(value) ? value.times : null).toBe('unit_cost');
+    expect(measureAvailability(checked.model, { sales_lines: ['sale_date', 'qty'] })).toMatchObject({ qty: true, value: false });
+    expect(measureAvailability(checked.model, { sales_lines: ['sale_date', 'qty', 'Unit_Cost'] })).toMatchObject({ value: true });
   });
 });
