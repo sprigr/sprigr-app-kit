@@ -8,6 +8,7 @@ Pure reporting core. No IO, no clock, no tenant names. It turns a saved view int
 | `formula` | `parseFormula`, `emitFormulaSql`: formula measures over other measures. Closed function list, typed, every division guarded. |
 | `periods` | `resolvePeriod`, `splitWindow`, `comparisonWindow`, `monthsRange`: presets, custom and named periods, period columns. |
 | `compile` | `compileView(model, view, { today })`: the statement, the column map, the `months` range and the `tables` it reads. `compileRollupView`: the same view over a monthly rollup, for the browser. |
+| `grid` | `pivotLong(compiled, rows)`: the rows of a long result folded to one grid row per member with one cell per column. |
 
 ```ts
 const checked = validateModel(json);
@@ -44,6 +45,20 @@ The fact table is too big to hand to a browser; a rollup of it by month is not. 
 - the view is a transaction list or reads a snapshot measure.
 
 Of the rollups that can answer, the one with the fewest dimensions is read, then the first listed. A view that does not compile at all refuses with its own reason. The statement still joins the dimension tables for names, properties and parent dimensions, so the caller loads those beside the rollup. `tables` in the result lists every table the statement reads, rollups and dimension tables alike, in the order it first reads them.
+
+## The grid of a long result
+
+A matrix view, and a period view too wide for one column per period, come back long: one result row per cell (`shape: 'long'`). `pivotLong(compiled, rows)` folds them:
+
+```ts
+const grid = pivotLong(out, rows);
+grid.columns; // [{ number, across, label, period? }], in display order
+grid.rows;    // [{ code, total, number, properties, cells, totals }], the total row first
+```
+
+`cells` has one entry per column, holding the measures by result column name (`m__sales`), or null where no fact row falls. `totals` is the row's own total over every column. `rowCount` and `columnCount` are the sizes before paging and before the cut to the columns kept. Whole numbers may arrive as bigints, as DuckDB in the browser returns them.
+
+A period view lists every period as a column; `reversed` in the compiled result says the newest comes first. A matrix lists the columns its rows hold. With `options.total_row` that is every column kept. Without it, a column that no member of the page has a cell in is left out, so ask for the total row when the column set must stay the same from page to page.
 
 ## Compiled so far
 

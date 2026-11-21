@@ -13,6 +13,8 @@ export const REPORTING_REASONS = [
   'dimension_not_on_stream', 'dimension_has_no_table', 'empty_selection', 'filter_too_deep',
   'empty_filter', 'measure_filter_unsupported', 'option_unsupported', 'keyword_too_long',
   'unknown_column', 'bad_across', 'bad_sort', 'bad_paging', 'sql_too_long', 'no_rollup',
+  // grid
+  'result_not_long',
 ] as const;
 
 export type ReportingReason = (typeof REPORTING_REASONS)[number];

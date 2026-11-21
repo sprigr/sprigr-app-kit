@@ -175,6 +175,8 @@ export interface CompiledView {
    * too long for one column per period. In that period view `across` is the period's number, from the oldest.
    */
   shape?: 'long';
+  /** With `shape`, in a period view: true when column 1 is the newest period (`options.reverse_periods`). */
+  reversed?: true;
   /** With `shape`: the rows a page holds, fitted to the row cap. It can be fewer than the view asked for. */
   limit?: number;
   /** From `compileRollupView`: the rollup each stream is read from, in the order the statement reads them. */
@@ -1264,6 +1266,7 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
     buckets,
     months: monthsRange(range),
     shape: 'long',
+    ...(byPeriod && options.reverse_periods ? { reversed: true as const } : {}),
     limit,
     ...(acrossColumn.dimension !== undefined ? { across: { dimension: acrossColumn.dimension, limit: keep } } : {}),
   };
