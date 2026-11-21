@@ -702,3 +702,65 @@ describe('compileView, others and average rows', () => {
     expect(refusal({ ...focus, limit: 1998, options: { total_row: true, average_row: true, others_row: true } })).toBe('bad_paging');
   });
 });
+
+describe('compileView, the average column and hiding zero rows', () => {
+  const periods = { mode: 'period', period: { preset: 'rolling_3' } };
+  const ZERO = 'COALESCE("m__sales", 0) <> 0';
+
+  it('adds one column a measure in period mode: the mean of its period columns, read from the row itself', () => {
+    const out = compiled({ ...periods, options: { average_column: true } });
+    expect(out.sql).toContain('), v AS (\nSELECT g.*, list_avg(["b1__sales", "b2__sales", "b3__sales"]) AS "avg__sales"\nFROM g\n), r AS (');
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'b1__sales', 'b2__sales', 'b3__sales', 'm__sales', 'avg__sales', '__total', '__rows']);
+    expect(out.columns.find((c) => c.name === 'avg__sales')).toEqual(
+      { name: 'avg__sales', kind: 'measure', measure: 'sales', format: 'currency', label: 'Sales Average', period: null, average: true },
+    );
+  });
+
+  it('sorts by the average column, and averages it on an average row', () => {
+    const sorted = compiled({ ...periods, sort: { by: 'average.sales', dir: 'asc' }, options: { average_column: true } });
+    expect(sorted.sql).toContain('ORDER BY "avg__sales" ASC NULLS LAST, "code" ASC');
+    const both = compiled({ ...periods, options: { average_column: true, average_row: true } });
+    expect(both.sql).toContain('avg("m__sales") AS "m__sales", avg("avg__sales") AS "avg__sales", 3 AS "__total"');
+  });
+
+  it('keeps the oldest-first names in the average when the period columns are shown newest first', () => {
+    const out = compiled({ ...periods, options: { average_column: true, reverse_periods: true } });
+    expect(out.sql).toContain('list_avg(["b1__sales", "b2__sales", "b3__sales"]) AS "avg__sales"');
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'b3__sales', 'b2__sales', 'b1__sales', 'm__sales', 'avg__sales', '__total', '__rows']);
+  });
+
+  it('has no average column outside period mode, and refuses it in the long shape', () => {
+    expect(compiled({ options: { average_column: true } }).sql).toBe(compiled().sql);
+    expect(refusal({ sort: { by: 'average.sales', dir: 'asc' }, options: { average_column: true } })).toBe('bad_sort');
+    expect(refusal({ ...periods, options: { average_column: true } }, { periodShape: 'long' })).toBe('option_unsupported');
+  });
+
+  it('hides the rows whose shown figures are all zero or blank, and never the total row', () => {
+    const one = compiled({ options: { hide_zero_rows: true, total_row: true } });
+    expect(one.sql).toContain(`FROM g\nWHERE "__total" = 1 OR (${ZERO})\n)`);
+    const two = compiled({ measures: ['sales', 'qty'], options: { hide_zero_rows: true } });
+    expect(two.sql).toContain(`FROM g\nWHERE "__total" = 1 OR (${ZERO} OR COALESCE("m__qty", 0) <> 0)\n)`);
+  });
+
+  it('applies with a filter on a measure, and judges a variance on both of its windows', () => {
+    const filtered = compiled({ options: { hide_zero_rows: true }, filters: { op: 'and', rules: [{ measure: 'sales', cmp: '>', value: 10 }] } });
+    expect(filtered.sql).toContain(`FROM g\nWHERE "__total" = 1 OR ((${ZERO}) AND ("m__sales" > 10))\n)`);
+    const variance = compiled({ mode: 'variance', options: { hide_zero_rows: true } });
+    expect(variance.sql).toContain(`FROM v\nWHERE "__total" = 1 OR (${ZERO} OR COALESCE("prev__sales", 0) <> 0)\n)`);
+  });
+
+  it('hides zero rows in stream and matrix modes and in the long shape, by the row totals', () => {
+    const streams = compiled({ mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'], options: { hide_zero_rows: true } });
+    expect(streams.sql).toContain(`FROM g\nWHERE "__total" = 1 OR (${ZERO} OR COALESCE("m__ordered", 0) <> 0)\n)`);
+    const matrix = compiled({ mode: 'matrix', across: { dimension: 'product' }, options: { hide_zero_rows: true } });
+    expect(matrix.sql).toContain(`FROM g\nWHERE "__total" = 0 AND "__across_total" = 1 AND (${ZERO})\n), cl AS (`);
+    const long = compiled({ ...periods, options: { hide_zero_rows: true } }, { periodShape: 'long' });
+    expect(long.sql).toContain(`FROM g\nWHERE "__total" = 0 AND "__across_total" = 1 AND (${ZERO})\n), cl AS (`);
+  });
+
+  it('refuses hiding zero rows with the activity option, and a transaction list ignores it', () => {
+    expect(refusal({ group_by: 'product', options: { hide_zero_rows: true, activity: 'all' } })).toBe('option_unsupported');
+    const list = { mode: 'transaction', measures: ['sales'] };
+    expect(compiled({ ...list, options: { hide_zero_rows: true } }).sql).toBe(compiled(list).sql);
+  });
+});

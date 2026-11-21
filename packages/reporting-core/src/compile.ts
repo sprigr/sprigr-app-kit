@@ -74,6 +74,10 @@ export interface ViewOptions {
   period_to_date?: boolean;
   /** Newest period first. Changes column order only. */
   reverse_periods?: boolean;
+  /** Period mode: one more column a measure, the mean of its period columns. Blank periods are skipped. */
+  average_column?: boolean;
+  /** Leaves out the rows whose every shown figure over the whole period is zero or blank. The total still counts them. */
+  hide_zero_rows?: boolean;
 }
 
 /** What a saved view stores. */
@@ -100,6 +104,7 @@ export interface ViewState {
   /**
    * `code`, `property.<key>`, `total.<measure>` or `period.<n>.<measure>` (n counts from the oldest period).
    * Variance mode adds `previous.<measure>`, `variance.<measure>` and `variance_pct.<measure>`.
+   * Period mode with `average_column` adds `average.<measure>`.
    * Transaction mode takes `date`, `dimension.<key>`, `column.<key>` or `total.<measure>`.
    */
   sort?: ViewSort;
@@ -134,6 +139,8 @@ export interface CompiledColumn {
   format?: string;
   /** For a measure column: the period it covers, or null for the whole window. */
   period?: PeriodBucket | null;
+  /** For a measure column in period mode: true on the mean of the measure's period columns. */
+  average?: boolean;
   /** For a measure column in variance mode: which of the four it is. */
   part?: VariancePart;
   /** For a dimension column in a transaction list, or the column dimension of a matrix: the dimension key. */
@@ -464,8 +471,19 @@ function sortNameOf(by: unknown): string {
         : parts[0] === 'previous' && two ? `prev__${parts[1]}`
           : parts[0] === 'variance' && two ? `var__${parts[1]}`
             : parts[0] === 'variance_pct' && two ? `varp__${parts[1]}`
-              : parts[0] === 'period' && parts.length === 3 ? `b${parts[1]}__${parts[2]}`
-                : '';
+              : parts[0] === 'average' && two ? `avg__${parts[1]}`
+                : parts[0] === 'period' && parts.length === 3 ? `b${parts[1]}__${parts[2]}`
+                  : '';
+}
+
+/**
+ * The condition a grouped row must pass: the view's filter on measures and, with `hide_zero_rows`,
+ * at least one of `figures` that is not zero. A blank counts as zero.
+ */
+function keepRows(having: string | null, options: ViewOptions, figures: string[]): string | null {
+  if (options.hide_zero_rows !== true || figures.length === 0) return having;
+  const some = `(${figures.map((name) => `COALESCE(${q(name)}, 0) <> 0`).join(' OR ')})`;
+  return having === null ? some : `(${some} AND ${having})`;
 }
 
 /**
@@ -588,6 +606,9 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   // Members with no activity have no figures, so a list of them has no total row.
   const totalRow = options.total_row === true && activity !== 'without';
   const averageRow = options.average_row === true;
+  // A member with no activity has blank figures, which this option would hide again.
+  if (options.hide_zero_rows && activity !== 'with') fail('option_unsupported', 'hiding zero rows with the activity option is not compiled yet');
+  const averageColumn = options.average_column === true && view.mode === 'period';
 
   const scope = scopeOf(model, view, activity !== 'with', options.others_row === true);
   const { stream, measureByKey, joins, groupDim, where, members } = scope;
@@ -690,6 +711,11 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
       period: current ? current.bucket : null,
       ...(current ? { part: 'current' as const } : {}),
     });
+    if (seen && averageColumn) {
+      // Worked out in stage v from the row's own period columns, so it holds on the total row too.
+      put(derived, `avg__${measure.key}`, `list_avg([${slices.map((_, i) => q(`b${i + 1}__${measure.key}`)).join(', ')}])`, true,
+        { ...about, label: `${measure.label} Average`, period: null, average: true });
+    }
     if (!current || !previous) return;
     const cur = q(wholeName);
     const prev = q(`prev__${measure.key}`);
@@ -719,6 +745,8 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
   const { limit, offset } = pageOf(view, ctx, (totalRow ? 1 : 0) + (othersRow ? 1 : 0) + (averageRow ? 1 : 0));
   const averaged = averageRow ? columns.filter((c) => c.kind === 'measure').map((c) => c.name) : [];
+  // What "zero" is judged on: each shown measure over the whole period, and over the earlier one in a variance.
+  const figures = shown.flatMap((m) => (previous ? [`m__${m.key}`, `prev__${m.key}`] : [`m__${m.key}`]));
 
   // The fact subquery. A snapshot measure needs each window's latest day, the same day for every member,
   // so it is found here, before any filter narrows the rows.
@@ -754,7 +782,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     ] : [totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`]),
     ...(activity === 'without' ? [`HAVING COUNT(${FACT}."__in") = 0`] : []),
     ...(source === 'v' ? ['), v AS (', `SELECT g.*, ${derived.join(', ')}`, 'FROM g'] : []),
-    ...rankAndPage(source, sortName, sort, scope.having, left, offset, limit, { others: othersRow, average: averaged }),
+    ...rankAndPage(source, sortName, sort, keepRows(scope.having, options, figures), left, offset, limit, { others: othersRow, average: averaged }),
   ].join('\n');
   checkLength(sql, ctx);
 
@@ -967,7 +995,7 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
     // By name: each stage has its own sum columns, and a member one stream lacks gets blanks there.
     `FROM (${streamKeys.map((_, i) => `SELECT * FROM s${i + 1}`).join(' UNION ALL BY NAME ')}) AS u`,
     'GROUP BY "code", "__total"',
-    ...rankAndPage('g', sortName, sort, lead.having, left, offset, limit),
+    ...rankAndPage('g', sortName, sort, keepRows(lead.having, options, shown.map((m) => `m__${m.key}`)), left, offset, limit),
   ].join('\n');
   checkLength(sql, ctx);
 
@@ -988,6 +1016,7 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
 function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileContext, byPeriod = false): CompiledView {
   const options: ViewOptions = view.options ?? {};
   const what = byPeriod ? 'the long shape of a period view' : 'matrix mode';
+  if (byPeriod && options.average_column) fail('option_unsupported', 'the average column is not compiled for the long shape of a period view yet');
   if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', `the activity option is not compiled for ${what} yet`);
   if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled for this mode yet');
   const totalRow = options.total_row === true;
@@ -1108,6 +1137,7 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   }
 
   const paged = `rw."__row" > ${offset} AND rw."__row" <= ${offset + limit}`;
+  const kept = keepRows(scope.having, options, shown.map((m) => `m__${m.key}`));
   const sql = [
     // Read three times below, so it is computed once.
     'WITH g AS MATERIALIZED (',
@@ -1120,7 +1150,7 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
     '), rw AS (',
     `SELECT "code", row_number() OVER (ORDER BY ${q(sortName)} ${sort.dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, "code" ASC) AS "__row"`,
     'FROM g',
-    `WHERE "__total" = 0 AND "__across_total" = 1${scope.having !== null ? ` AND ${scope.having}` : ''}`,
+    `WHERE "__total" = 0 AND "__across_total" = 1${kept !== null ? ` AND ${kept}` : ''}`,
     '), cl AS (',
     `SELECT "across", ${colNumber} AS "__col"`,
     'FROM g',
