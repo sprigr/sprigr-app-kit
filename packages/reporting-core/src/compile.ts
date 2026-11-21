@@ -67,7 +67,9 @@ export interface ViewAcross { dimension: string; limit?: number; order?: 'value'
 export interface ViewOptions {
   activity?: 'with' | 'without' | 'all';
   total_row?: boolean;
+  /** One row for the members a drill step on the group-by dimension leaves out. `__total` is 2 on it. */
   others_row?: boolean;
+  /** One row holding the mean of each measure column over the member rows. `__total` is 3 on it. */
   average_row?: boolean;
   period_to_date?: boolean;
   /** Newest period first. Changes column order only. */
@@ -227,6 +229,11 @@ interface Scope {
   filterMeasures: string[];
   /** Set when the view also lists members with nothing in the period. */
   members: MemberList | null;
+  /**
+   * The focus: the drill steps on the group-by dimension itself. Only filled when asked for,
+   * and then those steps are left out of `where`, so the members they leave out can still be read.
+   */
+  focus: string[];
 }
 
 /** The group-by dimension's own table, aliased "mb": one row per member, whether or not it has fact rows. */
@@ -240,7 +247,7 @@ interface MemberList {
   property: (property: string) => string;
 }
 
-function scopeOf(model: ReportingModel, view: ViewState, withMembers = false): Scope {
+function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, splitFocus = false): Scope {
   const stream: ModelStream = model.streams.find((s) => s.key === view.stream) ?? fail('unknown_stream', `no stream "${String(view.stream)}"`);
   const dimByKey = new Map(model.dimensions.map((d) => [d.key, d]));
   const measureByKey = new Map(model.measures.map((m) => [m.key, m]));
@@ -320,10 +327,12 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false): S
 
   // The drill path.
   const where: string[] = [];
+  const focus: string[] = [];
   const inList = (values: string[]): string => `(${values.map(sqlString).join(', ')})`;
   (view.path ?? []).forEach((step) => {
     const values = stringList(step?.selected, `the drill step on "${String(step?.dimension)}"`);
-    where.push(`CAST(${codeOf(step.dimension)} AS VARCHAR) IN ${inList(values)}`);
+    const kept = `CAST(${codeOf(step.dimension)} AS VARCHAR) IN ${inList(values)}`;
+    (splitFocus && step.dimension === groupDim.key ? focus : where).push(kept);
     if (mb && mb.reaches(step.dimension)) mb.conds.push(`CAST(${mb.codeHere(step.dimension)} AS VARCHAR) IN ${inList(values)}`);
   });
 
@@ -410,7 +419,7 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false): S
     conds: mb.conds,
     property: (property) => mb.propertyHere(groupDim.key, property),
   };
-  return { stream, measureByKey, joins, dimension, propertyOf, groupDim, codeExpr, where, having, filterMeasures, members };
+  return { stream, measureByKey, joins, dimension, propertyOf, groupDim, codeExpr, where, having, filterMeasures, members, focus };
 }
 
 function shownMeasures(view: ViewState, measureByKey: Map<string, ModelMeasure>): ModelMeasure[] {
@@ -462,17 +471,36 @@ function sortNameOf(by: unknown): string {
 /**
  * How every grouped statement ends: stage r ranks and counts the rows of `source`, then one page is read.
  * A measure filter drops rows here, after grouping, and never drops the total row.
+ * `extra.others`: g also holds an others row (`__total` 2). `extra.average`: the measure columns an
+ * average row (`__total` 3) is worked out for, over every row the list holds, on any page.
  */
-function rankAndPage(source: string, sortName: string, sort: ViewSort, having: string | null, left: string[], offset: number, limit: number): string[] {
+function rankAndPage(
+  source: string, sortName: string, sort: ViewSort, having: string | null, left: string[], offset: number, limit: number,
+  extra: { others: boolean; average: string[] } = { others: false, average: [] },
+): string[] {
+  const summary = extra.others ? '"__total" > 0' : '"__total" = 1';
+  const page = `WHERE ${summary} OR ("__rn" > ${offset} AND "__rn" <= ${offset + limit})`;
+  const hide = `SELECT * EXCLUDE (${left.map(q).join(', ')}) FROM`;
   return [
     '), r AS (',
     `SELECT ${source}.*, row_number() OVER (PARTITION BY "__total" ORDER BY ${q(sortName)} ${sort.dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, "code" ASC) AS "__rn",`,
     'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
     `FROM ${source}`,
-    ...(having !== null ? [`WHERE "__total" = 1 OR ${having}`] : []),
-    ')',
-    `SELECT * EXCLUDE (${left.map(q).join(', ')}) FROM r`,
-    `WHERE "__total" = 1 OR ("__rn" > ${offset} AND "__rn" <= ${offset + limit})`,
+    ...(having !== null ? [`WHERE ${summary} OR ${having}`] : []),
+    ...(extra.average.length === 0 ? [')', `${hide} r`, page] : [
+      '), a AS (',
+      `SELECT ${extra.average.map((name) => `avg(${q(name)}) AS ${q(name)}`).join(', ')}, 3 AS "__total", 0 AS "__rn", CAST(count(*) AS INTEGER) AS "__rows"`,
+      'FROM r',
+      'WHERE "__total" = 0',
+      ')',
+      `${hide} (`,
+      'SELECT * FROM r',
+      page,
+      // The average row has no code and no property, so the columns are matched by name.
+      'UNION ALL BY NAME',
+      'SELECT * FROM a',
+      ') AS p',
+    ]),
     'ORDER BY "__total" DESC, "__rn" ASC',
   ];
 }
@@ -556,12 +584,17 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   const options: ViewOptions = view.options ?? {};
   const activity = options.activity ?? 'with';
   if (activity !== 'with' && activity !== 'without' && activity !== 'all') fail('option_unsupported', `"${String(activity)}" is not an activity option`);
-  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled yet');
+  if (options.others_row && activity !== 'with') fail('option_unsupported', 'an others row with the activity option is not compiled yet');
   // Members with no activity have no figures, so a list of them has no total row.
   const totalRow = options.total_row === true && activity !== 'without';
+  const averageRow = options.average_row === true;
 
-  const scope = scopeOf(model, view, activity !== 'with');
+  const scope = scopeOf(model, view, activity !== 'with', options.others_row === true);
   const { stream, measureByKey, joins, groupDim, where, members } = scope;
+  // The others row is the members the focus leaves out, so it exists only when the view focuses on some.
+  // A member with no code is never one the focus picked.
+  const focused = scope.focus.length > 0 ? `COALESCE(${scope.focus.join(' AND ')}, FALSE)` : null;
+  const othersRow = focused !== null;
   // With the member list joined in, a row's code comes from whichever side has it.
   const codeExpr = members ? `COALESCE(${members.code}, ${FACT}."__code")` : scope.codeExpr;
   const shown = shownMeasures(view, measureByKey);
@@ -627,7 +660,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     if ((view.properties ?? []).indexOf(property) !== i) return;
     const expr = `any_value(${members ? members.property(property) : scope.propertyOf(groupDim.key, property)})`;
     const name = `prop__${property}`;
-    select.push(`${totalRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
+    select.push(`${totalRow || othersRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
     const label = propertyLabel(groupDim, property);
     columns.push({ name, kind: 'property', label, property });
   });
@@ -670,7 +703,13 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   };
   shown.forEach((measure) => addMeasure(measure, true));
   unseen.forEach((measure) => addMeasure(measure, false));
-  select.push(`${totalRow ? `CAST(${grouping} AS INTEGER)` : '0'} AS "__total"`);
+  if (focused !== null) {
+    // Grouped by the flag too: the total is then the focused members' and the others row the rest's.
+    select.push(`${focused} AS "__f"`, `CASE WHEN ${grouping} = 0 THEN 0 WHEN "__f" THEN 1 ELSE 2 END AS "__total"`);
+    left.push('__f');
+  } else {
+    select.push(`${totalRow ? `CAST(${grouping} AS INTEGER)` : '0'} AS "__total"`);
+  }
   columns.push({ name: '__total', kind: 'meta', label: 'Total row' }, { name: '__rows', kind: 'meta', label: 'Row count' });
 
   // Sort and paging.
@@ -678,7 +717,8 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
   const sortName = sortNameOf(sort.by);
   if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
-  const { limit, offset } = pageOf(view, ctx, totalRow ? 1 : 0);
+  const { limit, offset } = pageOf(view, ctx, (totalRow ? 1 : 0) + (othersRow ? 1 : 0) + (averageRow ? 1 : 0));
+  const averaged = averageRow ? columns.filter((c) => c.kind === 'measure').map((c) => c.name) : [];
 
   // The fact subquery. A snapshot measure needs each window's latest day, the same day for every member,
   // so it is found here, before any filter narrows the rows.
@@ -707,10 +747,14 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     'WITH g AS (',
     `SELECT ${select.join(', ')}`,
     ...from,
-    totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
+    ...(othersRow ? [
+      `GROUP BY GROUPING SETS ((${codeExpr}, "__f"), ("__f"))`,
+      // Keeps the focused members and the others row, and the focused members' total when it is shown.
+      totalRow ? `HAVING ${grouping} = 1 OR "__f"` : `HAVING "__f" = (${grouping} = 0)`,
+    ] : [totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`]),
     ...(activity === 'without' ? [`HAVING COUNT(${FACT}."__in") = 0`] : []),
     ...(source === 'v' ? ['), v AS (', `SELECT g.*, ${derived.join(', ')}`, 'FROM g'] : []),
-    ...rankAndPage(source, sortName, sort, scope.having, left, offset, limit),
+    ...rankAndPage(source, sortName, sort, scope.having, left, offset, limit, { others: othersRow, average: averaged }),
   ].join('\n');
   checkLength(sql, ctx);
 
@@ -830,7 +874,7 @@ function compileTransactions(model: ReportingModel, view: ViewState, ctx: Compil
 function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
   const options: ViewOptions = view.options ?? {};
   if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', 'the activity option is not compiled for stream mode yet');
-  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled yet');
+  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled for this mode yet');
   const totalRow = options.total_row === true;
 
   // The view's own stream is always read. It also settles the measure filters, which are the same for every stream.
@@ -945,7 +989,7 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   const options: ViewOptions = view.options ?? {};
   const what = byPeriod ? 'the long shape of a period view' : 'matrix mode';
   if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', `the activity option is not compiled for ${what} yet`);
-  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled yet');
+  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled for this mode yet');
   const totalRow = options.total_row === true;
 
   const scope = scopeOf(model, view);

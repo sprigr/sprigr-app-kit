@@ -195,7 +195,7 @@ describe('compileView refusals', () => {
     [{ period: { named: 'nope' } }, 'unknown_period'],
     [{ options: { activity: 'sometimes' } }, 'option_unsupported'],
     [{ options: { activity: 'all' } }, 'dimension_has_no_table'],
-    [{ options: { others_row: true } }, 'option_unsupported'],
+    [{ group_by: 'product', options: { others_row: true, activity: 'all' } }, 'option_unsupported'],
     [{ keyword: 'k'.repeat(201) }, 'keyword_too_long'],
   ])('refuses %j with %s', (change, reason) => {
     expect(refusal(change)).toBe(reason);
@@ -638,5 +638,67 @@ describe('compileView, the long shape of a period view', () => {
     expect(out.sql).toContain('SELECT "across", 4 - "across" AS "__col"');
     expect(out.sql).toContain('WHERE (g."__total" = 1 OR (rw."__row" > 0 AND rw."__row" <= 200)) AND');
     expect(refusal({ ...view, sort: { by: 'period.9.sales', dir: 'asc' } }, long)).toBe('bad_sort');
+  });
+});
+
+describe('compileView, others and average rows', () => {
+  const focus = { group_by: 'product', path: [{ dimension: 'product', selected: ['P1', 'P2'] }] };
+
+  it('adds an average row: the mean of each measure column over every row of the list', () => {
+    const out = compiled({ options: { average_row: true } });
+    expect(out.sql).toContain([
+      'FROM g',
+      '), a AS (',
+      'SELECT avg("m__sales") AS "m__sales", 3 AS "__total", 0 AS "__rn", CAST(count(*) AS INTEGER) AS "__rows"',
+      'FROM r',
+      'WHERE "__total" = 0',
+      ')',
+      'SELECT * EXCLUDE ("__rn") FROM (',
+      'SELECT * FROM r',
+      'WHERE "__total" = 1 OR ("__rn" > 0 AND "__rn" <= 200)',
+      'UNION ALL BY NAME',
+      'SELECT * FROM a',
+      ') AS p',
+      'ORDER BY "__total" DESC, "__rn" ASC',
+    ].join('\n'));
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'm__sales', '__total', '__rows']);
+  });
+
+  it('averages every column of a variance, after a measure filter has dropped rows', () => {
+    const { sql } = compiled({
+      mode: 'variance',
+      options: { average_row: true },
+      filters: { op: 'and', rules: [{ measure: 'sales', cmp: '>', value: 10 }] },
+    });
+    expect(sql).toContain('FROM v\nWHERE "__total" = 1 OR ("m__sales" > 10)\n), a AS (');
+    expect(sql).toContain('SELECT avg("m__sales") AS "m__sales", avg("prev__sales") AS "prev__sales", avg("var__sales") AS "var__sales", avg("varp__sales") AS "varp__sales", 3 AS "__total"');
+  });
+
+  it('adds an others row: the members the focus on the group-by dimension leaves out', () => {
+    const out = compiled({ ...focus, properties: ['name'], options: { others_row: true, total_row: true } });
+    expect(out.sql).toContain('CASE WHEN GROUPING(f."product_code") = 0 THEN any_value("d_product"."name") END AS "prop__name"');
+    expect(out.sql).toContain('COALESCE(CAST(f."product_code" AS VARCHAR) IN (\'P1\', \'P2\'), FALSE) AS "__f", CASE WHEN GROUPING(f."product_code") = 0 THEN 0 WHEN "__f" THEN 1 ELSE 2 END AS "__total"');
+    expect(out.sql).toContain('GROUP BY GROUPING SETS ((f."product_code", "__f"), ("__f"))\nHAVING GROUPING(f."product_code") = 1 OR "__f"\n), r AS (');
+    expect(out.sql).not.toContain('WHERE CAST(f."product_code" AS VARCHAR) IN');
+    expect(out.sql).toContain('SELECT * EXCLUDE ("__rn", "__f") FROM r\nWHERE "__total" > 0 OR ("__rn" > 0 AND "__rn" <= 200)');
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'prop__name', 'm__sales', '__total', '__rows']);
+  });
+
+  it('keeps the others row and drops the total when the total row is off, and under a measure filter', () => {
+    const { sql } = compiled({ ...focus, options: { others_row: true }, filters: { op: 'and', rules: [{ measure: 'sales', cmp: '>', value: 10 }] } });
+    expect(sql).toContain('HAVING "__f" = (GROUPING(f."product_code") = 0)\n), r AS (');
+    expect(sql).toContain('FROM g\nWHERE "__total" > 0 OR ("m__sales" > 10)\n)');
+  });
+
+  it('has no others row without a focus, and a step on another dimension is not one', () => {
+    expect(compiled({ options: { others_row: true } }).sql).toBe(compiled().sql);
+    const step = { path: [{ dimension: 'product', selected: ['P1'] }] };
+    expect(compiled({ ...step, options: { others_row: true } }).sql).toBe(compiled(step).sql);
+  });
+
+  it('counts the extra rows against the page', () => {
+    expect(refusal({ limit: 1999, options: { total_row: true, average_row: true } })).toBe('bad_paging');
+    expect(compiled({ limit: 1998, options: { total_row: true, average_row: true } }).sql).toContain('"__rn" <= 1998)');
+    expect(refusal({ ...focus, limit: 1998, options: { total_row: true, average_row: true, others_row: true } })).toBe('bad_paging');
   });
 });
