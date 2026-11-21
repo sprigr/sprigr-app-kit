@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { compileRollupView, compileView, inlineParams, isStageName, tablesIn, type CompiledView, type ViewState } from '../src';
-import { fixtureModel } from './fixture';
+import { compileRollupView, compileView, inlineParams, isStageName, tablesIn, validateModel, type CompiledView, type ReportingModel, type ViewState } from '../src';
+import { MODEL_JSON, fixtureModel } from './fixture';
 
 const TODAY = '2026-11-21';
 const base: ViewState = { mode: 'total', stream: 'sales', measures: ['sales'], period: { preset: 'current_month' }, group_by: 'branch' };
@@ -1489,5 +1489,61 @@ describe('compileView, member rules', () => {
   it('refuses a member rule on a data point, and in a view of more than one stream', () => {
     expect(refusal({ mode: 'custom', custom_columns: [{ key: 'a', point: { measure: 'sales', where: sold } }] })).toBe('bad_custom_column');
     expect(refusal({ ...only(sold), mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'] })).toBe('measure_not_on_stream');
+  });
+});
+
+describe('compileView, a measure of two columns', () => {
+  /** The fixture with a value and a level that each multiply two columns of a row, and a rollup that carries the value. */
+  function pricedModel(): ReportingModel {
+    const model = structuredClone(MODEL_JSON);
+    const rollups = [{ key: 'by_product', table: 'sales_month_product', date: 'month', dimension_keys: { product: 'product_code' }, measure_columns: { value: 'value' } }];
+    const checked = validateModel({
+      ...model,
+      streams: [{ ...model.streams[0], rollups }, ...model.streams.slice(1)],
+      measures: [
+        ...model.measures,
+        { key: 'value', label: 'Value', agg: 'sum', column: 'qty', times: 'unit_cost', format: 'currency' },
+        { key: 'stock_value', label: 'Stock value', agg: 'sum', column: 'qty', times: 'unit_cost', snapshot: true },
+        { key: 'dearest', label: 'Dearest line', agg: 'max', column: 'qty', times: 'unit_cost' },
+        { key: 'left', label: 'Left after cost', formula: 'sales - value' },
+      ],
+    });
+    if (!checked.ok) throw new Error(`the model is invalid: ${JSON.stringify(checked.problems)}`);
+    return checked.model;
+  }
+
+  function priced(change: Record<string, unknown>): string {
+    const out = compileView(pricedModel(), { ...base, ...change } as ViewState, { today: TODAY });
+    if (!out.ok) throw new Error(`refused: ${out.reason}: ${out.detail}`);
+    return inlineParams(out.sql, out.params);
+  }
+
+  it('multiplies the two columns on each row, then aggregates', () => {
+    const sql = priced({ measures: ['value', 'dearest', 'sales'] });
+    expect(sql).toContain('CAST(SUM((f."qty" * f."unit_cost")) AS DOUBLE) AS "m__value"');
+    expect(sql).toContain('CAST(MAX((f."qty" * f."unit_cost")) AS DOUBLE) AS "m__dearest"');
+    expect(sql).toContain('CAST(SUM(f."amount") AS DOUBLE) AS "m__sales"');
+  });
+
+  it('keeps the period filter and the snapshot filter outside the product', () => {
+    expect(priced({ mode: 'period', measures: ['value'], period: { preset: 'rolling_3' } }))
+      .toContain('CAST(SUM((f."qty" * f."unit_cost")) FILTER (WHERE f."__b" = 2) AS DOUBLE) AS "b2__value"');
+    expect(priced({ measures: ['stock_value'] })).toContain('CAST(SUM((f."qty" * f."unit_cost")) FILTER (WHERE f."__lastw") AS DOUBLE) AS "m__stock_value"');
+  });
+
+  it('feeds a formula as any other sum does', () => {
+    expect(priced({ measures: ['left'] })).toContain('(SUM(f."amount")) - (SUM((f."qty" * f."unit_cost")))');
+  });
+
+  it('lists the product on each row of a transaction list', () => {
+    expect(priced({ mode: 'transaction', measures: ['value'] })).toContain('CAST((f."qty" * f."unit_cost") AS DOUBLE) AS "m__value"');
+  });
+
+  it('reads a rollup\'s one column, which already holds the product', () => {
+    const out = compileRollupView(pricedModel(), { ...base, group_by: 'product', measures: ['value'] } as ViewState, { today: TODAY });
+    if (!out.ok) throw new Error(`refused: ${out.reason}: ${out.detail}`);
+    expect(out.rollups).toEqual([{ stream: 'sales', rollup: 'by_product', table: 'sales_month_product' }]);
+    expect(out.sql).toContain('CAST(SUM(f."value") AS DOUBLE) AS "m__value"');
+    expect(out.sql).not.toContain('unit_cost');
   });
 });

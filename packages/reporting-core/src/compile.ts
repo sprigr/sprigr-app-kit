@@ -661,9 +661,16 @@ function checkLength(sql: string, ctx: CompileContext): void {
   }
 }
 
+/** What a base measure reads off a fact row: its column, or its two columns multiplied. A rollup's column already holds the product. */
+function valueOf(measure: ModelBaseMeasure): string {
+  if (measure.column === undefined) return '';
+  const column = `${FACT}.${q(measure.column)}`;
+  return measure.times !== undefined && !measure.rolled ? `(${column} * ${FACT}.${q(measure.times)})` : column;
+}
+
 /** A base measure's aggregate over the fact rows. `countAll` counts rows for a count with no column. */
 function aggregateOf(measure: ModelBaseMeasure, countAll: string): string {
-  const column = measure.column === undefined ? '' : `${FACT}.${q(measure.column)}`;
+  const column = valueOf(measure);
   // Read from a rollup, a count's column already holds the count for each row, so those are added up.
   return measure.agg === 'count' ? (measure.rolled ? `SUM(${column})` : column !== '' ? `COUNT(${column})` : countAll)
     : measure.agg === 'count_distinct' ? `COUNT(DISTINCT ${column})`
@@ -1388,7 +1395,7 @@ function compileTransactions(model: ReportingModel, view: ViewState, ctx: Compil
     }
     if (measure.stream !== stream.key) fail('measure_not_on_stream', `"${key}" belongs to stream "${measure.stream}", not "${stream.key}"`);
     if (measure.snapshot) fail('snapshot_measure_unsupported', `"${key}" is a snapshot measure, which is not compiled yet`);
-    const column = measure.column === undefined ? '' : `${FACT}.${q(measure.column)}`;
+    const column = valueOf(measure);
     if (measure.agg === 'count' || measure.agg === 'count_distinct') return column === '' ? '1' : `(CASE WHEN ${column} IS NULL THEN 0 ELSE 1 END)`;
     return column;
   };
