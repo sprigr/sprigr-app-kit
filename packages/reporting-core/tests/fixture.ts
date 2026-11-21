@@ -26,6 +26,7 @@ export const MODEL_JSON = {
     { key: 'gp', label: 'GP', formula: 'profit / sales', format: 'percent' },
     { key: 'soh', label: 'Stock on hand', agg: 'sum', column: 'qty', snapshot: true },
     { key: 'ordered', label: 'Ordered', agg: 'sum', column: 'amount', stream: 'orders' },
+    { key: 'fill', label: 'Fill rate', formula: 'sales / ordered', format: 'percent' },
   ],
   periods: {
     fiscal_year_start_month: 7,

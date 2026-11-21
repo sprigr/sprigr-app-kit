@@ -20,10 +20,11 @@
  * Each period column is an aggregate with `FILTER (WHERE "__b" = n)`, so the
  * date is compared once per row, not once per column. Variance mode reads two
  * windows the same way and adds a stage `v` that subtracts them. Transaction
- * mode lists the fact rows themselves and has no GROUP BY.
+ * mode lists the fact rows themselves and has no GROUP BY. Stream mode groups
+ * each stream in its own stage and folds the stages into one row per member.
  */
 import { emitFormulaSql, parseFormula, type FormulaNode } from './formula';
-import { isFormulaMeasure, type ModelDimension, type ModelMeasure, type ModelStream, type ReportingModel } from './model';
+import { isFormulaMeasure, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelStream, type ReportingModel } from './model';
 import { comparisonWindow, daysBetween, monthsRange, resolvePeriod, type PeriodBucket, type PeriodSpec, type PeriodWindow } from './periods';
 import { ReportingError, refusalOf, type Refusal, type ReportingReason } from './reasons';
 import { likeContains, quoteIdent as q, sqlDate, sqlNumber, sqlString } from './sql';
@@ -36,7 +37,7 @@ export const DEFAULT_PAGE_ROWS = 200;
 const MAX_KEYWORD_CHARS = 200;
 const MAX_FILTER_DEPTH = 3;
 
-export const VIEW_MODES = ['total', 'period', 'variance', 'transaction'] as const;
+export const VIEW_MODES = ['total', 'period', 'variance', 'transaction', 'stream'] as const;
 export type ViewMode = (typeof VIEW_MODES)[number];
 export const MEASURE_CMPS = ['=', '<>', '<', '<=', '>', '>='] as const;
 /** The four columns a measure has in variance mode. */
@@ -68,6 +69,7 @@ export interface ViewOptions {
 /** What a saved view stores. */
 export interface ViewState {
   mode: string;
+  /** The stream the view reads. Stream mode also reads every other stream its measures belong to. */
   stream: string;
   measures: string[];
   period: PeriodSpec;
@@ -133,6 +135,8 @@ export interface CompiledView {
   buckets: PeriodBucket[];
   /** Inclusive `YYYY-MM` range the statement reads, for the query route's `months` argument. */
   months: { from: string; to: string };
+  /** Stream mode: the streams the statement reads, the view's own first. */
+  streams?: string[];
 }
 
 const FACT = 'f';
@@ -156,7 +160,8 @@ function stringList(values: unknown, what: string): string[] {
 export function compileView(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView | Refusal {
   try {
     if (!(VIEW_MODES as readonly string[]).includes(view.mode)) fail('mode_unsupported', `mode "${String(view.mode)}" is not compiled yet`);
-    return view.mode === 'transaction' ? compileTransactions(model, view, ctx) : compileGrouped(model, view, ctx);
+    if (view.mode === 'transaction') return compileTransactions(model, view, ctx);
+    return view.mode === 'stream' ? compileStreams(model, view, ctx) : compileGrouped(model, view, ctx);
   } catch (err) {
     return refusalOf(err);
   }
@@ -392,6 +397,46 @@ function checkLength(sql: string, ctx: CompileContext): void {
   }
 }
 
+/** A base measure's aggregate over the fact rows. `countAll` counts rows for a count with no column. */
+function aggregateOf(measure: ModelBaseMeasure, countAll: string): string {
+  const column = measure.column === undefined ? '' : `${FACT}.${q(measure.column)}`;
+  return measure.agg === 'count' ? (column !== '' ? `COUNT(${column})` : countAll)
+    : measure.agg === 'count_distinct' ? `COUNT(DISTINCT ${column})`
+      : `${measure.agg.toUpperCase()}(${column})`;
+}
+
+/** The result column a grouped view's sort key names, or '' when it names none. */
+function sortNameOf(by: unknown): string {
+  const parts = String(by).split('.');
+  const two = parts.length === 2;
+  return parts[0] === 'code' && parts.length === 1 ? 'code'
+    : parts[0] === 'property' && two ? `prop__${parts[1]}`
+      : parts[0] === 'total' && two ? `m__${parts[1]}`
+        : parts[0] === 'previous' && two ? `prev__${parts[1]}`
+          : parts[0] === 'variance' && two ? `var__${parts[1]}`
+            : parts[0] === 'variance_pct' && two ? `varp__${parts[1]}`
+              : parts[0] === 'period' && parts.length === 3 ? `b${parts[1]}__${parts[2]}`
+                : '';
+}
+
+/**
+ * How every grouped statement ends: stage r ranks and counts the rows of `source`, then one page is read.
+ * A measure filter drops rows here, after grouping, and never drops the total row.
+ */
+function rankAndPage(source: string, sortName: string, sort: ViewSort, having: string | null, left: string[], offset: number, limit: number): string[] {
+  return [
+    '), r AS (',
+    `SELECT ${source}.*, row_number() OVER (PARTITION BY "__total" ORDER BY ${q(sortName)} ${sort.dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, "code" ASC) AS "__rn",`,
+    'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
+    `FROM ${source}`,
+    ...(having !== null ? [`WHERE "__total" = 1 OR ${having}`] : []),
+    ')',
+    `SELECT * EXCLUDE (${left.map(q).join(', ')}) FROM r`,
+    `WHERE "__total" = 1 OR ("__rn" > ${offset} AND "__rn" <= ${offset + limit})`,
+    'ORDER BY "__total" DESC, "__rn" ASC',
+  ];
+}
+
 /**
  * One window of dates a measure is computed over: the condition that picks its
  * fact rows, and the one that picks the rows of its latest day (for a snapshot measure).
@@ -467,11 +512,8 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
       });
     }
     if (measure.stream !== stream.key) fail('measure_not_on_stream', `"${key}" belongs to stream "${measure.stream}", not "${stream.key}"`);
-    const column = measure.column === undefined ? '' : `${FACT}.${q(measure.column)}`;
     // A member with no fact rows still has one row in the join, which a bare COUNT(*) would count.
-    const call = measure.agg === 'count' ? (column !== '' ? `COUNT(${column})` : members ? `COUNT(${FACT}."__in")` : 'COUNT(*)')
-      : measure.agg === 'count_distinct' ? `COUNT(DISTINCT ${column})`
-        : `${measure.agg.toUpperCase()}(${column})`;
+    const call = aggregateOf(measure, members ? `COUNT(${FACT}."__in")` : 'COUNT(*)');
     // A level, not a flow: only the rows of the window's latest day count.
     if (measure.snapshot) {
       uses.add('snapshot');
@@ -538,16 +580,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   // Sort and paging.
   const sort: ViewSort = view.sort ?? { by: `total.${shown[0]?.key ?? ''}`, dir: 'desc' };
   if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
-  const sortParts = String(sort.by).split('.');
-  const two = sortParts.length === 2;
-  const sortName = sortParts[0] === 'code' && sortParts.length === 1 ? 'code'
-    : sortParts[0] === 'property' && two ? `prop__${sortParts[1]}`
-      : sortParts[0] === 'total' && two ? `m__${sortParts[1]}`
-        : sortParts[0] === 'previous' && two ? `prev__${sortParts[1]}`
-          : sortParts[0] === 'variance' && two ? `var__${sortParts[1]}`
-            : sortParts[0] === 'variance_pct' && two ? `varp__${sortParts[1]}`
-              : sortParts[0] === 'period' && sortParts.length === 3 ? `b${sortParts[1]}__${sortParts[2]}`
-                : '';
+  const sortName = sortNameOf(sort.by);
   if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
   const { limit, offset } = pageOf(view, ctx, totalRow ? 1 : 0);
 
@@ -572,7 +605,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     ...(members.conds.length > 0 ? [`WHERE ${FACT}."__in" IS NOT NULL OR (${members.conds.join(' AND ')})`] : []),
   ];
 
-  // A measure filter drops rows after grouping and never drops the total row, which stays the total of every member.
+  // The total row stays the total of every member, whatever a measure filter drops.
   const source = derived.length > 0 ? 'v' : 'g';
   const sql = [
     'WITH g AS (',
@@ -581,15 +614,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
     ...(activity === 'without' ? [`HAVING COUNT(${FACT}."__in") = 0`] : []),
     ...(source === 'v' ? ['), v AS (', `SELECT g.*, ${derived.join(', ')}`, 'FROM g'] : []),
-    '), r AS (',
-    `SELECT ${source}.*, row_number() OVER (PARTITION BY "__total" ORDER BY ${q(sortName)} ${sort.dir === 'asc' ? 'ASC' : 'DESC'} NULLS LAST, "code" ASC) AS "__rn",`,
-    'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
-    `FROM ${source}`,
-    ...(scope.having !== null ? [`WHERE "__total" = 1 OR ${scope.having}`] : []),
-    ')',
-    `SELECT * EXCLUDE (${left.map(q).join(', ')}) FROM r`,
-    `WHERE "__total" = 1 OR ("__rn" > ${offset} AND "__rn" <= ${offset + limit})`,
-    'ORDER BY "__total" DESC, "__rn" ASC',
+    ...rankAndPage(source, sortName, sort, scope.having, left, offset, limit),
   ].join('\n');
   checkLength(sql, ctx);
 
@@ -697,4 +722,119 @@ function compileTransactions(model: ReportingModel, view: ViewState, ctx: Compil
   checkLength(sql, ctx);
 
   return { ok: true, sql, columns, window: period.window, buckets: [], months: monthsRange(period.window) };
+}
+
+/**
+ * Stream mode: measures from more than one stream, side by side, over the whole period.
+ *
+ * Each stream is grouped on its own (stages s1, s2, ...) under the same drill path, filters and keyword,
+ * so no fact row of one stream is ever joined to a fact row of another. Stage g stacks those results,
+ * folds them to one row per member, and works the formulas out from the folded sums.
+ */
+function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
+  const options: ViewOptions = view.options ?? {};
+  if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', 'the activity option is not compiled for stream mode yet');
+  if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled yet');
+  const totalRow = options.total_row === true;
+
+  // The view's own stream is always read. It also settles the measure filters, which are the same for every stream.
+  const lead = scopeOf(model, view);
+  const { measureByKey, groupDim } = lead;
+  const shown = shownMeasures(view, measureByKey);
+  const unseen = lead.filterMeasures
+    .filter((key) => !view.measures.includes(key))
+    .map((key) => measureByKey.get(key) ?? fail('unknown_measure', `no measure "${key}"`));
+  const period = resolvePeriod(view.period, model.periods, ctx.today, { periodToDate: options.period_to_date === true });
+  const range = period.window;
+
+  // Each measure as an expression over the folded sums; `needed` collects the sums each stream must supply.
+  const needed = new Map<string, ModelBaseMeasure[]>();
+  const parsed = new Map<string, FormulaNode>();
+  const exprOf = (key: string, depth: number): string => {
+    if (depth > 20) fail('formula_cycle', `"${key}" refers back to itself`);
+    const measure = measureByKey.get(key) ?? fail('formula_unknown_measure', `"${key}" is not a measure`);
+    if (isFormulaMeasure(measure)) {
+      let node = parsed.get(key);
+      if (!node) { node = parseFormula(measure.formula); parsed.set(key, node); }
+      return emitFormulaSql(node, { measure: (ref) => exprOf(ref, depth + 1), days: daysBetween(range.from, range.to) });
+    }
+    const list = needed.get(measure.stream) ?? [];
+    if (!list.some((m) => m.key === measure.key)) list.push(measure);
+    needed.set(measure.stream, list);
+    return `any_value(${q(`a__${measure.key}`)})`;
+  };
+
+  const properties = (view.properties ?? []).filter((property, i, all) => property !== 'code' && all.indexOf(property) === i);
+  const columns: CompiledColumn[] = [{ name: 'code', kind: 'code', label: groupDim.label }];
+  const select: string[] = ['"code"'];
+  properties.forEach((property) => {
+    const name = `prop__${property}`;
+    select.push(`any_value(${q(name)}) AS ${q(name)}`);
+    const label = property === 'name' ? 'Name' : groupDim.properties.find((p) => p.key === property)?.label ?? property;
+    columns.push({ name, kind: 'property', label, property });
+  });
+  const left: string[] = ['__rn'];
+  const addMeasure = (measure: ModelMeasure, seen: boolean): void => {
+    const name = `m__${measure.key}`;
+    select.push(`CAST(${exprOf(measure.key, 0)} AS DOUBLE) AS ${q(name)}`);
+    if (seen) columns.push({ name, kind: 'measure', label: measure.label, measure: measure.key, format: measure.format, period: null });
+    else left.push(name);
+  };
+  shown.forEach((measure) => addMeasure(measure, true));
+  unseen.forEach((measure) => addMeasure(measure, false));
+  select.push('"__total"');
+  columns.push({ name: '__total', kind: 'meta', label: 'Total row' }, { name: '__rows', kind: 'meta', label: 'Row count' });
+
+  const sort: ViewSort = view.sort ?? { by: `total.${shown[0]?.key ?? ''}`, dir: 'desc' };
+  if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
+  const sortName = sortNameOf(sort.by);
+  if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
+  const { limit, offset } = pageOf(view, ctx, totalRow ? 1 : 0);
+
+  // One stage per stream: the view's own first, then the others its measures read, in the model's order.
+  const streamKeys = [lead.stream.key, ...model.streams.map((s) => s.key).filter((key) => key !== lead.stream.key && needed.has(key))];
+  const stages = streamKeys.flatMap((key, i) => {
+    // A stream that lacks a dimension the view uses refuses here, by name.
+    const scope = i === 0 ? lead : scopeOf(model, { ...view, stream: key });
+    const { stream, codeExpr } = scope;
+    const mine = needed.get(key) ?? [];
+    const date = q(stream.date);
+    const grouping = `GROUPING(${codeExpr})`;
+    const part: string[] = [`${codeExpr} AS "code"`];
+    properties.forEach((property) => {
+      const expr = `any_value(${scope.propertyOf(groupDim.key, property)})`;
+      part.push(`${totalRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(`prop__${property}`)}`);
+    });
+    mine.forEach((measure) => {
+      const call = aggregateOf(measure, 'COUNT(*)');
+      part.push(`${measure.snapshot ? `${call} FILTER (WHERE ${FACT}."__lastw")` : call} AS ${q(`a__${measure.key}`)}`);
+    });
+    part.push(`${totalRow ? `CAST(${grouping} AS INTEGER)` : '0'} AS "__total"`);
+    const rows = `SELECT * FROM ${q(stream.table)} WHERE ${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
+    // A snapshot measure reads its own stream's latest day in the period.
+    const fact = mine.some((measure) => measure.snapshot)
+      ? `(SELECT *, (${date} = MAX(${date}) OVER ()) AS "__lastw" FROM (${rows}) AS s) AS ${FACT}`
+      : `(${rows}) AS ${FACT}`;
+    return [
+      `${i === 0 ? 'WITH' : '),'} s${i + 1} AS (`,
+      `SELECT ${part.join(', ')}`,
+      `FROM ${fact}`,
+      ...scope.joins.values(),
+      ...(scope.where.length > 0 ? [`WHERE ${scope.where.join(' AND ')}`] : []),
+      totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
+    ];
+  });
+
+  const sql = [
+    ...stages,
+    '), g AS (',
+    `SELECT ${select.join(', ')}`,
+    // By name: each stage has its own sum columns, and a member one stream lacks gets blanks there.
+    `FROM (${streamKeys.map((_, i) => `SELECT * FROM s${i + 1}`).join(' UNION ALL BY NAME ')}) AS u`,
+    'GROUP BY "code", "__total"',
+    ...rankAndPage('g', sortName, sort, lead.having, left, offset, limit),
+  ].join('\n');
+  checkLength(sql, ctx);
+
+  return { ok: true, sql, columns, window: range, buckets: [], months: monthsRange(range), streams: streamKeys };
 }

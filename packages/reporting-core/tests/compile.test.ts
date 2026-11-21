@@ -147,6 +147,10 @@ describe('compileView, dimensions and filters', () => {
 describe('compileView refusals', () => {
   it.each([
     [{ mode: 'matrix' }, 'mode_unsupported'],
+    [{ mode: 'stream', measures: ['sales', 'ordered'] }, 'dimension_not_on_stream'],
+    [{ mode: 'stream', group_by: 'product', options: { activity: 'all' } }, 'option_unsupported'],
+    [{ mode: 'stream', group_by: 'product', sort: { by: 'period.1.sales', dir: 'asc' } }, 'bad_sort'],
+    [{ measures: ['fill'] }, 'measure_not_on_stream'],
     [{ mode: 'variance', compare: 'last_decade' }, 'option_unsupported'],
     [{ sort: { by: 'variance.sales', dir: 'asc' } }, 'bad_sort'],
     [{ stream: 'nope' }, 'unknown_stream'],
@@ -397,5 +401,89 @@ describe('compileView, snapshot measures', () => {
 
   it('adds nothing to a view with no snapshot measure', () => {
     expect(compiled().sql).not.toContain('__lastw');
+  });
+});
+
+describe('compileView, stream mode', () => {
+  const streams = { mode: 'stream', group_by: 'product', measures: ['sales', 'ordered'] };
+  const NOVEMBER = '>= DATE \'2026-11-01\' AND';
+
+  it('groups each stream in its own stage and folds them to one row per member', () => {
+    const out = compiled({ ...streams, properties: ['name'], options: { total_row: true } });
+    expect(out.sql).toBe([
+      'WITH s1 AS (',
+      'SELECT f."product_code" AS "code", CASE WHEN GROUPING(f."product_code") = 0 THEN any_value("d_product"."name") END AS "prop__name", SUM(f."amount") AS "a__sales", CAST(GROUPING(f."product_code") AS INTEGER) AS "__total"',
+      'FROM (SELECT * FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\') AS f',
+      'LEFT JOIN "products" AS "d_product" ON "d_product"."code" = f."product_code"',
+      'GROUP BY GROUPING SETS ((f."product_code"), ())',
+      '), s2 AS (',
+      'SELECT f."product_code" AS "code", CASE WHEN GROUPING(f."product_code") = 0 THEN any_value("d_product"."name") END AS "prop__name", SUM(f."amount") AS "a__ordered", CAST(GROUPING(f."product_code") AS INTEGER) AS "__total"',
+      'FROM (SELECT * FROM "order_lines" WHERE "order_date" >= DATE \'2026-11-01\' AND "order_date" < DATE \'2026-12-01\') AS f',
+      'LEFT JOIN "products" AS "d_product" ON "d_product"."code" = f."product_code"',
+      'GROUP BY GROUPING SETS ((f."product_code"), ())',
+      '), g AS (',
+      'SELECT "code", any_value("prop__name") AS "prop__name", CAST(any_value("a__sales") AS DOUBLE) AS "m__sales", CAST(any_value("a__ordered") AS DOUBLE) AS "m__ordered", "__total"',
+      'FROM (SELECT * FROM s1 UNION ALL BY NAME SELECT * FROM s2) AS u',
+      'GROUP BY "code", "__total"',
+      '), r AS (',
+      'SELECT g.*, row_number() OVER (PARTITION BY "__total" ORDER BY "m__sales" DESC NULLS LAST, "code" ASC) AS "__rn",',
+      'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
+      'FROM g',
+      ')',
+      'SELECT * EXCLUDE ("__rn") FROM r',
+      'WHERE "__total" = 1 OR ("__rn" > 0 AND "__rn" <= 200)',
+      'ORDER BY "__total" DESC, "__rn" ASC',
+    ].join('\n'));
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'prop__name', 'm__sales', 'm__ordered', '__total', '__rows']);
+    expect(out.streams).toEqual(['sales', 'orders']);
+    expect(out.months).toEqual({ from: '2026-11', to: '2026-11' });
+  });
+
+  it('works a formula out from the folded sums of two streams', () => {
+    const { sql } = compiled({ ...streams, measures: ['fill'] });
+    expect(sql).toContain('CAST(((any_value("a__sales")) / NULLIF((any_value("a__ordered")), 0)) AS DOUBLE) AS "m__fill", "__total"');
+    expect(sql).toContain('SUM(f."amount") AS "a__sales", 0 AS "__total"');
+    expect(sql).toContain('SUM(f."amount") AS "a__ordered", 0 AS "__total"');
+  });
+
+  it('writes each sum once, however many formulas read it', () => {
+    const { sql } = compiled({ ...streams, measures: ['gp', 'profit', 'sales', 'ordered'] });
+    expect(sql).toContain('SELECT f."product_code" AS "code", SUM(f."amount") AS "a__sales", SUM(f."cost") AS "a__cost", 0 AS "__total"');
+  });
+
+  it('applies the drill path to every stream', () => {
+    const { sql } = compiled({ ...streams, path: [{ dimension: 'product', selected: ['P1'] }] });
+    expect(sql.split('WHERE CAST(f."product_code" AS VARCHAR) IN (\'P1\')\nGROUP BY f."product_code"')).toHaveLength(3);
+  });
+
+  it('reads a snapshot measure on its own stream\'s latest day', () => {
+    const { sql } = compiled({ ...streams, measures: ['soh', 'ordered'] });
+    expect(sql).toContain('SUM(f."qty") FILTER (WHERE f."__lastw") AS "a__soh"');
+    expect(sql).toContain(`FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" WHERE "sale_date" ${NOVEMBER}`);
+    expect(sql).toContain(`FROM (SELECT * FROM "order_lines" WHERE "order_date" ${NOVEMBER}`);
+  });
+
+  it('filters on a measure of another stream without showing it', () => {
+    const out = compiled({ ...streams, measures: ['sales'], filters: { op: 'and', rules: [{ measure: 'ordered', cmp: '>', value: 0 }] } });
+    expect(out.sql).toContain('), s2 AS (');
+    expect(out.sql).toContain('CAST(any_value("a__ordered") AS DOUBLE) AS "m__ordered", "__total"');
+    expect(out.sql).toContain('FROM g\nWHERE "__total" = 1 OR ("m__ordered" > 0)\n)');
+    expect(out.sql).toContain('SELECT * EXCLUDE ("__rn", "m__ordered") FROM r');
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'm__sales', '__total', '__rows']);
+  });
+
+  it('always reads the view\'s own stream, and no other one its measures do not need', () => {
+    const one = compiled({ ...streams, group_by: 'branch', measures: ['sales'] });
+    expect(one.sql).toContain('FROM (SELECT * FROM s1) AS u');
+    expect(one.sql).not.toContain('s2 AS (');
+    expect(one.streams).toEqual(['sales']);
+    const other = compiled({ ...streams, measures: ['ordered'] });
+    expect(other.sql).toContain('SELECT f."product_code" AS "code", 0 AS "__total"\nFROM (SELECT * FROM "sales_lines"');
+    expect(other.streams).toEqual(['sales', 'orders']);
+  });
+
+  it('sorts by a property', () => {
+    const { sql } = compiled({ ...streams, properties: ['name'], sort: { by: 'property.name', dir: 'asc' } });
+    expect(sql).toContain('ORDER BY "prop__name" ASC NULLS LAST, "code" ASC');
   });
 });
