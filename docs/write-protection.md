@@ -286,7 +286,14 @@ return idempotentToolResult(outcome);
 
 - First call: claims the key, runs the write, stores the result. A repeat after it finished gets the stored result (`replayed`) and the write does not run again.
 - A repeat while the first is still running is refused with `write_in_progress`, never run.
-- A claim left `running` past `staleRunningSec` (default 120 s) means the first invocation died mid-write: the repeat is refused once with `write_outcome_unknown` ("this write may already have happened: read back before retrying"). That refusal is the agent's one chance to check: the NEXT identical call runs the write for real.
+- A claim left `running` past `staleRunningSec` (default 120 s) means the first invocation died mid-write: the repeat is refused once with `write_outcome_unknown` ("this write may already have happened: read back before retrying"). That refusal is the agent's one chance to check: the NEXT identical call runs the write for real, and the write is called with `{ takeover: true }` (every other run gets `false`). A write that cannot be keyed upstream reads back on the takeover before writing again:
+
+```ts
+const outcome = await writes.run(args._write_key, async ({ takeover }) => {
+  const existing = takeover ? await findNote(env, args) : null;
+  return existing ?? createNote(env, args);
+});
+```
 - The write throws: the claim is released, so a real retry runs. When the error means the write may have landed (a timeout after the request went out), pass `releaseOnError: (err) => !(err instanceof MyTimeoutAfterSend)`: the claim turns `interrupted` and the repeat is told to check upstream.
 - No key (an older platform, a tool that did not opt in): the write runs directly.
 
