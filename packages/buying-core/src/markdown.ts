@@ -65,7 +65,7 @@ export interface MarkdownInput {
   overcover_days?: number;
   /**
    * Aged-stock thresholds in days, [first, second]: older than the first is
-   * AGED_90, older than the second is AGED_180. Default [90, 180].
+   * AGED_FIRST, older than the second is AGED_SECOND. Default [90, 180].
    */
   aged_days?: [number, number];
   /** Markdown depth per condition; any key left out keeps its default (0.5 / 0.4 / 0.2). */
@@ -100,9 +100,9 @@ export function markdownCandidates(input: MarkdownInput): MarkdownCandidate[] {
       reasons.push(reason('DEAD_STOCK', `${Math.round(row.stats.qty)} units, no demand trailing or forecast`, row.stats.qty));
     } else if (aged180) {
       depth = depths.aged_180;
-      reasons.push(reason('AGED_180', `oldest item ${Math.round(age!)}d old`, age!));
+      reasons.push(reason('AGED_SECOND', `oldest item ${Math.round(age!)}d old`, age!));
     } else if (aged90) {
-      reasons.push(reason('AGED_90', `oldest item ${Math.round(age!)}d old`, age!));
+      reasons.push(reason('AGED_FIRST', `oldest item ${Math.round(age!)}d old`, age!));
     }
     if (over && cover != null) {
       // OVERCOVER, not BELOW_TARGET_COVER (that code means a cover
