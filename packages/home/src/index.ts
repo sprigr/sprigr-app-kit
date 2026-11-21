@@ -95,6 +95,8 @@ export {
   homeInvalidateBodyProblems,
 } from './invalidate';
 export type { HomeInvalidateBody, HomeInvalidateInput, HomeInvalidateResult } from './invalidate';
+export { HOME_INVALIDATE_TIMEOUT_MS, invalidateHome } from './invalidate-call';
+export type { HomeInvalidateEnv, HomeInvalidateOptions } from './invalidate-call';
 export { homeDisplayText } from './display';
 export {
   answerVersion,
