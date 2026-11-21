@@ -26,7 +26,7 @@
  */
 import { emitFormulaSql, parseFormula, type FormulaNode } from './formula';
 import { MEASURE_FORMATS, isFormulaMeasure, type MeasureFormat, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelRollup, type ModelStream, type ReportingModel } from './model';
-import { addDays, comparisonWindow, daysBetween, monthsRange, resolvePeriod, type PeriodBucket, type PeriodSpec, type PeriodWindow } from './periods';
+import { addDays, comparisonWindow, daysBetween, monthsRange, resolvePeriod, splitWindow, type PeriodBucket, type PeriodSpec, type PeriodWindow } from './periods';
 import { ReportingError, refusalOf, type Refusal, type ReportingReason } from './reasons';
 import { isIdentifier, likeContains, quoteIdent as q, sqlDate, sqlNumber, sqlString, tablesIn } from './sql';
 
@@ -40,7 +40,7 @@ export const DEFAULT_ACROSS_MEMBERS = 12;
 const MAX_KEYWORD_CHARS = 200;
 const MAX_FILTER_DEPTH = 3;
 
-export const VIEW_MODES = ['total', 'period', 'variance', 'transaction', 'stream', 'matrix', 'custom'] as const;
+export const VIEW_MODES = ['total', 'period', 'variance', 'period_variance', 'transaction', 'stream', 'matrix', 'custom'] as const;
 export type ViewMode = (typeof VIEW_MODES)[number];
 export const MEASURE_CMPS = ['=', '<>', '<', '<=', '>', '>='] as const;
 /** The four columns a measure has in variance mode. */
@@ -187,6 +187,8 @@ export interface CompiledColumn {
   column?: string;
   /** For a column of a custom view: its key. */
   custom?: string;
+  /** For a column of one period in period variance mode: the period's number, from the oldest. */
+  bucket?: number;
 }
 
 export interface CompiledView {
@@ -479,7 +481,7 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
     if (!(MEASURE_CMPS as readonly string[]).includes(rule.cmp)) fail('measure_filter_unsupported', `"${String(rule.cmp)}" is not a comparison`);
     const part: VariancePart = rule.of ?? 'current';
     if (!(VARIANCE_PARTS as readonly string[]).includes(part)) fail('measure_filter_unsupported', `"${String(part)}" is not a variance column`);
-    if (part !== 'current' && view.mode !== 'variance') fail('measure_filter_unsupported', `"${part}" exists in variance mode only`);
+    if (part !== 'current' && view.mode !== 'variance' && view.mode !== 'period_variance') fail('measure_filter_unsupported', `"${part}" exists in a variance only`);
     const measure = measureByKey.get(rule.measure) ?? fail('unknown_measure', `no measure "${String(rule.measure)}"`);
     if (!filterMeasures.includes(measure.key)) filterMeasures.push(measure.key);
     return `${q(`${PART_PREFIX[part]}${measure.key}`)} ${rule.cmp} ${sqlNumber(rule.value)}`;
@@ -755,7 +757,8 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
 
   // Periods, and the fact subquery that reads them.
   const period = resolvePeriod(view.period, model.periods, ctx.today, { periodToDate: options.period_to_date === true });
-  const buckets = view.mode === 'period' ? period.buckets : [];
+  const periodVariance = view.mode === 'period_variance';
+  const buckets = view.mode === 'period' || periodVariance ? period.buckets : [];
   const windowDays = period.buckets.reduce((sum, b) => sum + b.days, 0);
   const date = q(stream.date);
   const inWindow = (w: PeriodWindow): string => `${date} >= ${sqlDate(w.from)} AND ${date} < ${sqlDate(w.to)}`;
@@ -771,7 +774,9 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   let current: Slice | null = null;
   let previous: Slice | null = null;
   let comparison: PeriodWindow | null = null;
-  if (view.mode === 'variance') {
+  /** Period variance mode: the comparison window's periods, one for each period column. */
+  let earlierSlices: Slice[] = [];
+  if (view.mode === 'variance' || periodVariance) {
     const compare = view.compare ?? 'previous_year';
     if (typeof compare === 'object' && compare !== null) {
       // A window of its own. It may overlap the period, or come after it.
@@ -791,6 +796,21 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     // Two flags, not one number: a period longer than a year overlaps the year before it.
     factColumns = `, (${inWindow(period.window)}) AS "__cur", (${inWindow(comparison)}) AS "__prev"`;
     factWhere = `(${inWindow(period.window)}) OR (${inWindow(comparison)})`;
+    if (periodVariance) {
+      // Each period sits beside the period at the same place in the comparison window.
+      const earlier = splitWindow(comparison, period.grain, model.periods);
+      if (earlier.length !== buckets.length) {
+        fail('option_unsupported', `the period splits into ${buckets.length} columns and the comparison into ${earlier.length}, so they cannot be set side by side`);
+      }
+      earlierSlices = earlier.map((bucket, i) => ({
+        bucket,
+        filter: `${FACT}."__pb" = ${i + 1}`,
+        last: `${FACT}."__pb" = ${i + 1} AND ${FACT}."__plast"`,
+      }));
+      // A row gets a period number in each window it falls in, and none in a window it is outside.
+      const numbered = (w: PeriodWindow, parts: PeriodBucket[]): string => `CASE WHEN ${inWindow(w)} THEN ${perBucket(date, parts, (_, i) => i + 1)} END`;
+      factColumns = `, ${numbered(period.window, buckets)} AS "__b", ${numbered(comparison, earlier)} AS "__pb"${factColumns}`;
+    }
   }
 
   // Measures: an aggregate for a base measure, the formula over those aggregates otherwise.
@@ -802,7 +822,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     // A member with no fact rows still has one row in the join, which a bare COUNT(*) would count.
     countAll: members ? `COUNT(${FACT}."__in")` : 'COUNT(*)',
     days: windowDays,
-    ...(view.mode === 'period' ? { periodCount: buckets.length } : {}),
+    ...(buckets.length > 0 ? { periodCount: buckets.length } : {}),
     uses,
   };
   const measureSql = (key: string, slice: Slice | null): string => measureOver(reads, key, slice);
@@ -820,7 +840,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     const label = propertyLabel(groupDim, property);
     columns.push({ name, kind: 'property', label, property });
   });
-  const display = slices.map((slice, i) => ({ slice, index: i + 1 }));
+  const display = slices.map((slice, i) => ({ slice, earlier: earlierSlices[i] ?? null, index: i + 1 }));
   if (options.reverse_periods) display.reverse();
   /** Variance columns. They are computed from g's own columns in stage v, so no aggregate is written twice. */
   const derived: string[] = [];
@@ -834,15 +854,26 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   const addMeasure = (measure: ModelMeasure, seen: boolean): void => {
     const about = { measure: measure.key, format: measure.format };
     if (seen) {
-      display.forEach(({ slice, index }) => {
-        put(select, `b${index}__${measure.key}`, double(measureSql(measure.key, slice)), true,
-          { ...about, label: `${measure.label} ${slice.bucket.label}`, period: slice.bucket });
+      display.forEach(({ slice, earlier, index }) => {
+        const name = `b${index}__${measure.key}`;
+        put(select, name, double(measureSql(measure.key, slice)), true,
+          { ...about, label: `${measure.label} ${slice.bucket.label}`, period: slice.bucket, ...(earlier ? { part: 'current' as const, bucket: index } : {}) });
+        if (!earlier) return;
+        // Period variance: the same four columns a variance has, for this one period.
+        const before = `pb${index}__${measure.key}`;
+        const group = { ...about, bucket: index };
+        put(select, before, double(measureSql(measure.key, earlier)), true,
+          { ...group, label: `${measure.label} ${earlier.bucket.label}`, period: earlier.bucket, part: 'previous' });
+        put(derived, `bv${index}__${measure.key}`, `COALESCE(${q(name)}, 0) - COALESCE(${q(before)}, 0)`, true,
+          { ...group, label: `${measure.label} ${slice.bucket.label} Variance`, period: slice.bucket, part: 'variance' });
+        put(derived, `bvp${index}__${measure.key}`, `(COALESCE(${q(name)}, 0) - ${q(before)}) / NULLIF(abs(${q(before)}), 0)`, true,
+          { ...group, format: 'percent', label: `${measure.label} ${slice.bucket.label} Variance %`, period: slice.bucket, part: 'variance_pct' });
       });
     }
     const wholeName = `m__${measure.key}`;
     put(select, wholeName, double(measureSql(measure.key, current)), seen, {
       ...about,
-      label: view.mode === 'period' ? `${measure.label} Total` : measure.label,
+      label: buckets.length > 0 ? `${measure.label} Total` : measure.label,
       period: current ? current.bucket : null,
       ...(current ? { part: 'current' as const } : {}),
     });
@@ -887,9 +918,13 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   // so it is found here, before any filter narrows the rows.
   const rows = `SELECT *${factColumns} FROM ${q(stream.table)} WHERE ${factWhere}`;
   const latest = (over: string): string => `${date} = MAX(${date}) ${over}`;
-  const lastColumns = view.mode === 'variance'
-    ? `("__cur" AND ${latest('FILTER (WHERE "__cur") OVER ()')}) AS "__lastc", ("__prev" AND ${latest('FILTER (WHERE "__prev") OVER ()')}) AS "__lastp"`
-    : `${buckets.length > 0 ? `(${latest('OVER (PARTITION BY "__b")')}) AS "__last", ` : ''}(${latest('OVER ()')}) AS "__lastw"`;
+  const lastColumns = [
+    ...(buckets.length > 0 ? [`(${latest('OVER (PARTITION BY "__b")')}) AS "__last"`] : []),
+    ...(periodVariance ? [`(${latest('OVER (PARTITION BY "__pb")')}) AS "__plast"`] : []),
+    ...(current
+      ? [`("__cur" AND ${latest('FILTER (WHERE "__cur") OVER ()')}) AS "__lastc"`, `("__prev" AND ${latest('FILTER (WHERE "__prev") OVER ()')}) AS "__lastp"`]
+      : [`(${latest('OVER ()')}) AS "__lastw"`]),
+  ].join(', ');
   const fact = uses.has('snapshot') ? `(SELECT *, ${lastColumns} FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
   const factRows = [`FROM ${fact}`, ...joins.values(), ...(where.length > 0 ? [`WHERE ${where.join(' AND ')}`] : [])];
   // With the member list, the filtered fact rows become a subquery joined to the dimension's own table:

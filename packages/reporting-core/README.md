@@ -62,11 +62,12 @@ A period view lists every period as a column; `reversed` in the compiled result 
 
 ## Compiled so far
 
-Modes `total`, `period`, `variance`, `transaction`, `stream`, `matrix` and `custom`; drill path; properties; dimension filters; filters on a measure; keyword; the activity option; snapshot measures; sort; paging; total, others, average and sum rows; an average column; hiding zero rows; the SQL size check.
+Modes `total`, `period`, `variance`, `period_variance`, `transaction`, `stream`, `matrix` and `custom`; drill path; properties; dimension filters; filters on a measure; keyword; the activity option; snapshot measures; sort; paging; total, others, average and sum rows; an average column; hiding zero rows; the SQL size check.
 
 `__total` says what a result row is: 0 a member, 1 the total, 2 the others row, 3 the average row, 4 the sum row.
 
 - **Variance** reads the period and a comparison window (`compare`: `previous_year` for the same dates a year earlier, `previous_period` for the period just before, or `{ period }` for a window of its own, which may overlap the period or come after it) in one pass. Each measure gets four columns: current, previous, variance and variance percentage (a fraction).
+- **Period variance** is a period view where every period is a variance. Each period gets four columns: its own value, the value of the period at the same place in the comparison window, the variance and the variance percentage. The same four over the whole windows follow. `compare` is read as in a variance. The comparison window is cut with the period's grain, and the view is refused when the two windows do not cut into the same number of periods. Columns are named `b<n>__`, `pb<n>__`, `bv<n>__` and `bvp<n>__` before the measure key, `<n>` counted from the oldest period; each carries `bucket: n` and its `part`. `sort.by` and a filter on a measure take what a period view and a variance take. The statement is always one column per period, and a view too wide for the route is refused.
 - **A filter on a measure** drops rows after grouping. It never drops the total row, which stays the total of every member. A measure the view does not show can be filtered on. Dimension rules and measure rules combine with "and" only.
 - **Transaction** lists the fact rows: the date as text, every dimension code of the stream, the stream's extra `columns`, and each measure as that row holds it (a count is 1).
 - **Stream** puts measures from more than one stream side by side over the whole period, such as invoiced beside ordered. It reads the view's own stream and every other stream its measures belong to. Each stream is grouped on its own under the same drill path, filters and keyword, then the results are folded to one row per member, so a formula can read sums from two streams. A member is listed when any of those streams has rows for it. Every stream read must carry each dimension the view uses. `streams` in the result lists them.
@@ -96,5 +97,6 @@ Refused with a named reason until built: an others row in stream mode; others, a
 - The others row covers the members a focus leaves out that still pass the view's other filters and keyword.
 - The average column skips a period with no value. If the source divides by the number of periods instead, the two differ for a member with empty periods.
 - A row is hidden as zero when its figures over the whole period are zero, whatever its single periods hold.
+- Period variance pairs the periods of the two windows by their place: the first with the first, and so on.
 - A custom view lists a member when it has rows in any window its columns read, and the total row of a column with its own rule is the total of the rows that rule keeps.
 - In a custom view `DAYS()` in an expression column is the days of the view's own period; inside a measure it is the days of that data point's window.

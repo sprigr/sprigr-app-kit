@@ -1098,3 +1098,73 @@ describe('compileView, custom mode', () => {
     expect(week.ok ? 'did not refuse' : week.reason).toBe('no_rollup');
   });
 });
+
+describe('compileView, period variance mode', () => {
+  const view = { mode: 'period_variance', measures: ['sales'], period: { preset: 'rolling_3' } };
+  const cur = '"sale_date" >= DATE \'2026-09-01\' AND "sale_date" < DATE \'2026-12-01\'';
+  const prev = '"sale_date" >= DATE \'2025-09-01\' AND "sale_date" < DATE \'2025-12-01\'';
+
+  it('sets each period beside the period at the same place in the comparison window', () => {
+    const out = compiled(view);
+    expect(out.columns.map((c) => c.name)).toEqual([
+      'code',
+      'b1__sales', 'pb1__sales', 'bv1__sales', 'bvp1__sales',
+      'b2__sales', 'pb2__sales', 'bv2__sales', 'bvp2__sales',
+      'b3__sales', 'pb3__sales', 'bv3__sales', 'bvp3__sales',
+      'm__sales', 'prev__sales', 'var__sales', 'varp__sales', '__total', '__rows',
+    ]);
+    expect(out.sql).toContain(
+      `FROM (SELECT *, CASE WHEN ${cur} THEN CASE WHEN "sale_date" < DATE '2026-10-01' THEN 1 WHEN "sale_date" < DATE '2026-11-01' THEN 2 WHEN "sale_date" < DATE '2026-12-01' THEN 3 END END AS "__b", `
+        + `CASE WHEN ${prev} THEN CASE WHEN "sale_date" < DATE '2025-10-01' THEN 1 WHEN "sale_date" < DATE '2025-11-01' THEN 2 WHEN "sale_date" < DATE '2025-12-01' THEN 3 END END AS "__pb", `
+        + `(${cur}) AS "__cur", (${prev}) AS "__prev" FROM "sales_lines" WHERE (${cur}) OR (${prev})) AS f`,
+    );
+    expect(out.sql).toContain('CAST(SUM(f."amount") FILTER (WHERE f."__b" = 2) AS DOUBLE) AS "b2__sales", CAST(SUM(f."amount") FILTER (WHERE f."__pb" = 2) AS DOUBLE) AS "pb2__sales"');
+    expect(out.sql).toContain('CAST(SUM(f."amount") FILTER (WHERE f."__cur") AS DOUBLE) AS "m__sales", CAST(SUM(f."amount") FILTER (WHERE f."__prev") AS DOUBLE) AS "prev__sales"');
+    expect(out.sql).toContain('COALESCE("b3__sales", 0) - COALESCE("pb3__sales", 0) AS "bv3__sales", (COALESCE("b3__sales", 0) - "pb3__sales") / NULLIF(abs("pb3__sales"), 0) AS "bvp3__sales"');
+    expect(out.sql).toContain('ORDER BY "m__sales" DESC NULLS LAST, "code" ASC');
+    expect(out.columns[1]).toMatchObject({ label: 'Sales Sep 2026', part: 'current', bucket: 1, period: { from: '2026-09-01', to: '2026-10-01' } });
+    expect(out.columns[2]).toMatchObject({ label: 'Sales Sep 2025', part: 'previous', bucket: 1, period: { from: '2025-09-01', to: '2025-10-01' } });
+    expect(out.columns[4]).toMatchObject({ label: 'Sales Sep 2026 Variance %', format: 'percent', part: 'variance_pct', bucket: 1, period: { from: '2026-09-01' } });
+    expect(out.columns[13]).toMatchObject({ name: 'm__sales', label: 'Sales Total', part: 'current' });
+    expect(out.columns[13]?.bucket).toBeUndefined();
+    expect(out.comparison).toEqual({ from: '2025-09-01', to: '2025-12-01' });
+    expect(out.buckets.map((b) => b.label)).toEqual(['Sep 2026', 'Oct 2026', 'Nov 2026']);
+    expect(out.months).toEqual({ from: '2025-09', to: '2026-11' });
+  });
+
+  it('pairs periods by their place, and lists the newest first when reversed', () => {
+    const out = compiled({ ...view, compare: 'previous_period', options: { reverse_periods: true } });
+    expect(out.comparison).toEqual({ from: '2026-06-01', to: '2026-09-01' });
+    expect(out.columns.slice(1, 3).map((c) => [c.name, c.label])).toEqual([['b3__sales', 'Sales Nov 2026'], ['pb3__sales', 'Sales Aug 2026']]);
+  });
+
+  it('sorts by one period and filters on the variance of the whole period', () => {
+    const { sql } = compiled({
+      ...view,
+      sort: { by: 'period.2.sales', dir: 'asc' },
+      filters: { op: 'and', rules: [{ measure: 'sales', of: 'variance', cmp: '<', value: 0 }] },
+    });
+    expect(sql).toContain('ORDER BY "b2__sales" ASC NULLS LAST, "code" ASC');
+    expect(sql).toContain('FROM v\nWHERE "__total" = 1 OR ("var__sales" < 0)\n)');
+  });
+
+  it('reads a snapshot measure on the latest day of each period of both windows', () => {
+    const { sql } = compiled({ ...view, measures: ['soh'] });
+    expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__b" = 1 AND f."__last") AS DOUBLE) AS "b1__soh", CAST(SUM(f."qty") FILTER (WHERE f."__pb" = 1 AND f."__plast") AS DOUBLE) AS "pb1__soh"');
+    expect(sql).toContain(
+      'FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER (PARTITION BY "__b")) AS "__last", ("sale_date" = MAX("sale_date") OVER (PARTITION BY "__pb")) AS "__plast", '
+        + '("__cur" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__cur") OVER ()) AS "__lastc", ("__prev" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__prev") OVER ()) AS "__lastp" FROM (SELECT *, CASE WHEN',
+    );
+  });
+
+  it('refuses a comparison window that cuts into a different number of periods', () => {
+    expect(refusal({ ...view, compare: { period: { custom: { from: '2025-01-01', to: '2025-02-28' } } } })).toBe('option_unsupported');
+    expect(refusal({ ...view, compare: 'last_decade' })).toBe('option_unsupported');
+  });
+
+  it('is answered from a rollup when the periods are whole months', () => {
+    const out = compileRollupView(fixtureModel(), { ...base, ...view } as ViewState, { today: TODAY });
+    expect(out.ok && out.rollups).toEqual([{ stream: 'sales', rollup: 'by_branch', table: 'sales_month_branch' }]);
+    expect(out.ok && out.sql).toContain('FROM "sales_month_branch" WHERE');
+  });
+});
