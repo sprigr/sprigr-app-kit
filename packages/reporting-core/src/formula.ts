@@ -266,6 +266,8 @@ export interface FormulaEmitContext {
   measure: (key: string) => string;
   /** Days in the column's period, for DAYS(). */
   days?: number;
+  /** SQL for those days, when they differ from one result row to the next. Used before `days`. */
+  daysSql?: string;
   /** Number of period columns in the view, for PERIODCOUNT(). */
   periodCount?: number;
 }
@@ -314,6 +316,7 @@ export function emitFormulaSql(node: FormulaNode, ctx: FormulaEmitContext): stri
       case 'SQRT': return `(CASE WHEN ${first} >= 0 THEN sqrt(${first}) END)`;
       case 'FINITE': return `(CASE WHEN isfinite(CAST(${first} AS DOUBLE)) THEN ${first} ELSE ${args[1] ?? 'NULL'} END)`;
       case 'DAYS':
+        if (ctx.daysSql !== undefined) return `(${ctx.daysSql})`;
         if (ctx.days === undefined) throw new ReportingError('formula_function_unsupported', 'DAYS() needs a period');
         return sqlNumber(ctx.days);
       case 'PERIODCOUNT':

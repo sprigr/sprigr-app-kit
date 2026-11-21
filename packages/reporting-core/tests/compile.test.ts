@@ -5,13 +5,13 @@ import { fixtureModel } from './fixture';
 const TODAY = '2026-11-21';
 const base: ViewState = { mode: 'total', stream: 'sales', measures: ['sales'], period: { preset: 'current_month' }, group_by: 'branch' };
 
-function compiled(change: Record<string, unknown> = {}, ctx: { maxSqlChars?: number } = {}): CompiledView {
+function compiled(change: Record<string, unknown> = {}, ctx: { maxSqlChars?: number; maxRows?: number; periodShape?: 'wide' | 'long' } = {}): CompiledView {
   const out = compileView(fixtureModel(), { ...base, ...change } as ViewState, { today: TODAY, ...ctx });
   if (!out.ok) throw new Error(`refused: ${out.reason}: ${out.detail}`);
   return out;
 }
 
-function refusal(change: Record<string, unknown>, ctx: { maxSqlChars?: number } = {}): string {
+function refusal(change: Record<string, unknown>, ctx: { maxSqlChars?: number; maxRows?: number; periodShape?: 'wide' | 'long' } = {}): string {
   const out = compileView(fixtureModel(), { ...base, ...change } as ViewState, { today: TODAY, ...ctx });
   return out.ok ? 'did not refuse' : out.reason;
 }
@@ -153,7 +153,7 @@ describe('compileView refusals', () => {
     [{ mode: 'matrix', across: { dimension: 'product', limit: 0 } }, 'bad_across'],
     [{ mode: 'matrix', across: { dimension: 'customer' } }, 'dimension_not_on_stream'],
     [{ mode: 'matrix', across: { dimension: 'nope' } }, 'unknown_dimension'],
-    [{ mode: 'matrix', across: { dimension: 'product' }, limit: 200 }, 'bad_paging'],
+    [{ mode: 'matrix', across: { dimension: 'product' }, limit: 0 }, 'bad_paging'],
     [{ mode: 'matrix', across: { dimension: 'product', limit: 2000 } }, 'bad_paging'],
     [{ mode: 'matrix', across: { dimension: 'product' }, options: { activity: 'all' } }, 'option_unsupported'],
     [{ mode: 'matrix', across: { dimension: 'product' }, sort: { by: 'period.1.sales', dir: 'asc' } }, 'bad_sort'],
@@ -565,5 +565,78 @@ describe('compileView, matrix mode', () => {
     const { sql } = compiled({ ...matrix, measures: ['soh'] });
     expect(sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__lastw") AS DOUBLE) AS "m__soh"');
     expect(sql).toContain('FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT * FROM "sales_lines" WHERE');
+  });
+});
+
+describe('compileView, the long shape of a period view', () => {
+  const view = { mode: 'period', period: { preset: 'rolling_3' } };
+  const long = { periodShape: 'long' as const };
+
+  it('returns one row per member and period, with the periods as the columns of a matrix', () => {
+    const out = compiled(view, long);
+    expect(out.sql).toBe([
+      'WITH g AS MATERIALIZED (',
+      'SELECT f."branch_code" AS "code", f."__b" AS "across", CAST(SUM(f."amount") AS DOUBLE) AS "m__sales", CAST(GROUPING(f."branch_code") AS INTEGER) AS "__total", CAST(GROUPING(f."__b") AS INTEGER) AS "__across_total"',
+      'FROM (SELECT *, CASE WHEN "sale_date" < DATE \'2026-10-01\' THEN 1 WHEN "sale_date" < DATE \'2026-11-01\' THEN 2 WHEN "sale_date" < DATE \'2026-12-01\' THEN 3 END AS "__b" FROM "sales_lines" WHERE "sale_date" >= DATE \'2026-09-01\' AND "sale_date" < DATE \'2026-12-01\') AS f',
+      'GROUP BY GROUPING SETS ((f."branch_code", f."__b"), (f."branch_code"), (f."__b"), ())',
+      '), rw AS (',
+      'SELECT "code", row_number() OVER (ORDER BY "m__sales" DESC NULLS LAST, "code" ASC) AS "__row"',
+      'FROM g',
+      'WHERE "__total" = 0 AND "__across_total" = 1',
+      '), cl AS (',
+      'SELECT "across", "across" AS "__col"',
+      'FROM g',
+      'WHERE "__total" = 1 AND "__across_total" = 0',
+      ')',
+      'SELECT g.*, COALESCE(rw."__row", 0) AS "__row", COALESCE(cl."__col", 0) AS "__col",',
+      'CAST((SELECT count(*) FROM rw) AS INTEGER) AS "__rows", 3 AS "__cols"',
+      'FROM g',
+      'LEFT JOIN rw ON g."__total" = 0 AND rw."code" IS NOT DISTINCT FROM g."code"',
+      'LEFT JOIN cl ON g."__across_total" = 0 AND cl."across" IS NOT DISTINCT FROM g."across"',
+      'WHERE rw."__row" > 0 AND rw."__row" <= 200 AND (g."__across_total" = 1 OR cl."__col" <= 3)',
+      'ORDER BY g."__total" DESC, rw."__row" ASC, g."__across_total" DESC, cl."__col" ASC',
+    ].join('\n'));
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'across', 'm__sales', '__total', '__across_total', '__row', '__col', '__rows', '__cols']);
+    expect(out.shape).toBe('long');
+    expect(out.buckets.map((b) => b.label)).toEqual(['Sep 2026', 'Oct 2026', 'Nov 2026']);
+    expect(out.across).toBeUndefined();
+  });
+
+  it('stays one column per period while that statement fits, and goes long by itself when it does not', () => {
+    const wide = { mode: 'period', period: { preset: 'rolling_12' }, measures: ['sales', 'cost', 'qty', 'gp'] };
+    expect(compiled(wide).shape).toBeUndefined();
+    const out = compiled(wide, { maxSqlChars: 4000 });
+    expect(out.shape).toBe('long');
+    expect(out.sql).toContain('GROUP BY GROUPING SETS ((f."branch_code", f."__b"), (f."branch_code"), (f."__b"), ())');
+    expect(out.limit).toBe(153);
+    expect(refusal(wide, { maxSqlChars: 4000, periodShape: 'wide' })).toBe('sql_too_long');
+  });
+
+  it('reports the first refusal when the long shape cannot take the view either', () => {
+    const view2 = { mode: 'period', period: { preset: 'rolling_12' }, measures: ['sales', 'cost', 'qty', 'gp'], group_by: 'product', options: { activity: 'all' } };
+    expect(refusal(view2, { maxSqlChars: 4000 })).toBe('sql_too_long');
+    expect(refusal(view2, long)).toBe('option_unsupported');
+  });
+
+  it('gives DAYS() the days of the period on a cell and of the whole window on a total', () => {
+    const { sql } = compiled({ ...view, measures: ['daily'] }, long);
+    expect(sql).toContain('CAST(((SUM(f."amount")) / NULLIF((CASE WHEN GROUPING(f."__b") = 0 THEN any_value(f."__days") ELSE 91 END), 0)) AS DOUBLE) AS "m__daily"');
+    expect(sql).toContain('END AS "__b", CASE WHEN "sale_date" < DATE \'2026-10-01\' THEN 30 WHEN "sale_date" < DATE \'2026-11-01\' THEN 31 WHEN "sale_date" < DATE \'2026-12-01\' THEN 30 END AS "__days" FROM "sales_lines"');
+  });
+
+  it('reads a snapshot measure on the latest day of the period on a cell, and of the window on a total', () => {
+    const { sql } = compiled({ ...view, measures: ['soh'] }, long);
+    expect(sql).toContain('CAST(CASE WHEN GROUPING(f."__b") = 0 THEN SUM(f."qty") FILTER (WHERE f."__last") ELSE SUM(f."qty") FILTER (WHERE f."__lastw") END AS DOUBLE) AS "m__soh"');
+    expect(sql).toContain('FROM (SELECT *, ("sale_date" = MAX("sale_date") OVER (PARTITION BY "__b")) AS "__last", ("sale_date" = MAX("sale_date") OVER ()) AS "__lastw" FROM (SELECT *, CASE WHEN');
+  });
+
+  it('sorts rows by one period of one measure, and numbers the periods newest first when reversed', () => {
+    const out = compiled({ ...view, sort: { by: 'period.2.sales', dir: 'asc' }, options: { reverse_periods: true, total_row: true } }, long);
+    expect(out.sql).toContain('CAST(SUM(f."amount") FILTER (WHERE f."__b" = 2) AS DOUBLE) AS "__sort", CAST(GROUPING(f."branch_code") AS INTEGER) AS "__total"');
+    expect(out.sql).toContain('ORDER BY "__sort" ASC NULLS LAST, "code" ASC) AS "__row"');
+    expect(out.sql).toContain('SELECT g.* EXCLUDE ("__sort"), COALESCE(rw."__row", 0) AS "__row"');
+    expect(out.sql).toContain('SELECT "across", 4 - "across" AS "__col"');
+    expect(out.sql).toContain('WHERE (g."__total" = 1 OR (rw."__row" > 0 AND rw."__row" <= 200)) AND');
+    expect(refusal({ ...view, sort: { by: 'period.9.sales', dir: 'asc' } }, long)).toBe('bad_sort');
   });
 });

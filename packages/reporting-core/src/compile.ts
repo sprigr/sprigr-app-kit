@@ -113,6 +113,11 @@ export interface CompileContext {
   maxSqlChars?: number;
   /** The most rows a result may hold, total row included. */
   maxRows?: number;
+  /**
+   * Period mode: `wide` is one column per period, `long` one row per member and period.
+   * When absent, the view goes long only if its wide statement is over `maxSqlChars`.
+   */
+  periodShape?: 'wide' | 'long';
 }
 
 export interface CompiledColumn {
@@ -149,6 +154,13 @@ export interface CompiledView {
   streams?: string[];
   /** Matrix mode: the column dimension and how many of its members the result keeps. */
   across?: { dimension: string; limit: number };
+  /**
+   * `long` when the result has one row per cell and the grid must pivot it: matrix mode, and a period view
+   * too long for one column per period. In that period view `across` is the period's number, from the oldest.
+   */
+  shape?: 'long';
+  /** With `shape`: the rows a page holds, fitted to the row cap. It can be fewer than the view asked for. */
+  limit?: number;
 }
 
 const FACT = 'f';
@@ -174,7 +186,22 @@ export function compileView(model: ReportingModel, view: ViewState, ctx: Compile
     if (!(VIEW_MODES as readonly string[]).includes(view.mode)) fail('mode_unsupported', `mode "${String(view.mode)}" is not compiled yet`);
     if (view.mode === 'transaction') return compileTransactions(model, view, ctx);
     if (view.mode === 'stream') return compileStreams(model, view, ctx);
-    return view.mode === 'matrix' ? compileMatrix(model, view, ctx) : compileGrouped(model, view, ctx);
+    if (view.mode === 'matrix') return compileMatrix(model, view, ctx);
+    if (view.mode !== 'period' || ctx.periodShape === 'wide') return compileGrouped(model, view, ctx);
+    if (ctx.periodShape === 'long') return compileMatrix(model, view, ctx, true);
+    // One column per period while that fits; one row per member and period when the statement would be too long.
+    try {
+      return compileGrouped(model, view, ctx);
+    } catch (tooLong) {
+      if (!(tooLong instanceof ReportingError) || tooLong.reason !== 'sql_too_long') throw tooLong;
+      try {
+        return compileMatrix(model, view, ctx, true);
+      } catch (err) {
+        // The long shape cannot take this view either, so the first refusal is the one to report.
+        if (err instanceof ReportingError) throw tooLong;
+        throw err;
+      }
+    }
   } catch (err) {
     return refusalOf(err);
   }
@@ -467,6 +494,13 @@ interface MeasureSource {
   days: number;
   /** The number of period columns, in a period view. */
   periodCount?: number;
+  /**
+   * The long shape only: true on a result row that is one period's cell, false on a total over the whole window.
+   * A snapshot measure reads a different latest day on each.
+   */
+  cellWhen?: string;
+  /** The long shape only: SQL for the days a result row covers. */
+  daysSql?: string;
   /** Gains 'snapshot' when a snapshot measure is read, so the fact rows get their latest-day flags. */
   uses: Set<'snapshot'>;
 }
@@ -480,7 +514,7 @@ function measureOver(src: MeasureSource, key: string, slice: Slice | null, depth
     if (!node) { node = parseFormula(measure.formula); src.parsed.set(key, node); }
     return emitFormulaSql(node, {
       measure: (ref) => measureOver(src, ref, slice, depth + 1),
-      days: slice ? slice.bucket.days : src.days,
+      ...(slice ? { days: slice.bucket.days } : src.daysSql !== undefined ? { daysSql: src.daysSql } : { days: src.days }),
       ...(src.periodCount !== undefined ? { periodCount: src.periodCount } : {}),
     });
   }
@@ -489,7 +523,9 @@ function measureOver(src: MeasureSource, key: string, slice: Slice | null, depth
   // A level, not a flow: only the rows of the window's latest day count.
   if (measure.snapshot) {
     src.uses.add('snapshot');
-    return `${call} FILTER (WHERE ${slice ? slice.last : `${FACT}."__lastw"`})`;
+    if (slice) return `${call} FILTER (WHERE ${slice.last})`;
+    const whole = `${call} FILTER (WHERE ${FACT}."__lastw")`;
+    return src.cellWhen !== undefined ? `CASE WHEN ${src.cellWhen} THEN ${call} FILTER (WHERE ${FACT}."__last") ELSE ${whole} END` : whole;
   }
   return slice ? `${call} FILTER (WHERE ${slice.filter})` : call;
 }
@@ -499,6 +535,11 @@ function factOver(stream: ModelStream, range: PeriodWindow, latest: boolean): st
   const date = q(stream.date);
   const rows = `SELECT * FROM ${q(stream.table)} WHERE ${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
   return latest ? `(SELECT *, (${date} = MAX(${date}) OVER ()) AS "__lastw" FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+}
+
+/** A CASE over a fact row's date that gives the rows of each period column their own value. */
+function perBucket(date: string, buckets: PeriodBucket[], value: (bucket: PeriodBucket, index: number) => number): string {
+  return `CASE ${buckets.map((b, i) => `WHEN ${date} < ${sqlDate(b.to)} THEN ${value(b, i)}`).join(' ')} END`;
 }
 
 /** The properties a view shows beside the code, each once. */
@@ -541,7 +582,7 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     last: `${FACT}."__b" = ${i + 1} AND ${FACT}."__last"`,
   }));
   let factColumns = buckets.length === 0 ? ''
-    : `, CASE ${buckets.map((b, i) => `WHEN ${date} < ${sqlDate(b.to)} THEN ${i + 1}`).join(' ')} END AS "__b"`;
+    : `, ${perBucket(date, buckets, (_, i) => i + 1)} AS "__b"`;
   let factWhere = inWindow(period.window);
   // Variance mode: the value over the whole period is the current window's, beside the earlier window's.
   let current: Slice | null = null;
@@ -890,27 +931,25 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
 }
 
 /**
- * Matrix mode: two dimensions, one result row per cell.
+ * Matrix mode, and the long shape of a period view: two axes, one result row per cell.
+ *
+ * The rows are the group-by dimension. The columns are a second dimension (matrix) or the view's
+ * periods (the long shape, for a period view whose one-column-per-period statement is too long).
  *
  * Stage g groups four ways in one pass: each cell, each row's total, each column's total and the grand
  * total, so a formula is worked out at every level from that level's own sums. Stage rw ranks the rows
- * by their totals, stage cl ranks the columns, and the result keeps the cells of one page of rows and
- * the first columns. The grid pivots it: `__row` and `__col` say where a cell goes, 0 meaning a total.
+ * by their totals, stage cl numbers the columns, and the result keeps the cells of one page of rows and
+ * the columns kept. The grid pivots it: `__row` and `__col` say where a cell goes, 0 meaning a total.
  */
-function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileContext): CompiledView {
+function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileContext, byPeriod = false): CompiledView {
   const options: ViewOptions = view.options ?? {};
-  if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', 'the activity option is not compiled for matrix mode yet');
+  const what = byPeriod ? 'the long shape of a period view' : 'matrix mode';
+  if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', `the activity option is not compiled for ${what} yet`);
   if (options.others_row || options.average_row) fail('option_unsupported', 'others and average rows are not compiled yet');
   const totalRow = options.total_row === true;
 
   const scope = scopeOf(model, view);
   const { stream, measureByKey, groupDim } = scope;
-  const across = view.across;
-  if (!across || typeof across.dimension !== 'string') fail('bad_across', 'a matrix needs a second dimension in "across"');
-  const acrossDim = scope.dimension(across.dimension);
-  if (acrossDim.key === groupDim.key) fail('bad_across', 'the second dimension must differ from the first');
-  const order = across.order ?? 'value';
-  if (order !== 'value' && order !== 'code') fail('bad_across', `"${String(order)}" is not a column order`);
   const shown = shownMeasures(view, measureByKey);
   const first = shown[0] ?? fail('no_measures', 'a view needs at least one measure');
   const unseen = scope.filterMeasures
@@ -918,21 +957,54 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
     .map((key) => measureByKey.get(key) ?? fail('unknown_measure', `no measure "${key}"`));
   const period = resolvePeriod(view.period, model.periods, ctx.today, { periodToDate: options.period_to_date === true });
   const range = period.window;
+  const buckets = byPeriod ? period.buckets : [];
+  const days = daysBetween(range.from, range.to);
 
-  // Paging. Every row kept costs one result row per column kept, plus one for its total.
+  // The column axis: what a fact row's column is, how many are kept, and how they are numbered.
+  const uses = new Set<'snapshot'>();
+  const reads: MeasureSource = { stream, measureByKey, parsed: new Map(), countAll: 'COUNT(*)', days, uses };
+  const rowCode = scope.codeExpr;
+  let colCode = `${FACT}."__b"`;
+  let keep = buckets.length;
+  let acrossColumn: CompiledColumn = { name: 'across', kind: 'across', label: 'Period' };
+  let acrossName: CompiledColumn | null = null;
+  // A period's column number is its own number, so a period no fact row falls in leaves a gap, not a shift.
+  let colNumber = options.reverse_periods ? `${buckets.length + 1} - "across"` : '"across"';
+  let colCount = String(buckets.length);
+  if (byPeriod) {
+    reads.periodCount = buckets.length;
+    // A row of g is one period's cell or a total over the whole window; days and latest days differ between them.
+    reads.cellWhen = `GROUPING(${colCode}) = 0`;
+    reads.daysSql = `CASE WHEN GROUPING(${colCode}) = 0 THEN any_value(${FACT}."__days") ELSE ${sqlNumber(days)} END`;
+  } else {
+    const across = view.across;
+    if (!across || typeof across.dimension !== 'string') fail('bad_across', 'a matrix needs a second dimension in "across"');
+    const acrossDim = scope.dimension(across.dimension);
+    if (acrossDim.key === groupDim.key) fail('bad_across', 'the second dimension must differ from the first');
+    const order = across.order ?? 'value';
+    if (order !== 'value' && order !== 'code') fail('bad_across', `"${String(order)}" is not a column order`);
+    keep = across.limit ?? DEFAULT_ACROSS_MEMBERS;
+    if (!Number.isInteger(keep) || keep < 1) fail('bad_across', 'across.limit must be a whole number, 1 or more');
+    colCode = scope.propertyOf(acrossDim.key, 'code');
+    acrossColumn = { name: 'across', kind: 'across', label: acrossDim.label, dimension: acrossDim.key };
+    if (acrossDim.table && acrossDim.name) {
+      acrossName = { name: 'across__name', kind: 'across', label: propertyLabel(acrossDim, 'name'), dimension: acrossDim.key, property: 'name' };
+    }
+    colNumber = `row_number() OVER (ORDER BY ${order === 'value' ? `${q(`m__${first.key}`)} DESC NULLS LAST, ` : ''}"across" ASC)`;
+    colCount = 'CAST((SELECT count(*) FROM cl) AS INTEGER)';
+  }
+
+  // Paging. Every row kept costs one result row per column kept, plus one for its total, so a page is fitted to the row cap.
   const maxRows = ctx.maxRows ?? ROUTE_MAX_ROWS;
-  const members = across.limit ?? DEFAULT_ACROSS_MEMBERS;
-  if (!Number.isInteger(members) || members < 1) fail('bad_across', 'across.limit must be a whole number, 1 or more');
-  const room = Math.floor(maxRows / (members + 1)) - (totalRow ? 1 : 0);
-  if (room < 1) fail('bad_paging', `${members} columns leave no room for a row in ${maxRows} result rows`);
-  const limit = view.limit ?? Math.min(DEFAULT_PAGE_ROWS, room);
+  const room = Math.floor(maxRows / (keep + 1)) - (totalRow ? 1 : 0);
+  if (room < 1) fail('bad_paging', `${keep} columns leave no room for a row in ${maxRows} result rows`);
+  const asked = view.limit ?? DEFAULT_PAGE_ROWS;
   const offset = view.offset ?? 0;
-  if (!Number.isInteger(limit) || limit < 1 || limit > room) fail('bad_paging', `with ${members} columns, limit must be a whole number from 1 to ${room}`);
+  if (!Number.isInteger(asked) || asked < 1) fail('bad_paging', 'limit must be a whole number, 1 or more');
   if (!Number.isInteger(offset) || offset < 0) fail('bad_paging', 'offset must be a whole number, 0 or more');
+  const limit = Math.min(asked, room);
 
   // The select list and the column map.
-  const rowCode = scope.codeExpr;
-  const colCode = scope.propertyOf(acrossDim.key, 'code');
   const columns: CompiledColumn[] = [{ name: 'code', kind: 'code', label: groupDim.label }];
   const select: string[] = [`${rowCode} AS "code"`];
   shownProperties(view).forEach((property) => {
@@ -941,13 +1013,11 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
     columns.push({ name, kind: 'property', label: propertyLabel(groupDim, property), property });
   });
   select.push(`${colCode} AS "across"`);
-  columns.push({ name: 'across', kind: 'across', label: acrossDim.label, dimension: acrossDim.key });
-  if (acrossDim.table && acrossDim.name) {
-    select.push(`CASE WHEN GROUPING(${colCode}) = 0 THEN any_value(${scope.propertyOf(acrossDim.key, 'name')}) END AS "across__name"`);
-    columns.push({ name: 'across__name', kind: 'across', label: propertyLabel(acrossDim, 'name'), dimension: acrossDim.key, property: 'name' });
+  columns.push(acrossColumn);
+  if (acrossName && acrossColumn.dimension !== undefined) {
+    select.push(`CASE WHEN GROUPING(${colCode}) = 0 THEN any_value(${scope.propertyOf(acrossColumn.dimension, 'name')}) END AS "across__name"`);
+    columns.push(acrossName);
   }
-  const uses = new Set<'snapshot'>();
-  const reads: MeasureSource = { stream, measureByKey, parsed: new Map(), countAll: 'COUNT(*)', days: daysBetween(range.from, range.to), uses };
   const hidden: string[] = [];
   const addMeasure = (measure: ModelMeasure, seen: boolean): void => {
     const name = `m__${measure.key}`;
@@ -957,12 +1027,23 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
   };
   shown.forEach((measure) => addMeasure(measure, true));
   unseen.forEach((measure) => addMeasure(measure, false));
-  select.push(`CAST(GROUPING(${rowCode}) AS INTEGER) AS "__total"`, `CAST(GROUPING(${colCode}) AS INTEGER) AS "__across_total"`);
 
+  // Sort. Rows are ranked by their totals; the long shape can also rank them by one period of one measure.
   const sort: ViewSort = view.sort ?? { by: `total.${first.key}`, dir: 'desc' };
   if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
-  const sortName = sortNameOf(sort.by);
-  if (!columns.some((c) => c.name === sortName && c.kind !== 'across')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
+  let sortName = sortNameOf(sort.by);
+  const byOne = String(sort.by).split('.');
+  const bucket = byPeriod && byOne[0] === 'period' && byOne.length === 3 ? buckets[Number(byOne[1]) - 1] : undefined;
+  if (bucket && shown.some((measure) => measure.key === byOne[2])) {
+    const n = buckets.indexOf(bucket) + 1;
+    const slice: Slice = { bucket, filter: `${FACT}."__b" = ${n}`, last: `${FACT}."__b" = ${n} AND ${FACT}."__last"` };
+    select.push(`CAST(${measureOver(reads, String(byOne[2]), slice)} AS DOUBLE) AS "__sort"`);
+    hidden.push('__sort');
+    sortName = '__sort';
+  } else if (!columns.some((c) => c.name === sortName && c.kind !== 'across')) {
+    fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
+  }
+  select.push(`CAST(GROUPING(${rowCode}) AS INTEGER) AS "__total"`, `CAST(GROUPING(${colCode}) AS INTEGER) AS "__across_total"`);
   columns.push(
     { name: '__total', kind: 'meta', label: 'Total row' },
     { name: '__across_total', kind: 'meta', label: 'Row total' },
@@ -972,12 +1053,22 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
     { name: '__cols', kind: 'meta', label: 'Column count' },
   );
 
+  // The fact rows. By period, each carries its period's number, and what a formula or a snapshot measure needs of it.
+  let fact = factOver(stream, range, uses.has('snapshot'));
+  if (byPeriod) {
+    const date = q(stream.date);
+    const perDay = select.some((expr) => expr.includes('"__days"')) ? `, ${perBucket(date, buckets, (b) => b.days)} AS "__days"` : '';
+    const rows = `SELECT *, ${perBucket(date, buckets, (_, i) => i + 1)} AS "__b"${perDay} FROM ${q(stream.table)} WHERE ${date} >= ${sqlDate(range.from)} AND ${date} < ${sqlDate(range.to)}`;
+    const latest = `(${date} = MAX(${date}) OVER (PARTITION BY "__b")) AS "__last", (${date} = MAX(${date}) OVER ()) AS "__lastw"`;
+    fact = uses.has('snapshot') ? `(SELECT *, ${latest} FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+  }
+
   const paged = `rw."__row" > ${offset} AND rw."__row" <= ${offset + limit}`;
   const sql = [
     // Read three times below, so it is computed once.
     'WITH g AS MATERIALIZED (',
     `SELECT ${select.join(', ')}`,
-    `FROM ${factOver(stream, range, uses.has('snapshot'))}`,
+    `FROM ${fact}`,
     ...scope.joins.values(),
     ...(scope.where.length > 0 ? [`WHERE ${scope.where.join(' AND ')}`] : []),
     `GROUP BY GROUPING SETS ((${rowCode}, ${colCode}), (${rowCode}), (${colCode}), ())`,
@@ -987,20 +1078,30 @@ function compileMatrix(model: ReportingModel, view: ViewState, ctx: CompileConte
     'FROM g',
     `WHERE "__total" = 0 AND "__across_total" = 1${scope.having !== null ? ` AND ${scope.having}` : ''}`,
     '), cl AS (',
-    `SELECT "across", row_number() OVER (ORDER BY ${order === 'value' ? `${q(`m__${first.key}`)} DESC NULLS LAST, ` : ''}"across" ASC) AS "__col"`,
+    `SELECT "across", ${colNumber} AS "__col"`,
     'FROM g',
     'WHERE "__total" = 1 AND "__across_total" = 0',
     ')',
     `SELECT g.*${hidden.length > 0 ? ` EXCLUDE (${hidden.map(q).join(', ')})` : ''}, COALESCE(rw."__row", 0) AS "__row", COALESCE(cl."__col", 0) AS "__col",`,
-    'CAST((SELECT count(*) FROM rw) AS INTEGER) AS "__rows", CAST((SELECT count(*) FROM cl) AS INTEGER) AS "__cols"',
+    `CAST((SELECT count(*) FROM rw) AS INTEGER) AS "__rows", ${colCount} AS "__cols"`,
     'FROM g',
     // A member can have no code, so the joins match a blank to a blank.
     'LEFT JOIN rw ON g."__total" = 0 AND rw."code" IS NOT DISTINCT FROM g."code"',
     'LEFT JOIN cl ON g."__across_total" = 0 AND cl."across" IS NOT DISTINCT FROM g."across"',
-    `WHERE ${totalRow ? `(g."__total" = 1 OR (${paged}))` : paged} AND (g."__across_total" = 1 OR cl."__col" <= ${members})`,
+    `WHERE ${totalRow ? `(g."__total" = 1 OR (${paged}))` : paged} AND (g."__across_total" = 1 OR cl."__col" <= ${keep})`,
     'ORDER BY g."__total" DESC, rw."__row" ASC, g."__across_total" DESC, cl."__col" ASC',
   ].join('\n');
   checkLength(sql, ctx);
 
-  return { ok: true, sql, columns, window: range, buckets: [], months: monthsRange(range), across: { dimension: acrossDim.key, limit: members } };
+  return {
+    ok: true,
+    sql,
+    columns,
+    window: range,
+    buckets,
+    months: monthsRange(range),
+    shape: 'long',
+    limit,
+    ...(acrossColumn.dimension !== undefined ? { across: { dimension: acrossColumn.dimension, limit: keep } } : {}),
+  };
 }

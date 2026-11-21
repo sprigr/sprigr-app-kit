@@ -27,6 +27,7 @@ export const MODEL_JSON = {
     { key: 'soh', label: 'Stock on hand', agg: 'sum', column: 'qty', snapshot: true },
     { key: 'ordered', label: 'Ordered', agg: 'sum', column: 'amount', stream: 'orders' },
     { key: 'fill', label: 'Fill rate', formula: 'sales / ordered', format: 'percent' },
+    { key: 'daily', label: 'Daily sales', formula: 'sales / DAYS()', format: 'currency' },
   ],
   periods: {
     fiscal_year_start_month: 7,
