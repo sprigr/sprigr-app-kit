@@ -25,10 +25,10 @@
  * Matrix mode groups by two dimensions and returns one row per cell.
  */
 import { emitFormulaSql, parseFormula, type FormulaNode } from './formula';
-import { isFormulaMeasure, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelRollup, type ModelStream, type ReportingModel } from './model';
-import { comparisonWindow, daysBetween, monthsRange, resolvePeriod, type PeriodBucket, type PeriodSpec, type PeriodWindow } from './periods';
+import { MEASURE_FORMATS, isFormulaMeasure, type MeasureFormat, type ModelBaseMeasure, type ModelDimension, type ModelMeasure, type ModelRollup, type ModelStream, type ReportingModel } from './model';
+import { addDays, comparisonWindow, daysBetween, monthsRange, resolvePeriod, type PeriodBucket, type PeriodSpec, type PeriodWindow } from './periods';
 import { ReportingError, refusalOf, type Refusal, type ReportingReason } from './reasons';
-import { likeContains, quoteIdent as q, sqlDate, sqlNumber, sqlString, tablesIn } from './sql';
+import { isIdentifier, likeContains, quoteIdent as q, sqlDate, sqlNumber, sqlString, tablesIn } from './sql';
 
 /** The query route refuses longer SQL (`ANALYTICS_QUERY_MAX_SQL_CHARS` in sprigr-team). */
 export const ROUTE_MAX_SQL_CHARS = 24_000;
@@ -40,7 +40,7 @@ export const DEFAULT_ACROSS_MEMBERS = 12;
 const MAX_KEYWORD_CHARS = 200;
 const MAX_FILTER_DEPTH = 3;
 
-export const VIEW_MODES = ['total', 'period', 'variance', 'transaction', 'stream', 'matrix'] as const;
+export const VIEW_MODES = ['total', 'period', 'variance', 'transaction', 'stream', 'matrix', 'custom'] as const;
 export type ViewMode = (typeof VIEW_MODES)[number];
 export const MEASURE_CMPS = ['=', '<>', '<', '<=', '>', '>='] as const;
 /** The four columns a measure has in variance mode. */
@@ -64,6 +64,37 @@ export interface ViewSort { by: string; dir: 'asc' | 'desc' }
  * `order` picks them: `value` keeps those with the largest total of the first measure, `code` the first by code.
  */
 export interface ViewAcross { dimension: string; limit?: number; order?: 'value' | 'code' }
+/** Custom mode: one measure over its own dates and, when given, its own rule on one dimension. */
+export interface ViewDataPoint {
+  measure: string;
+  /** The dates the point covers. The view's period when absent. */
+  period?: PeriodSpec;
+  /** Keeps only the fact rows that pass, such as the rows of one branch. */
+  where?: ViewDimensionRule;
+}
+/**
+ * Custom mode: one column of the view. It holds `point`, alone or with `against`, or it holds
+ * `expression` with `points`.
+ */
+export interface ViewCustomColumn {
+  /** Names the column in the result, as `c__<key>`. */
+  key: string;
+  label?: string;
+  point?: ViewDataPoint;
+  /**
+   * A second point. The column then shows `point` less this one, or with `show: 'percent'`
+   * that difference as a fraction of this one.
+   */
+  against?: ViewDataPoint;
+  show?: 'difference' | 'percent';
+  /** A formula over the names in `points`, such as `a / b * 100`. */
+  expression?: string;
+  points?: Record<string, ViewDataPoint>;
+  /** An expression column's format. `number` when absent. */
+  format?: string;
+  /** Worked out, and usable in the sort, but left out of the result. */
+  hidden?: boolean;
+}
 export interface ViewOptions {
   activity?: 'with' | 'without' | 'all';
   total_row?: boolean;
@@ -87,7 +118,10 @@ export interface ViewState {
   mode: string;
   /** The stream the view reads. Stream mode also reads every other stream its measures belong to. */
   stream: string;
+  /** The measures shown. Custom mode reads `custom_columns` and ignores this. */
   measures: string[];
+  /** Custom mode only: the columns, in display order. */
+  custom_columns?: ViewCustomColumn[];
   period: PeriodSpec;
   /** Variance mode only: what the period is compared with. `previous_year` when absent. */
   compare?: ViewCompare;
@@ -108,6 +142,7 @@ export interface ViewState {
    * Variance mode adds `previous.<measure>`, `variance.<measure>` and `variance_pct.<measure>`.
    * Period mode with `average_column` adds `average.<measure>`.
    * Transaction mode takes `date`, `dimension.<key>`, `column.<key>` or `total.<measure>`.
+   * Custom mode takes `code`, `property.<key>` or `column.<key>`, a hidden column included.
    */
   sort?: ViewSort;
   limit?: number;
@@ -149,6 +184,8 @@ export interface CompiledColumn {
   dimension?: string;
   /** For an extra column in a transaction list: its key on the stream. */
   column?: string;
+  /** For a column of a custom view: its key. */
+  custom?: string;
 }
 
 export interface CompiledView {
@@ -158,6 +195,8 @@ export interface CompiledView {
   window: PeriodWindow;
   /** Variance mode: the window the period is compared with. */
   comparison?: PeriodWindow;
+  /** Custom mode: each window its columns read, once each. `window` then runs from the earliest to the latest. */
+  windows?: PeriodWindow[];
   buckets: PeriodBucket[];
   /** Inclusive `YYYY-MM` range the statement reads, for the query route's `months` argument. */
   months: { from: string; to: string };
@@ -222,6 +261,7 @@ function compileMode(model: ReportingModel, view: ViewState, ctx: CompileContext
   if (view.mode === 'transaction') return compileTransactions(model, view, ctx);
   if (view.mode === 'stream') return compileStreams(model, view, ctx);
   if (view.mode === 'matrix') return compileMatrix(model, view, ctx);
+  if (view.mode === 'custom') return compileCustom(model, view, ctx);
   if (view.mode !== 'period' || ctx.periodShape === 'wide') return compileGrouped(model, view, ctx);
   if (ctx.periodShape === 'long') return compileMatrix(model, view, ctx, true);
   // One column per period while that fits; one row per member and period when the statement would be too long.
@@ -254,7 +294,7 @@ export function compileRollupView(model: ReportingModel, view: ViewState, ctx: C
   if (!plain.ok) return plain;
   const none = (detail: string): Refusal => ({ ok: false, reason: 'no_rollup', detail });
   if (view.mode === 'transaction') return none('a transaction list reads the rows themselves');
-  const windows: PeriodWindow[] = [plain.window, ...(plain.comparison ? [plain.comparison] : []), ...plain.buckets];
+  const windows: PeriodWindow[] = [plain.window, ...(plain.comparison ? [plain.comparison] : []), ...plain.buckets, ...(plain.windows ?? [])];
   if (!windows.every((w) => w.from.endsWith('-01') && w.to.endsWith('-01'))) {
     return none('a rollup holds whole months, and this period does not start and end on the first of a month');
   }
@@ -306,6 +346,8 @@ interface Scope {
   codeExpr: string;
   /** Conditions on fact rows: the drill path, dimension filters and the keyword. */
   where: string[];
+  /** One dimension rule as a condition on a fact row. It adds the joins it needs. */
+  dimensionRule: (rule: ViewDimensionRule) => string;
   /** The condition measure filters put on grouped rows, or null. */
   having: string | null;
   /** Keys of the measures that condition reads. */
@@ -502,7 +544,7 @@ function scopeOf(model: ReportingModel, view: ViewState, withMembers = false, sp
     conds: mb.conds,
     property: (property) => mb.propertyHere(groupDim.key, property),
   };
-  return { stream, measureByKey, joins, dimension, propertyOf, groupDim, codeExpr, where, having, filterMeasures, members, focus };
+  return { stream, measureByKey, joins, dimension, propertyOf, groupDim, codeExpr, where, dimensionRule: dimensionLeaf, having, filterMeasures, members, focus };
 }
 
 function shownMeasures(view: ViewState, measureByKey: Map<string, ModelMeasure>): ModelMeasure[] {
@@ -885,6 +927,171 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
     buckets,
     months: monthsRange(read),
   };
+}
+
+/**
+ * Custom mode: one row per member, and each column its own measure, dates and rule.
+ *
+ * Every data point the columns read is one filtered aggregate in stage g, written once however many
+ * columns read it. Stage v works each column out from those: the point itself, the difference
+ * between two points, or an expression over several. The total row is therefore worked out from
+ * its own sums, as in every other mode.
+ */
+function compileCustom(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
+  const options: ViewOptions = view.options ?? {};
+  if (options.activity !== undefined && options.activity !== 'with') fail('option_unsupported', 'the activity option in custom mode is not compiled yet');
+  if (options.others_row) fail('option_unsupported', 'an others row in custom mode is not compiled yet');
+  const totalRow = options.total_row === true;
+  const averageRow = options.average_row === true;
+  const sumRow = options.sum_row === true;
+
+  const scope = scopeOf(model, view);
+  if (scope.having !== null) fail('measure_filter_unsupported', 'a filter on a measure in custom mode is not compiled yet');
+  const { stream, measureByKey, joins, groupDim, where, codeExpr } = scope;
+  const listed: ViewCustomColumn[] = Array.isArray(view.custom_columns) ? view.custom_columns : [];
+  if (listed.length === 0) fail('bad_custom_column', 'a custom view needs at least one column');
+
+  // Windows. Each distinct one becomes a flag on the fact rows, so a point's filter is a flag and its rule.
+  const date = q(stream.date);
+  const inWindow = (w: PeriodWindow): string => `${date} >= ${sqlDate(w.from)} AND ${date} < ${sqlDate(w.to)}`;
+  const resolve = (spec: PeriodSpec): PeriodWindow => resolvePeriod(spec, model.periods, ctx.today, { periodToDate: options.period_to_date === true }).window;
+  const own = resolve(view.period);
+  const windows: PeriodWindow[] = [];
+  const windowOf = (spec: PeriodSpec | undefined): { window: PeriodWindow; number: number } => {
+    const window = spec === undefined ? own : resolve(spec);
+    const at = windows.findIndex((w) => w.from === window.from && w.to === window.to);
+    return { window, number: at >= 0 ? at + 1 : windows.push(window) };
+  };
+
+  // Data points. Two columns that read the same measure, dates and rule share one aggregate.
+  const uses = new Set<'snapshot'>();
+  const reads: MeasureSource = { stream, measureByKey, parsed: new Map(), countAll: 'COUNT(*)', days: daysBetween(own.from, own.to), uses };
+  const points: string[] = [];
+  const pointOf = (point: ViewDataPoint | undefined, what: string): { name: string; measure: ModelMeasure; bucket: PeriodBucket } => {
+    if (typeof point !== 'object' || point === null) fail('bad_custom_column', `${what} has no data point`);
+    const measure = measureByKey.get(point.measure) ?? fail('unknown_measure', `no measure "${String(point.measure)}"`);
+    const { window, number } = windowOf(point.period);
+    if (point.where !== undefined && (typeof point.where !== 'object' || point.where === null)) fail('bad_custom_column', `the rule of ${what} is not a dimension rule`);
+    const rule = point.where === undefined ? '' : ` AND ${scope.dimensionRule(point.where)}`;
+    const bucket: PeriodBucket = {
+      key: `w${number}`, label: `${window.from} to ${addDays(window.to, -1)}`, from: window.from, to: window.to, days: daysBetween(window.from, window.to),
+    };
+    const slice: Slice = { bucket, filter: `${FACT}.${q(`__w${number}`)}${rule}`, last: `${FACT}.${q(`__l${number}`)}${rule}` };
+    const sql = `CAST(${measureOver(reads, measure.key, slice)} AS DOUBLE)`;
+    const at = points.indexOf(sql);
+    return { name: `p${at >= 0 ? at + 1 : points.push(sql)}`, measure, bucket };
+  };
+
+  // The select list and the column map, in display order.
+  const columns: CompiledColumn[] = [{ name: 'code', kind: 'code', label: groupDim.label }];
+  const select: string[] = [`${codeExpr} AS "code"`];
+  const grouping = `GROUPING(${codeExpr})`;
+  shownProperties(view).forEach((property) => {
+    const expr = `any_value(${scope.propertyOf(groupDim.key, property)})`;
+    const name = `prop__${property}`;
+    select.push(`${totalRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(name)}`);
+    columns.push({ name, kind: 'property', label: propertyLabel(groupDim, property), property });
+  });
+  const derived: string[] = [];
+  const left: string[] = ['__rn'];
+  const keys = new Set<string>();
+  listed.forEach((column, i) => {
+    if (typeof column !== 'object' || column === null || !isIdentifier(column.key)) fail('bad_custom_column', `column ${i + 1} needs a key that is a plain name`);
+    const { key } = column;
+    if (keys.has(key)) fail('bad_custom_column', `"${key}" is the key of two columns`);
+    keys.add(key);
+    if ((column.point === undefined) === (column.expression === undefined)) fail('bad_custom_column', `"${key}" holds a point or an expression, one of the two`);
+    let expr: string;
+    let about: Omit<CompiledColumn, 'name' | 'kind'>;
+    if (column.point !== undefined) {
+      const cur = pointOf(column.point, `"${key}"`);
+      if (column.against === undefined) {
+        if (column.show !== undefined) fail('bad_custom_column', `"${key}" has "show" and no second point to compare against`);
+        expr = q(cur.name);
+        about = { label: column.label ?? cur.measure.label, measure: cur.measure.key, format: cur.measure.format, period: cur.bucket };
+      } else {
+        const prev = pointOf(column.against, `"${key}"`);
+        const show = column.show ?? 'difference';
+        if (show !== 'difference' && show !== 'percent') fail('bad_custom_column', `"${String(show)}" is not a way to show a comparison`);
+        // As in variance mode: a blank counts as 0, and the percentage is blank when there is nothing to compare against.
+        expr = show === 'difference'
+          ? `COALESCE(${q(cur.name)}, 0) - COALESCE(${q(prev.name)}, 0)`
+          : `(COALESCE(${q(cur.name)}, 0) - ${q(prev.name)}) / NULLIF(abs(${q(prev.name)}), 0)`;
+        about = {
+          label: column.label ?? `${cur.measure.label} ${show === 'difference' ? 'Variance' : 'Variance %'}`,
+          measure: cur.measure.key,
+          format: show === 'percent' ? 'percent' : cur.measure.format,
+          period: null,
+        };
+      }
+    } else {
+      const format = column.format ?? 'number';
+      if (!(MEASURE_FORMATS as readonly string[]).includes(format)) fail('bad_custom_column', `"${String(format)}" is not a format`);
+      const named = column.points ?? {};
+      expr = emitFormulaSql(parseFormula(String(column.expression)), {
+        measure: (ref) => {
+          if (!Object.prototype.hasOwnProperty.call(named, ref)) fail('bad_custom_column', `"${key}" reads "${ref}", which is not one of its points`);
+          return q(pointOf(named[ref], `point "${ref}" of "${key}"`).name);
+        },
+        days: reads.days,
+      });
+      about = { label: column.label ?? key, format: format as MeasureFormat, period: null };
+    }
+    const name = `c__${key}`;
+    derived.push(`CAST(${expr} AS DOUBLE) AS ${q(name)}`);
+    if (column.hidden === true) left.push(name);
+    else columns.push({ name, kind: 'measure', custom: key, ...about });
+  });
+  const measured = columns.filter((c) => c.kind === 'measure').map((c) => c.name);
+  if (measured.length === 0) fail('bad_custom_column', 'every column of the view is hidden');
+  if (points.length === 0) fail('bad_custom_column', 'no column of the view reads a data point');
+  points.forEach((sql, i) => {
+    select.push(`${sql} AS ${q(`p${i + 1}`)}`);
+    left.push(`p${i + 1}`);
+  });
+  select.push(`${totalRow ? `CAST(${grouping} AS INTEGER)` : '0'} AS "__total"`);
+  columns.push({ name: '__total', kind: 'meta', label: 'Total row' }, { name: '__rows', kind: 'meta', label: 'Row count' });
+
+  // Sort and paging.
+  const sort: ViewSort = view.sort ?? { by: `column.${measured[0]?.slice(3) ?? ''}`, dir: 'desc' };
+  if (sort.dir !== 'asc' && sort.dir !== 'desc') fail('bad_sort', 'sort.dir must be asc or desc');
+  const by = String(sort.by).split('.');
+  const sortName = by[0] === 'column' ? (by.length === 2 && keys.has(by[1] ?? '') ? `c__${by[1]}` : '') : sortNameOf(sort.by);
+  if (!sortName.startsWith('c__') && !columns.some((c) => c.name === sortName && (c.kind === 'code' || c.kind === 'property'))) {
+    fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
+  }
+  const { limit, offset } = pageOf(view, ctx, (totalRow ? 1 : 0) + (averageRow ? 1 : 0) + (sumRow ? 1 : 0));
+
+  // The fact subquery: the rows of any window, each flagged with the windows it falls in. A snapshot
+  // measure needs each window's latest day, the same day for every member, found before any filter.
+  const flags = windows.map((w, i) => `(${inWindow(w)}) AS ${q(`__w${i + 1}`)}`);
+  const rows = `SELECT *, ${flags.join(', ')} FROM ${q(stream.table)} WHERE ${windows.map((w) => `(${inWindow(w)})`).join(' OR ')}`;
+  const lasts = windows.map((_, i) => {
+    const flag = q(`__w${i + 1}`);
+    return `(${flag} AND ${date} = MAX(${date}) FILTER (WHERE ${flag}) OVER ()) AS ${q(`__l${i + 1}`)}`;
+  });
+  const fact = uses.has('snapshot') ? `(SELECT *, ${lasts.join(', ')} FROM (${rows}) AS s) AS ${FACT}` : `(${rows}) AS ${FACT}`;
+
+  const sql = [
+    'WITH g AS (',
+    `SELECT ${select.join(', ')}`,
+    `FROM ${fact}`,
+    ...joins.values(),
+    ...(where.length > 0 ? [`WHERE ${where.join(' AND ')}`] : []),
+    totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
+    '), v AS (',
+    `SELECT g.*, ${derived.join(', ')}`,
+    'FROM g',
+    ...rankAndPage('v', sortName, sort, keepRows(null, options, measured), left, offset, limit,
+      { others: false, average: averageRow ? measured : [], sum: sumRow ? measured : [] }),
+  ].join('\n');
+  checkLength(sql, ctx);
+
+  const hull: PeriodWindow = {
+    from: windows.reduce((min, w) => (w.from < min ? w.from : min), windows[0]?.from ?? own.from),
+    to: windows.reduce((max, w) => (w.to > max ? w.to : max), windows[0]?.to ?? own.to),
+  };
+  return { ok: true, sql, columns, window: hull, windows, buckets: [], months: monthsRange(hull) };
 }
 
 /** Transaction mode: the fact rows themselves, newest first, one page at a time. */

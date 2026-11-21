@@ -937,3 +937,138 @@ describe('the tables a statement reads', () => {
     expect(['S1', 's12', 'G', 'rw'].filter(isStageName)).toEqual(['S1', 's12', 'G', 'rw']);
   });
 });
+
+describe('compileView, custom mode', () => {
+  const LAST_YEAR = { custom: { from: '2025-11-01', to: '2025-11-30' } };
+  const now = { key: 'now', point: { measure: 'sales' } };
+  const custom = (columns: unknown[], more: Record<string, unknown> = {}) => ({ mode: 'custom', custom_columns: columns, ...more });
+
+  it('gives each column its own measure, dates and rule, and reads each data point once', () => {
+    const out = compiled(custom([
+      now,
+      { key: 'ly', point: { measure: 'sales', period: LAST_YEAR } },
+      { key: 'diff', point: { measure: 'sales' }, against: { measure: 'sales', period: LAST_YEAR } },
+      { key: 'pct', label: 'Growth', point: { measure: 'sales' }, against: { measure: 'sales', period: LAST_YEAR }, show: 'percent' },
+      {
+        key: 'share', expression: 'a / b * 100', format: 'percent',
+        points: { a: { measure: 'sales', where: { dimension: 'product', cmp: 'in', values: ['P1'] } }, b: { measure: 'sales' } },
+      },
+    ]));
+    const thisMonth = '"sale_date" >= DATE \'2026-11-01\' AND "sale_date" < DATE \'2026-12-01\'';
+    const lastYear = '"sale_date" >= DATE \'2025-11-01\' AND "sale_date" < DATE \'2025-12-01\'';
+    expect(out.sql).toBe([
+      'WITH g AS (',
+      'SELECT f."branch_code" AS "code", CAST(SUM(f."amount") FILTER (WHERE f."__w1") AS DOUBLE) AS "p1", '
+        + 'CAST(SUM(f."amount") FILTER (WHERE f."__w2") AS DOUBLE) AS "p2", '
+        + 'CAST(SUM(f."amount") FILTER (WHERE f."__w1" AND CAST(f."product_code" AS VARCHAR) IN (\'P1\')) AS DOUBLE) AS "p3", 0 AS "__total"',
+      `FROM (SELECT *, (${thisMonth}) AS "__w1", (${lastYear}) AS "__w2" FROM "sales_lines" WHERE (${thisMonth}) OR (${lastYear})) AS f`,
+      'GROUP BY f."branch_code"',
+      '), v AS (',
+      'SELECT g.*, CAST("p1" AS DOUBLE) AS "c__now", CAST("p2" AS DOUBLE) AS "c__ly", '
+        + 'CAST(COALESCE("p1", 0) - COALESCE("p2", 0) AS DOUBLE) AS "c__diff", '
+        + 'CAST((COALESCE("p1", 0) - "p2") / NULLIF(abs("p2"), 0) AS DOUBLE) AS "c__pct", '
+        + 'CAST(((("p3") / NULLIF(("p1"), 0)) * 100) AS DOUBLE) AS "c__share"',
+      'FROM g',
+      '), r AS (',
+      'SELECT v.*, row_number() OVER (PARTITION BY "__total" ORDER BY "c__now" DESC NULLS LAST, "code" ASC) AS "__rn",',
+      'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
+      'FROM v',
+      ')',
+      'SELECT * EXCLUDE ("__rn", "p1", "p2", "p3") FROM r',
+      'WHERE "__total" = 1 OR ("__rn" > 0 AND "__rn" <= 200)',
+      'ORDER BY "__total" DESC, "__rn" ASC',
+    ].join('\n'));
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'c__now', 'c__ly', 'c__diff', 'c__pct', 'c__share', '__total', '__rows']);
+    expect(out.columns[1]).toMatchObject({ kind: 'measure', custom: 'now', label: 'Sales', measure: 'sales', format: 'currency', period: { from: '2026-11-01', to: '2026-12-01', days: 30, label: '2026-11-01 to 2026-11-30' } });
+    expect(out.columns[3]).toMatchObject({ custom: 'diff', label: 'Sales Variance', format: 'currency', period: null });
+    expect(out.columns[4]).toMatchObject({ custom: 'pct', label: 'Growth', format: 'percent' });
+    expect(out.columns[5]).toEqual({ name: 'c__share', kind: 'measure', custom: 'share', label: 'share', format: 'percent', period: null });
+    expect(out.window).toEqual({ from: '2025-11-01', to: '2026-12-01' });
+    expect(out.windows).toEqual([{ from: '2026-11-01', to: '2026-12-01' }, { from: '2025-11-01', to: '2025-12-01' }]);
+    expect(out.months).toEqual({ from: '2025-11', to: '2026-11' });
+    expect(out.buckets).toEqual([]);
+  });
+
+  it('leaves a hidden column out of the result and still sorts by it', () => {
+    const out = compiled(custom(
+      [{ key: 'a', point: { measure: 'sales' }, hidden: true }, { key: 'b', point: { measure: 'qty' } }],
+      { sort: { by: 'column.a', dir: 'asc' } },
+    ));
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'c__b', '__total', '__rows']);
+    expect(out.sql).toContain('ORDER BY "c__a" ASC NULLS LAST, "code" ASC');
+    expect(out.sql).toContain('SELECT * EXCLUDE ("__rn", "c__a", "p1", "p2") FROM r');
+    const unsorted = compiled(custom([{ key: 'a', point: { measure: 'sales' }, hidden: true }, { key: 'b', point: { measure: 'qty' } }]));
+    expect(unsorted.sql).toContain('ORDER BY "c__b" DESC NULLS LAST');
+  });
+
+  it('works a formula measure and a snapshot measure out over the point\'s own dates', () => {
+    const gp = compiled(custom([{ key: 'gp_ly', point: { measure: 'gp', period: LAST_YEAR } }]));
+    expect(gp.sql).toContain('/ NULLIF((SUM(f."amount") FILTER (WHERE f."__w1")), 0)) AS DOUBLE) AS "p1"');
+    expect(gp.sql).toContain('(SUM(f."cost") FILTER (WHERE f."__w1"))');
+    expect(gp.columns[1]).toMatchObject({ measure: 'gp', format: 'percent' });
+    const soh = compiled(custom([{ key: 'stock', point: { measure: 'soh' } }, now]));
+    expect(soh.sql).toContain('CAST(SUM(f."qty") FILTER (WHERE f."__l1") AS DOUBLE) AS "p1"');
+    expect(soh.sql).toContain('FROM (SELECT *, ("__w1" AND "sale_date" = MAX("sale_date") FILTER (WHERE "__w1") OVER ()) AS "__l1" FROM (SELECT *, (');
+    expect(compiled(custom([now])).sql).not.toContain('"__l1"');
+  });
+
+  it('takes the drill path, properties, a rule through a parent dimension and the total row', () => {
+    const out = compiled(custom(
+      [{ key: 'kept', point: { measure: 'sales', where: { dimension: 'department', cmp: 'not_in', values: ['D1'] } } }],
+      { group_by: 'product', properties: ['name'], path: [{ dimension: 'branch', selected: ['4'] }], options: { total_row: true } },
+    ));
+    expect(out.sql).toContain('FILTER (WHERE f."__w1" AND ("d_product"."dept" IS NULL OR CAST("d_product"."dept" AS VARCHAR) NOT IN (\'D1\')))');
+    expect(out.sql).toContain('CASE WHEN GROUPING(f."product_code") = 0 THEN any_value("d_product"."name") END AS "prop__name"');
+    expect(out.sql).toContain('WHERE CAST(f."branch_code" AS VARCHAR) IN (\'4\')');
+    expect(out.sql).toContain('GROUP BY GROUPING SETS ((f."product_code"), ())');
+    expect(out.sql).toContain('CAST(GROUPING(f."product_code") AS INTEGER) AS "__total"');
+    expect(out.tables).toEqual(['sales_lines', 'products']);
+  });
+
+  it('adds sum and average rows and hides zero rows over the shown columns', () => {
+    const out = compiled(custom([now, { key: 'h', point: { measure: 'qty' }, hidden: true }], { options: { sum_row: true, average_row: true, hide_zero_rows: true } }));
+    expect(out.sql).toContain('SELECT avg("c__now") AS "c__now", 3 AS "__total"');
+    expect(out.sql).toContain('SELECT sum("c__now") AS "c__now", 4 AS "__total"');
+    expect(out.sql).toContain('WHERE "__total" = 1 OR (COALESCE("c__now", 0) <> 0)');
+  });
+
+  it.each([
+    [custom([]), 'bad_custom_column'],
+    [{ mode: 'custom' }, 'bad_custom_column'],
+    [custom([now, now]), 'bad_custom_column'],
+    [custom([{ key: 'two words', point: { measure: 'sales' } }]), 'bad_custom_column'],
+    [custom([{ key: 'x' }]), 'bad_custom_column'],
+    [custom([{ key: 'x', point: { measure: 'sales' }, expression: 'a', points: { a: { measure: 'sales' } } }]), 'bad_custom_column'],
+    [custom([{ key: 'x', point: { measure: 'sales' }, show: 'percent' }]), 'bad_custom_column'],
+    [custom([{ key: 'x', point: { measure: 'sales' }, against: { measure: 'qty' }, show: 'ratio' }]), 'bad_custom_column'],
+    [custom([{ key: 'x', expression: 'a / b', points: { a: { measure: 'sales' } } }]), 'bad_custom_column'],
+    [custom([{ key: 'x', expression: 'a', points: { a: { measure: 'sales' } }, format: 'money' }]), 'bad_custom_column'],
+    [custom([{ key: 'x', expression: '1 + 1' }]), 'bad_custom_column'],
+    [custom([{ key: 'x', point: { measure: 'sales' }, hidden: true }]), 'bad_custom_column'],
+    [custom([{ key: 'x', point: { measure: 'sales', where: 'branch 4' } }]), 'bad_custom_column'],
+    [custom([{ key: 'x', expression: 'a +', points: { a: { measure: 'sales' } } }]), 'formula_syntax'],
+    [custom([{ key: 'x', point: { measure: 'nope' } }]), 'unknown_measure'],
+    [custom([{ key: 'x', point: { measure: 'ordered' } }]), 'measure_not_on_stream'],
+    [custom([{ key: 'x', point: { measure: 'sales', period: { named: 'nope' } } }]), 'unknown_period'],
+    [custom([{ key: 'x', point: { measure: 'sales', where: { dimension: 'customer', cmp: 'in', values: ['C1'] } } }]), 'dimension_not_on_stream'],
+    [custom([now], { filters: { op: 'and', rules: [{ measure: 'sales', cmp: '>', value: 0 }] } }), 'measure_filter_unsupported'],
+    [custom([now], { options: { activity: 'all' } }), 'option_unsupported'],
+    [custom([now], { options: { others_row: true } }), 'option_unsupported'],
+    [custom([now], { sort: { by: 'total.sales', dir: 'desc' } }), 'bad_sort'],
+    [custom([now], { sort: { by: 'column.nope', dir: 'desc' } }), 'bad_sort'],
+  ])('refuses %j with %s', (change, reason) => {
+    expect(refusal(change as Record<string, unknown>)).toBe(reason);
+  });
+
+  it('is answered from a rollup when every window is whole months', () => {
+    const roll = (columns: unknown[]) => compileRollupView(fixtureModel(), { ...base, ...custom(columns) } as ViewState, { today: TODAY });
+    const small = roll([now, { key: 'n', point: { measure: 'lines', period: LAST_YEAR } }]);
+    expect(small.ok && small.rollups).toEqual([{ stream: 'sales', rollup: 'by_branch', table: 'sales_month_branch' }]);
+    expect(small.ok && small.sql).toContain('CAST(COALESCE(SUM(f."line_count") FILTER (WHERE f."__w2"), 0) AS DOUBLE) AS "p2"');
+    expect(small.ok && small.sql).toContain('FROM "sales_month_branch" WHERE ("month" >= DATE \'2026-11-01\'');
+    const wide = roll([{ key: 'p', point: { measure: 'sales', where: { dimension: 'product', cmp: 'in', values: ['P1'] } } }]);
+    expect(wide.ok && wide.rollups).toEqual([{ stream: 'sales', rollup: 'by_product_branch', table: 'sales_month_product_branch' }]);
+    const week = roll([now, { key: 'w', point: { measure: 'sales', period: { custom: { from: '2026-11-02', to: '2026-11-08' } } } }]);
+    expect(week.ok ? 'did not refuse' : week.reason).toBe('no_rollup');
+  });
+});
