@@ -67,8 +67,14 @@ describe('validateModel', () => {
   });
 
   it('says where each problem is', () => {
-    const checked = validateModel(withChange({ measures: [{ key: 'a', agg: 'median', column: 'x' }] }));
-    expect(checked.ok ? [] : checked.problems.map((p) => p.path)).toEqual(['measures[0].agg']);
+    const pathsOf = (input: unknown): string[] => {
+      const checked = validateModel(input);
+      return checked.ok ? [] : checked.problems.map((p) => p.path);
+    };
+    // The fixture's measures stay, since its rollups carry them.
+    const measures = [...MODEL_JSON.measures, { key: 'a', agg: 'median', column: 'x' }];
+    expect(pathsOf(withChange({ measures }))).toEqual([`measures[${MODEL_JSON.measures.length}].agg`]);
+    expect(pathsOf(withRollups([{ key: 'r', table: 't', date: 'month', measure_columns: { soh: 'qty' } }]))).toEqual(['streams.sales.rollups.r.measure_columns.soh']);
   });
 });
 
