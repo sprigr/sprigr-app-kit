@@ -264,6 +264,32 @@ describe('compileView, variance mode', () => {
     expect(out.comparison).toEqual({ from: '2024-01-01', to: '2025-07-01' });
     expect(out.sql).not.toContain('"__b"');
   });
+
+  it('compares with a window given as a period of its own', () => {
+    const out = compiled({ ...view, compare: { period: { custom: { from: '2025-07-01', to: '2025-09-30' } } } });
+    expect(out.comparison).toEqual({ from: '2025-07-01', to: '2025-10-01' });
+    expect(out.sql).toContain(`(${now}) AS "__cur", ("sale_date" >= DATE '2025-07-01' AND "sale_date" < DATE '2025-10-01') AS "__prev"`);
+    expect(out.columns.find((c) => c.name === 'prev__sales')).toMatchObject({
+      label: 'Sales Comparison', part: 'previous', period: { from: '2025-07-01', to: '2025-10-01', days: 92 },
+    });
+    expect(out.months).toEqual({ from: '2025-07', to: '2026-11' });
+  });
+
+  it('reads the months of a comparison window that comes after the period', () => {
+    const out = compiled({ ...view, period: { custom: { from: '2025-11-01', to: '2025-11-30' } }, compare: { period: { preset: 'current_month' } } });
+    expect(out.window).toEqual({ from: '2025-11-01', to: '2025-12-01' });
+    expect(out.comparison).toEqual({ from: '2026-11-01', to: '2026-12-01' });
+    expect(out.months).toEqual({ from: '2025-11', to: '2026-11' });
+  });
+
+  it.each([
+    [{ compare: {} }, 'option_unsupported'],
+    [{ compare: { period: 'last year' } }, 'option_unsupported'],
+    [{ compare: { period: { named: 'nope' } } }, 'unknown_period'],
+    [{ compare: { period: { custom: { from: '2025-02-30', to: '2025-03-01' } } } }, 'bad_date'],
+  ])('refuses the comparison %j with %s', (change, reason) => {
+    expect(refusal({ ...view, ...change })).toBe(reason);
+  });
 });
 
 describe('compileView, filters on a measure', () => {

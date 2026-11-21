@@ -46,7 +46,8 @@ export const MEASURE_CMPS = ['=', '<>', '<', '<=', '>', '>='] as const;
 /** The four columns a measure has in variance mode. */
 export const VARIANCE_PARTS = ['current', 'previous', 'variance', 'variance_pct'] as const;
 export type VariancePart = (typeof VARIANCE_PARTS)[number];
-export type ViewCompare = 'previous_year' | 'previous_period';
+/** The same dates a year earlier, the period just before, or a period of its own. */
+export type ViewCompare = 'previous_year' | 'previous_period' | { period: PeriodSpec };
 
 const PART_PREFIX: Record<VariancePart, string> = { current: 'm__', previous: 'prev__', variance: 'var__', variance_pct: 'varp__' };
 
@@ -772,12 +773,18 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   let comparison: PeriodWindow | null = null;
   if (view.mode === 'variance') {
     const compare = view.compare ?? 'previous_year';
-    if (compare !== 'previous_year' && compare !== 'previous_period') fail('option_unsupported', `"${String(compare)}" is not a comparison`);
-    comparison = comparisonWindow(period.window, compare);
+    if (typeof compare === 'object' && compare !== null) {
+      // A window of its own. It may overlap the period, or come after it.
+      if (typeof compare.period !== 'object' || compare.period === null) fail('option_unsupported', 'a comparison given as an object needs a period');
+      comparison = resolvePeriod(compare.period, model.periods, ctx.today, { periodToDate: options.period_to_date === true }).window;
+    } else {
+      if (compare !== 'previous_year' && compare !== 'previous_period') fail('option_unsupported', `"${String(compare)}" is not a comparison`);
+      comparison = comparisonWindow(period.window, compare);
+    }
     const whole = (key: string, label: string, w: PeriodWindow): PeriodBucket => ({ key, label, from: w.from, to: w.to, days: daysBetween(w.from, w.to) });
     current = { bucket: whole('current', 'Current', period.window), filter: `${FACT}."__cur"`, last: `${FACT}."__lastc"` };
     previous = {
-      bucket: whole('previous', compare === 'previous_year' ? 'Previous year' : 'Previous period', comparison),
+      bucket: whole('previous', compare === 'previous_year' ? 'Previous year' : compare === 'previous_period' ? 'Previous period' : 'Comparison', comparison),
       filter: `${FACT}."__prev"`,
       last: `${FACT}."__lastp"`,
     };
@@ -915,9 +922,11 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   ].join('\n');
   checkLength(sql, ctx);
 
-  const read: PeriodWindow = comparison && comparison.from < period.window.from
-    ? { from: comparison.from, to: period.window.to }
-    : period.window;
+  // The months read run from the earlier start to the later end of the two windows.
+  const read: PeriodWindow = comparison ? {
+    from: comparison.from < period.window.from ? comparison.from : period.window.from,
+    to: comparison.to > period.window.to ? comparison.to : period.window.to,
+  } : period.window;
   return {
     ok: true,
     sql,

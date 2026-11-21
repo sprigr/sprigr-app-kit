@@ -66,7 +66,7 @@ Modes `total`, `period`, `variance`, `transaction`, `stream`, `matrix` and `cust
 
 `__total` says what a result row is: 0 a member, 1 the total, 2 the others row, 3 the average row, 4 the sum row.
 
-- **Variance** reads the period and a comparison window (`compare`: the same dates a year earlier, or the period just before) in one pass. Each measure gets four columns: current, previous, variance and variance percentage (a fraction).
+- **Variance** reads the period and a comparison window (`compare`: `previous_year` for the same dates a year earlier, `previous_period` for the period just before, or `{ period }` for a window of its own, which may overlap the period or come after it) in one pass. Each measure gets four columns: current, previous, variance and variance percentage (a fraction).
 - **A filter on a measure** drops rows after grouping. It never drops the total row, which stays the total of every member. A measure the view does not show can be filtered on. Dimension rules and measure rules combine with "and" only.
 - **Transaction** lists the fact rows: the date as text, every dimension code of the stream, the stream's extra `columns`, and each measure as that row holds it (a count is 1).
 - **Stream** puts measures from more than one stream side by side over the whole period, such as invoiced beside ordered. It reads the view's own stream and every other stream its measures belong to. Each stream is grouped on its own under the same drill path, filters and keyword, then the results are folded to one row per member, so a formula can read sums from two streams. A member is listed when any of those streams has rows for it. Every stream read must carry each dimension the view uses. `streams` in the result lists them.
