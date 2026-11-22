@@ -298,6 +298,18 @@ function compileMode(model: ReportingModel, view: ViewState, ctx: CompileContext
   if (view.mode === 'stream') return compileStreams(model, view, ctx);
   if (view.mode === 'matrix') return compileMatrix(model, view, ctx);
   if (view.mode === 'custom') return compileCustom(model, view, ctx);
+  if (view.mode !== 'period' && view.mode !== 'variance') return compileGrouped(model, view, ctx);
+  try {
+    return compileOneStream(model, view, ctx);
+  } catch (err) {
+    // A measure of another stream: the streams are grouped apart and set side by side, as in stream mode.
+    if (!(err instanceof ReportingError) || err.reason !== 'measure_not_on_stream' || ctx.periodShape === 'long') throw err;
+    return compileStreams(model, view, ctx);
+  }
+}
+
+/** A period or variance view whose measures all belong to its own stream. */
+function compileOneStream(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
   if (view.mode !== 'period' || ctx.periodShape === 'wide') return compileGrouped(model, view, ctx);
   if (ctx.periodShape === 'long') return compileMatrix(model, view, ctx, true);
   // One column per period while that fits; one row per member and period when the statement would be too long.
@@ -862,6 +874,55 @@ function withLatestDayOfEach(table: string, date: string, columns: string, where
   return `(SELECT *${columns}, ${flags.join(', ')} FROM ${table} WHERE ${where}) AS ${FACT}`;
 }
 
+/** A variance's two windows, each as one period: the view's own, and the one it is compared with. */
+function comparedWith(model: ReportingModel, view: ViewState, ctx: CompileContext, window: PeriodWindow): { comparison: PeriodWindow; current: PeriodBucket; previous: PeriodBucket } {
+  const compare = view.compare ?? 'previous_year';
+  let comparison: PeriodWindow;
+  if (typeof compare === 'object' && compare !== null) {
+    // A window of its own. It may overlap the period, or come after it.
+    if (typeof compare.period !== 'object' || compare.period === null) fail('option_unsupported', 'a comparison given as an object needs a period');
+    comparison = resolvePeriod(compare.period, model.periods, ctx.today, { periodToDate: view.options?.period_to_date === true }).window;
+  } else {
+    if (compare !== 'previous_year' && compare !== 'previous_period') fail('option_unsupported', `"${String(compare)}" is not a comparison`);
+    comparison = comparisonWindow(window, compare);
+  }
+  const whole = (key: string, label: string, w: PeriodWindow): PeriodBucket => ({ key, label, from: w.from, to: w.to, days: daysBetween(w.from, w.to) });
+  return {
+    comparison,
+    current: whole('current', 'Current', window),
+    previous: whole('previous', compare === 'previous_year' ? 'Previous year' : compare === 'previous_period' ? 'Previous period' : 'Comparison', comparison),
+  };
+}
+
+/**
+ * One set of dates a view of several streams reads its measures over: the prefix of its sum columns in
+ * each stream's stage, the days it covers, and the conditions that pick its rows and its latest day.
+ * `filter` is null when the stage holds no other rows.
+ */
+interface StreamPart { prefix: string; days: number; filter: string | null; last: string }
+
+/**
+ * A stream's fact rows for a view of several streams, aliased f: one window, a window cut into period
+ * columns, or a variance's two windows. Each stream reads the dates off its own date column.
+ */
+function factAcross(stream: ModelStream, range: PeriodWindow, buckets: PeriodBucket[], comparison: PeriodWindow | null, latest: boolean): string {
+  if (buckets.length === 0 && !comparison) return factOver(stream, range, latest);
+  const table = q(stream.table);
+  const date = q(stream.date);
+  const inWindow = (w: PeriodWindow): string => `${date} >= ${sqlDate(w.from)} AND ${date} < ${sqlDate(w.to)}`;
+  if (!comparison) {
+    const numbered = perBucket(date, buckets, (_, i) => i + 1);
+    const columns = `, ${numbered} AS "__b"`;
+    return latest ? withLatestDays(table, date, numbered, columns, inWindow(range)) : `(SELECT *${columns} FROM ${table} WHERE ${inWindow(range)}) AS ${FACT}`;
+  }
+  // Two flags, not one number: the two windows may overlap.
+  const columns = `, (${inWindow(range)}) AS "__cur", (${inWindow(comparison)}) AS "__prev"`;
+  const where = `(${inWindow(range)}) OR (${inWindow(comparison)})`;
+  return latest
+    ? withLatestDayOfEach(table, date, columns, where, [{ where: inWindow(range), flag: '__lastc' }, { where: inWindow(comparison), flag: '__lastp' }])
+    : `(SELECT *${columns} FROM ${table} WHERE ${where}) AS ${FACT}`;
+}
+
 /** A CASE over a fact row's date that gives the rows of each period column their own value. */
 function perBucket(date: string, buckets: PeriodBucket[], value: (bucket: PeriodBucket, index: number) => number): string {
   return `CASE ${buckets.map((b, i) => `WHEN ${date} < ${sqlDate(b.to)} THEN ${value(b, i)}`).join(' ')} END`;
@@ -989,22 +1050,10 @@ function compileGrouped(model: ReportingModel, view: ViewState, ctx: CompileCont
   let earlierSlices: Slice[] = [];
   let earlierBuckets: PeriodBucket[] = [];
   if (view.mode === 'variance' || periodVariance) {
-    const compare = view.compare ?? 'previous_year';
-    if (typeof compare === 'object' && compare !== null) {
-      // A window of its own. It may overlap the period, or come after it.
-      if (typeof compare.period !== 'object' || compare.period === null) fail('option_unsupported', 'a comparison given as an object needs a period');
-      comparison = resolvePeriod(compare.period, model.periods, ctx.today, { periodToDate: options.period_to_date === true }).window;
-    } else {
-      if (compare !== 'previous_year' && compare !== 'previous_period') fail('option_unsupported', `"${String(compare)}" is not a comparison`);
-      comparison = comparisonWindow(period.window, compare);
-    }
-    const whole = (key: string, label: string, w: PeriodWindow): PeriodBucket => ({ key, label, from: w.from, to: w.to, days: daysBetween(w.from, w.to) });
-    current = { bucket: whole('current', 'Current', period.window), filter: `${FACT}."__cur"`, last: `${FACT}."__lastc"` };
-    previous = {
-      bucket: whole('previous', compare === 'previous_year' ? 'Previous year' : compare === 'previous_period' ? 'Previous period' : 'Comparison', comparison),
-      filter: `${FACT}."__prev"`,
-      last: `${FACT}."__lastp"`,
-    };
+    const two = comparedWith(model, view, ctx, period.window);
+    comparison = two.comparison;
+    current = { bucket: two.current, filter: `${FACT}."__cur"`, last: `${FACT}."__lastc"` };
+    previous = { bucket: two.previous, filter: `${FACT}."__prev"`, last: `${FACT}."__lastp"` };
     // Two flags, not one number: a period longer than a year overlaps the year before it.
     factColumns = `, (${inWindow(period.window)}) AS "__cur", (${inWindow(comparison)}) AS "__prev"`;
     factWhere = `(${inWindow(period.window)}) OR (${inWindow(comparison)})`;
@@ -1471,9 +1520,12 @@ function compileTransactions(model: ReportingModel, view: ViewState, ctx: Compil
  */
 function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileContext): Compiled {
   const options: ViewOptions = view.options ?? {};
-  if (view.levels !== undefined) fail('option_unsupported', 'nested rows are not compiled for stream mode yet');
-  if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', 'the activity option is not compiled for stream mode yet');
-  if (options.others_row) fail('option_unsupported', 'an others row is not compiled for stream mode yet');
+  // A period or variance view comes here too, when one of its measures belongs to another stream.
+  const what = view.mode === 'stream' ? 'stream mode' : 'a view of more than one stream';
+  if (view.levels !== undefined) fail('option_unsupported', `nested rows are not compiled for ${what} yet`);
+  if ((options.activity ?? 'with') !== 'with') fail('option_unsupported', `the activity option is not compiled for ${what} yet`);
+  if (options.others_row) fail('option_unsupported', `an others row is not compiled for ${what} yet`);
+  if (options.average_column && view.mode === 'period') fail('option_unsupported', `an average column is not compiled for ${what} yet`);
   const totalRow = options.total_row === true;
   const averageRow = options.average_row === true;
   const sumRow = options.sum_row === true;
@@ -1487,22 +1539,39 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
     .map((key) => measureByKey.get(key) ?? fail('unknown_measure', `no measure "${key}"`));
   const period = resolvePeriod(view.period, model.periods, ctx.today, { periodToDate: options.period_to_date === true });
   const range = period.window;
+  const buckets = view.mode === 'period' ? period.buckets : [];
+  const two = view.mode === 'variance' ? comparedWith(model, view, ctx, range) : null;
+
+  // The dates a figure covers: the whole period, one period column of it, or the window a variance compares with.
+  const whole: StreamPart = two
+    ? { prefix: 'a', days: two.current.days, filter: `${FACT}."__cur"`, last: `${FACT}."__lastc"` }
+    : { prefix: 'a', days: daysBetween(range.from, range.to), filter: null, last: `${FACT}."__lastw"` };
+  const earlier: StreamPart | null = two ? { prefix: 'ap', days: two.previous.days, filter: `${FACT}."__prev"`, last: `${FACT}."__lastp"` } : null;
+  const perPeriod = buckets.map((bucket, i): { bucket: PeriodBucket; part: StreamPart; index: number } => ({
+    bucket,
+    part: { prefix: `a${i + 1}`, days: bucket.days, filter: `${FACT}."__b" = ${i + 1}`, last: `${FACT}."__b" = ${i + 1} AND ${FACT}."__last"` },
+    index: i + 1,
+  }));
 
   // Each measure as an expression over the folded sums; `needed` collects the sums each stream must supply.
-  const needed = new Map<string, ModelBaseMeasure[]>();
+  const needed = new Map<string, Array<{ measure: ModelBaseMeasure; part: StreamPart }>>();
   const parsed = new Map<string, FormulaNode>();
-  const exprOf = (key: string, depth: number): string => {
+  const exprOf = (key: string, part: StreamPart, depth: number): string => {
     if (depth > 20) fail('formula_cycle', `"${key}" refers back to itself`);
     const measure = measureByKey.get(key) ?? fail('formula_unknown_measure', `"${key}" is not a measure`);
     if (isFormulaMeasure(measure)) {
       let node = parsed.get(key);
       if (!node) { node = parseFormula(measure.formula); parsed.set(key, node); }
-      return emitFormulaSql(node, { measure: (ref) => exprOf(ref, depth + 1), days: daysBetween(range.from, range.to) });
+      return emitFormulaSql(node, {
+        measure: (ref) => exprOf(ref, part, depth + 1),
+        days: part.days,
+        ...(buckets.length > 0 ? { periodCount: buckets.length } : {}),
+      });
     }
     const list = needed.get(measure.stream) ?? [];
-    if (!list.some((m) => m.key === measure.key)) list.push(measure);
+    if (!list.some((n) => n.measure.key === measure.key && n.part === part)) list.push({ measure, part });
     needed.set(measure.stream, list);
-    return `any_value(${q(`a__${measure.key}`)})`;
+    return `any_value(${q(`${part.prefix}__${measure.key}`)})`;
   };
 
   const properties = shownProperties(view);
@@ -1515,11 +1584,40 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
     columns.push({ name, kind: 'property', label, property });
   });
   const left: string[] = ['__rn'];
-  const addMeasure = (measure: ModelMeasure, seen: boolean): void => {
-    const name = `m__${measure.key}`;
-    select.push(`CAST(${exprOf(measure.key, 0)} AS DOUBLE) AS ${q(name)}`);
-    if (seen) columns.push({ name, kind: 'measure', label: measure.label, measure: measure.key, format: measure.format, period: null });
+  /** Variance columns, computed from g's own columns in stage v. */
+  const derived: string[] = [];
+  const put = (into: string[], name: string, expr: string, seen: boolean, column: Omit<CompiledColumn, 'name' | 'kind'>): void => {
+    into.push(`${expr} AS ${q(name)}`);
+    if (seen) columns.push({ name, kind: 'measure', ...column });
     else left.push(name);
+  };
+  const figure = (key: string, part: StreamPart): string => `CAST(${exprOf(key, part, 0)} AS DOUBLE)`;
+  const display = options.reverse_periods ? [...perPeriod].reverse() : perPeriod;
+  // The same columns, names and labels a view of one stream has.
+  const addMeasure = (measure: ModelMeasure, seen: boolean): void => {
+    const about = { measure: measure.key, format: measure.format };
+    if (seen) {
+      display.forEach(({ bucket, part, index }) => {
+        put(select, `b${index}__${measure.key}`, figure(measure.key, part), true, { ...about, label: `${measure.label} ${bucket.label}`, period: bucket });
+      });
+    }
+    const wholeName = `m__${measure.key}`;
+    put(select, wholeName, figure(measure.key, whole), seen, {
+      ...about,
+      label: buckets.length > 0 ? `${measure.label} Total` : measure.label,
+      period: two ? two.current : null,
+      ...(two ? { part: 'current' as const } : {}),
+    });
+    if (!two || !earlier) return;
+    const cur = q(wholeName);
+    const prev = q(`prev__${measure.key}`);
+    put(select, `prev__${measure.key}`, figure(measure.key, earlier), seen,
+      { ...about, label: `${measure.label} ${two.previous.label}`, period: two.previous, part: 'previous' });
+    // A member with nothing in one window still has a variance: the blank counts as 0.
+    put(derived, `var__${measure.key}`, `COALESCE(${cur}, 0) - COALESCE(${prev}, 0)`, seen,
+      { ...about, label: `${measure.label} Variance`, period: null, part: 'variance' });
+    put(derived, `varp__${measure.key}`, `(COALESCE(${cur}, 0) - ${prev}) / NULLIF(abs(${prev}), 0)`, seen,
+      { measure: measure.key, format: 'percent', label: `${measure.label} Variance %`, period: null, part: 'variance_pct' });
   };
   shown.forEach((measure) => addMeasure(measure, true));
   unseen.forEach((measure) => addMeasure(measure, false));
@@ -1532,6 +1630,9 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
   if (!columns.some((c) => c.name === sortName && c.kind !== 'meta')) fail('bad_sort', `"${String(sort.by)}" is not a column of this view`);
   const { limit, offset } = pageOf(view, ctx, (totalRow ? 1 : 0) + (averageRow ? 1 : 0) + (sumRow ? 1 : 0));
   const measured = columns.filter((c) => c.kind === 'measure').map((c) => c.name);
+  // What "zero" is judged on: each shown measure over the whole period, and over the earlier one in a variance.
+  const figures = shown.flatMap((m) => (two ? [`m__${m.key}`, `prev__${m.key}`] : [`m__${m.key}`]));
+  const source = derived.length > 0 ? 'v' : 'g';
 
   // One stage per stream: the view's own first, then the others its measures read, in the model's order.
   const streamKeys = [lead.stream.key, ...model.streams.map((s) => s.key).filter((key) => key !== lead.stream.key && needed.has(key))];
@@ -1546,16 +1647,21 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
       const expr = `any_value(${scope.propertyOf(groupDim.key, property)})`;
       part.push(`${totalRow ? `CASE WHEN ${grouping} = 0 THEN ${expr} END` : expr} AS ${q(`prop__${property}`)}`);
     });
-    mine.forEach((measure) => {
+    mine.forEach(({ measure, part: over }) => {
       const call = aggregateOf(measure, 'COUNT(*)');
-      part.push(`${measure.snapshot ? `${call} FILTER (WHERE ${FACT}."__lastw")` : call} AS ${q(`a__${measure.key}`)}`);
+      const sum = measure.snapshot ? `${call} FILTER (WHERE ${over.last})`
+        : over.filter === null ? call
+          // A count of no rows is 0, where a sum of no rows is blank; a count read from a rollup stays a count.
+          : measure.agg === 'count' && measure.rolled ? `COALESCE(${call} FILTER (WHERE ${over.filter}), 0)`
+            : `${call} FILTER (WHERE ${over.filter})`;
+      part.push(`${sum} AS ${q(`${over.prefix}__${measure.key}`)}`);
     });
     part.push(`${totalRow ? `CAST(${grouping} AS INTEGER)` : '0'} AS "__total"`);
     return [
       `${i === 0 ? 'WITH' : '),'} s${i + 1} AS (`,
       `SELECT ${part.join(', ')}`,
-      // A snapshot measure reads its own stream's latest day in the period.
-      `FROM ${factOver(stream, range, mine.some((measure) => measure.snapshot))}`,
+      // A snapshot measure reads its own stream's latest day in each set of dates.
+      `FROM ${factAcross(stream, range, buckets, two ? two.comparison : null, mine.some(({ measure }) => measure.snapshot))}`,
       ...scope.joins.values(),
       ...(scope.where.length > 0 ? [`WHERE ${scope.where.join(' AND ')}`] : []),
       totalRow ? `GROUP BY GROUPING SETS ((${codeExpr}), ())` : `GROUP BY ${codeExpr}`,
@@ -1569,12 +1675,18 @@ function compileStreams(model: ReportingModel, view: ViewState, ctx: CompileCont
     // By name: each stage has its own sum columns, and a member one stream lacks gets blanks there.
     `FROM (${streamKeys.map((_, i) => `SELECT * FROM s${i + 1}`).join(' UNION ALL BY NAME ')}) AS u`,
     'GROUP BY "code", "__total"',
-    ...rankAndPage('g', sortName, sort, keepRows(lead.having, options, shown.map((m) => `m__${m.key}`)), left, offset, limit,
+    ...(source === 'v' ? ['), v AS (', `SELECT g.*, ${derived.join(', ')}`, 'FROM g'] : []),
+    ...rankAndPage(source, sortName, sort, keepRows(lead.having, options, figures), left, offset, limit,
       { others: false, average: averageRow ? measured : [], sum: sumRow ? measured : [] }),
   ].join('\n');
   checkLength(sql, ctx);
 
-  return { ok: true, sql, columns, window: range, buckets: [], months: monthsRange(range), streams: streamKeys };
+  // The months read run from the earlier start to the later end of the two windows.
+  const read: PeriodWindow = two ? {
+    from: two.comparison.from < range.from ? two.comparison.from : range.from,
+    to: two.comparison.to > range.to ? two.comparison.to : range.to,
+  } : range;
+  return { ok: true, sql, columns, window: range, ...(two ? { comparison: two.comparison } : {}), buckets, months: monthsRange(read), streams: streamKeys };
 }
 
 /**
