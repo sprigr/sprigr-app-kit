@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isFormulaMeasure, measureAvailability, validateModel } from '../src';
+import { dimensionAvailability, isFormulaMeasure, measureAvailability, validateModel } from '../src';
 import { MODEL_JSON, fixtureModel } from './fixture';
 
 /** The fixture with one part replaced. */
@@ -101,5 +101,82 @@ describe('measureAvailability', () => {
     expect(value && !isFormulaMeasure(value) ? value.times : null).toBe('unit_cost');
     expect(measureAvailability(checked.model, { sales_lines: ['sale_date', 'qty'] })).toMatchObject({ qty: true, value: false });
     expect(measureAvailability(checked.model, { sales_lines: ['sale_date', 'qty', 'Unit_Cost'] })).toMatchObject({ value: true });
+  });
+});
+
+describe('dimensionAvailability', () => {
+  /** Every table and column the fixture's dimensions read. */
+  const FULL: Record<string, string[]> = {
+    sales_lines: ['sale_date', 'product_code', 'branch_code', 'amount'],
+    order_lines: ['order_date', 'product_code', 'amount'],
+    products: ['code', 'name', 'brand', 'dept'],
+    departments: ['code', 'name'],
+  };
+  /** FULL without one table, or without one column of it. */
+  const without = (table: string, column?: string): Record<string, string[]> => {
+    const schema = structuredClone(FULL);
+    if (column === undefined) delete schema[table];
+    else schema[table] = (schema[table] ?? []).filter((c) => c !== column);
+    return schema;
+  };
+  const WHOLE = {
+    product: { streams: ['sales', 'orders'], table: true, name: true, properties: { brand: true } },
+    department: { streams: ['sales', 'orders'], table: true, name: true, properties: {} },
+    branch: { streams: ['sales'], table: false, name: false, properties: {} },
+    customer: { streams: [], table: false, name: false, properties: {} },
+  };
+
+  it('lists the streams a role can read each dimension on, and what its own table can show', () => {
+    expect(dimensionAvailability(fixtureModel(), FULL)).toEqual(WHOLE);
+  });
+
+  it('drops a stream whose code column the role lacks, for the dimension and for one reached through it', () => {
+    expect(dimensionAvailability(fixtureModel(), without('sales_lines', 'product_code'))).toEqual({
+      ...WHOLE,
+      product: { ...WHOLE.product, streams: ['orders'] },
+      department: { ...WHOLE.department, streams: ['orders'] },
+    });
+  });
+
+  it('lists no stream whose date column the role lacks', () => {
+    expect(dimensionAvailability(fixtureModel(), without('sales_lines', 'sale_date'))).toEqual({
+      ...WHOLE,
+      product: { ...WHOLE.product, streams: ['orders'] },
+      department: { ...WHOLE.department, streams: ['orders'] },
+      branch: { ...WHOLE.branch, streams: [] },
+    });
+  });
+
+  it('keeps a code that sits on the fact row when the role lacks the lookup table, and reaches nothing through that table', () => {
+    expect(dimensionAvailability(fixtureModel(), without('products'))).toEqual({
+      ...WHOLE,
+      product: { streams: ['sales', 'orders'], table: false, name: false, properties: { brand: false } },
+      department: { ...WHOLE.department, streams: [] },
+    });
+  });
+
+  it('reaches nothing through a parent table that lacks the column holding the code', () => {
+    expect(dimensionAvailability(fixtureModel(), without('products', 'dept'))).toEqual({
+      ...WHOLE,
+      department: { ...WHOLE.department, streams: [] },
+    });
+  });
+
+  it('reads nothing from a lookup table whose code column the role lacks', () => {
+    expect(dimensionAvailability(fixtureModel(), without('products', 'code'))).toEqual({
+      ...WHOLE,
+      product: { streams: ['sales', 'orders'], table: false, name: false, properties: { brand: false } },
+      department: { ...WHOLE.department, streams: [] },
+    });
+  });
+
+  it('hides a name or a property whose column the role lacks, and keeps the rest', () => {
+    expect(dimensionAvailability(fixtureModel(), without('products', 'brand')).product).toEqual({ ...WHOLE.product, properties: { brand: false } });
+    expect(dimensionAvailability(fixtureModel(), without('departments', 'name')).department).toEqual({ ...WHOLE.department, name: false });
+  });
+
+  it('reads table and column names in any case', () => {
+    const upper = Object.fromEntries(Object.entries(FULL).map(([table, cols]) => [table.toUpperCase(), cols.map((c) => c.toUpperCase())]));
+    expect(dimensionAvailability(fixtureModel(), upper)).toEqual(WHOLE);
   });
 });
