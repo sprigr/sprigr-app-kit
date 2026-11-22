@@ -618,6 +618,156 @@ describe('compileView, stream mode', () => {
   });
 });
 
+describe('compileView, a period or variance view with a measure of another stream', () => {
+  const periods = { mode: 'period', group_by: 'product', measures: ['sales', 'ordered'], period: { preset: 'rolling_3' } };
+  const variance = { mode: 'variance', group_by: 'product', measures: ['sales', 'ordered'] };
+  const BUCKET = (date: string) => `CASE WHEN "${date}" < DATE '2026-10-01' THEN 1 WHEN "${date}" < DATE '2026-11-01' THEN 2 WHEN "${date}" < DATE '2026-12-01' THEN 3 END`;
+  const QUARTER = (date: string) => `"${date}" >= DATE '2026-09-01' AND "${date}" < DATE '2026-12-01'`;
+  const NOW = (date: string) => `"${date}" >= DATE '2026-11-01' AND "${date}" < DATE '2026-12-01'`;
+  const YEAR_AGO = (date: string) => `"${date}" >= DATE '2025-11-01' AND "${date}" < DATE '2025-12-01'`;
+
+  it('groups each stream by period in its own stage and sets the periods side by side', () => {
+    const out = compiled(periods);
+    expect(out.sql).toBe([
+      'WITH s1 AS (',
+      'SELECT f."product_code" AS "code", SUM(f."amount") FILTER (WHERE f."__b" = 1) AS "a1__sales", SUM(f."amount") FILTER (WHERE f."__b" = 2) AS "a2__sales", SUM(f."amount") FILTER (WHERE f."__b" = 3) AS "a3__sales", SUM(f."amount") AS "a__sales", 0 AS "__total"',
+      `FROM (SELECT *, ${BUCKET('sale_date')} AS "__b" FROM "sales_lines" WHERE ${QUARTER('sale_date')}) AS f`,
+      'GROUP BY f."product_code"',
+      '), s2 AS (',
+      'SELECT f."product_code" AS "code", SUM(f."amount") FILTER (WHERE f."__b" = 1) AS "a1__ordered", SUM(f."amount") FILTER (WHERE f."__b" = 2) AS "a2__ordered", SUM(f."amount") FILTER (WHERE f."__b" = 3) AS "a3__ordered", SUM(f."amount") AS "a__ordered", 0 AS "__total"',
+      `FROM (SELECT *, ${BUCKET('order_date')} AS "__b" FROM "order_lines" WHERE ${QUARTER('order_date')}) AS f`,
+      'GROUP BY f."product_code"',
+      '), g AS (',
+      'SELECT "code", CAST(any_value("a1__sales") AS DOUBLE) AS "b1__sales", CAST(any_value("a2__sales") AS DOUBLE) AS "b2__sales", CAST(any_value("a3__sales") AS DOUBLE) AS "b3__sales", CAST(any_value("a__sales") AS DOUBLE) AS "m__sales", CAST(any_value("a1__ordered") AS DOUBLE) AS "b1__ordered", CAST(any_value("a2__ordered") AS DOUBLE) AS "b2__ordered", CAST(any_value("a3__ordered") AS DOUBLE) AS "b3__ordered", CAST(any_value("a__ordered") AS DOUBLE) AS "m__ordered", "__total"',
+      'FROM (SELECT * FROM s1 UNION ALL BY NAME SELECT * FROM s2) AS u',
+      'GROUP BY "code", "__total"',
+      '), r AS (',
+      'SELECT g.*, row_number() OVER (PARTITION BY "__total" ORDER BY "m__sales" DESC NULLS LAST, "code" ASC) AS "__rn",',
+      'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
+      'FROM g',
+      ')',
+      'SELECT * EXCLUDE ("__rn") FROM r',
+      'WHERE "__total" = 1 OR ("__rn" > 0 AND "__rn" <= 200)',
+      'ORDER BY "__total" DESC, "__rn" ASC',
+    ].join('\n'));
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'b1__sales', 'b2__sales', 'b3__sales', 'm__sales', 'b1__ordered', 'b2__ordered', 'b3__ordered', 'm__ordered', '__total', '__rows']);
+    expect(out.columns.find((c) => c.name === 'b2__ordered')).toMatchObject({ kind: 'measure', measure: 'ordered', label: 'Ordered Oct 2026', period: { from: '2026-10-01', to: '2026-11-01' } });
+    expect(out.columns.find((c) => c.name === 'm__ordered')).toMatchObject({ label: 'Ordered Total', period: null });
+    expect(out.buckets.map((b) => b.from)).toEqual(['2026-09-01', '2026-10-01', '2026-11-01']);
+    expect(out.streams).toEqual(['sales', 'orders']);
+    expect(out.months).toEqual({ from: '2026-09', to: '2026-11' });
+    // Asking for the wide shape changes nothing: this is the wide shape.
+    expect(compiled(periods, { periodShape: 'wide' }).sql).toBe(out.sql);
+  });
+
+  it('works a formula out for each period from the folded sums, with that period\'s own days', () => {
+    const fill = compiled({ ...periods, measures: ['fill'] });
+    expect(fill.sql).toContain('CAST(((any_value("a2__sales")) / NULLIF((any_value("a2__ordered")), 0)) AS DOUBLE) AS "b2__fill"');
+    expect(fill.sql).toContain('CAST(((any_value("a__sales")) / NULLIF((any_value("a__ordered")), 0)) AS DOUBLE) AS "m__fill", "__total"');
+    const daily = compiled({ ...periods, measures: ['daily', 'ordered'] });
+    expect(daily.sql).toContain('CAST(((any_value("a1__sales")) / NULLIF(30, 0)) AS DOUBLE) AS "b1__daily"');
+    expect(daily.sql).toContain('CAST(((any_value("a__sales")) / NULLIF(91, 0)) AS DOUBLE) AS "m__daily"');
+  });
+
+  it('shows the newest period first when the view asks', () => {
+    const out = compiled({ ...periods, options: { reverse_periods: true } });
+    expect(out.columns.map((c) => c.name).slice(1, 5)).toEqual(['b3__sales', 'b2__sales', 'b1__sales', 'm__sales']);
+  });
+
+  it('reads a variance of two streams, each stream on its own dates', () => {
+    const out = compiled(variance);
+    expect(out.sql).toBe([
+      'WITH s1 AS (',
+      'SELECT f."product_code" AS "code", SUM(f."amount") FILTER (WHERE f."__cur") AS "a__sales", SUM(f."amount") FILTER (WHERE f."__prev") AS "ap__sales", 0 AS "__total"',
+      `FROM (SELECT *, (${NOW('sale_date')}) AS "__cur", (${YEAR_AGO('sale_date')}) AS "__prev" FROM "sales_lines" WHERE (${NOW('sale_date')}) OR (${YEAR_AGO('sale_date')})) AS f`,
+      'GROUP BY f."product_code"',
+      '), s2 AS (',
+      'SELECT f."product_code" AS "code", SUM(f."amount") FILTER (WHERE f."__cur") AS "a__ordered", SUM(f."amount") FILTER (WHERE f."__prev") AS "ap__ordered", 0 AS "__total"',
+      `FROM (SELECT *, (${NOW('order_date')}) AS "__cur", (${YEAR_AGO('order_date')}) AS "__prev" FROM "order_lines" WHERE (${NOW('order_date')}) OR (${YEAR_AGO('order_date')})) AS f`,
+      'GROUP BY f."product_code"',
+      '), g AS (',
+      'SELECT "code", CAST(any_value("a__sales") AS DOUBLE) AS "m__sales", CAST(any_value("ap__sales") AS DOUBLE) AS "prev__sales", CAST(any_value("a__ordered") AS DOUBLE) AS "m__ordered", CAST(any_value("ap__ordered") AS DOUBLE) AS "prev__ordered", "__total"',
+      'FROM (SELECT * FROM s1 UNION ALL BY NAME SELECT * FROM s2) AS u',
+      'GROUP BY "code", "__total"',
+      '), v AS (',
+      'SELECT g.*, COALESCE("m__sales", 0) - COALESCE("prev__sales", 0) AS "var__sales", (COALESCE("m__sales", 0) - "prev__sales") / NULLIF(abs("prev__sales"), 0) AS "varp__sales", COALESCE("m__ordered", 0) - COALESCE("prev__ordered", 0) AS "var__ordered", (COALESCE("m__ordered", 0) - "prev__ordered") / NULLIF(abs("prev__ordered"), 0) AS "varp__ordered"',
+      'FROM g',
+      '), r AS (',
+      'SELECT v.*, row_number() OVER (PARTITION BY "__total" ORDER BY "m__sales" DESC NULLS LAST, "code" ASC) AS "__rn",',
+      'CAST(sum(CASE WHEN "__total" = 0 THEN 1 ELSE 0 END) OVER () AS INTEGER) AS "__rows"',
+      'FROM v',
+      ')',
+      'SELECT * EXCLUDE ("__rn") FROM r',
+      'WHERE "__total" = 1 OR ("__rn" > 0 AND "__rn" <= 200)',
+      'ORDER BY "__total" DESC, "__rn" ASC',
+    ].join('\n'));
+    expect(out.columns.filter((c) => c.measure === 'ordered').map((c) => [c.name, c.label, c.part, c.format])).toEqual([
+      ['m__ordered', 'Ordered', 'current', 'number'],
+      ['prev__ordered', 'Ordered Previous year', 'previous', 'number'],
+      ['var__ordered', 'Ordered Variance', 'variance', 'number'],
+      ['varp__ordered', 'Ordered Variance %', 'variance_pct', 'percent'],
+    ]);
+    expect(out.comparison).toEqual({ from: '2025-11-01', to: '2025-12-01' });
+    expect(out.streams).toEqual(['sales', 'orders']);
+    expect(out.months).toEqual({ from: '2025-11', to: '2026-11' });
+  });
+
+  it('reads a snapshot measure on the latest day of each period, and of each window, of its own stream', () => {
+    const byPeriod = compiled({ ...periods, measures: ['soh', 'ordered'] });
+    expect(byPeriod.sql).toContain('SUM(f."qty") FILTER (WHERE f."__b" = 2 AND f."__last") AS "a2__soh"');
+    expect(byPeriod.sql).toContain('SUM(f."qty") FILTER (WHERE f."__lastw") AS "a__soh"');
+    expect(byPeriod.sql).toContain(`("sale_date" IN (SELECT MAX("sale_date") FROM "sales_lines" WHERE ${QUARTER('sale_date')} GROUP BY ${BUCKET('sale_date')})) AS "__last"`);
+    // The other stream reads no snapshot, so its rows carry no latest-day flag.
+    expect(byPeriod.sql).toContain(`FROM (SELECT *, ${BUCKET('order_date')} AS "__b" FROM "order_lines" WHERE ${QUARTER('order_date')}) AS f`);
+    const compared = compiled({ ...variance, measures: ['soh', 'ordered'] });
+    expect(compared.sql).toContain('SUM(f."qty") FILTER (WHERE f."__lastc") AS "a__soh", SUM(f."qty") FILTER (WHERE f."__lastp") AS "ap__soh"');
+    expect(compared.sql).toContain(`("sale_date" = (SELECT MAX("sale_date") FROM "sales_lines" WHERE ${NOW('sale_date')})) AS "__lastc", ("sale_date" = (SELECT MAX("sale_date") FROM "sales_lines" WHERE ${YEAR_AGO('sale_date')})) AS "__lastp"`);
+    expect(compared.sql).not.toContain('MAX("order_date")');
+  });
+
+  it('filters a variance on another stream\'s earlier figure without showing it', () => {
+    const out = compiled({ ...variance, measures: ['sales'], filters: { op: 'and', rules: [{ measure: 'ordered', cmp: '>', value: 0, of: 'previous' }] }, options: { hide_zero_rows: true } });
+    expect(out.sql).toContain('FROM v\nWHERE "__total" = 1 OR ((COALESCE("m__sales", 0) <> 0 OR COALESCE("prev__sales", 0) <> 0) AND ("prev__ordered" > 0))\n)');
+    expect(out.sql).toContain('SELECT * EXCLUDE ("__rn", "m__ordered", "prev__ordered", "var__ordered", "varp__ordered") FROM r');
+    expect(out.columns.map((c) => c.name)).toEqual(['code', 'm__sales', 'prev__sales', 'var__sales', 'varp__sales', '__total', '__rows']);
+  });
+
+  it('is answered from a rollup of each stream, and keeps a count 0 where no row falls', () => {
+    const out = compileRollupView(fixtureModel(), { ...base, ...periods, measures: ['lines', 'ordered'] } as ViewState, { today: TODAY });
+    if (!out.ok) throw new Error(`refused: ${out.reason}: ${out.detail}`);
+    expect(out.rollups).toEqual([
+      { stream: 'sales', rollup: 'by_product_branch', table: 'sales_month_product_branch' },
+      { stream: 'orders', rollup: 'by_product', table: 'orders_month_product' },
+    ]);
+    expect(out.sql).toContain('COALESCE(SUM(f."line_count") FILTER (WHERE f."__b" = 2), 0) AS "a2__lines"');
+    expect(out.sql).toContain(`FROM (SELECT *, ${BUCKET('month')} AS "__b" FROM "orders_month_product" WHERE ${QUARTER('month')}) AS f`);
+  });
+
+  it('refuses what a view of more than one stream does not compile yet', () => {
+    expect(refusal({ ...periods, levels: ['department'] })).toBe('option_unsupported');
+    expect(refusal({ ...periods, options: { average_column: true } })).toBe('option_unsupported');
+    expect(refusal({ ...variance, options: { activity: 'all' } })).toBe('option_unsupported');
+    expect(refusal({ ...variance, options: { others_row: true } })).toBe('option_unsupported');
+    // The other stream has no branch to group by.
+    expect(refusal({ ...periods, group_by: 'branch' })).toBe('dimension_not_on_stream');
+    expect(refusal(periods, { maxSqlChars: 900 })).toBe('sql_too_long');
+    expect(refusal({ ...variance, sort: { by: 'period.1.sales', dir: 'asc' } })).toBe('bad_sort');
+  });
+
+  it('still refuses a total, a period variance and the long shape that read another stream', () => {
+    expect(refusal({ group_by: 'product', measures: ['sales', 'ordered'] })).toBe('measure_not_on_stream');
+    expect(refusal({ ...periods, mode: 'period_variance' })).toBe('measure_not_on_stream');
+    expect(refusal(periods, { periodShape: 'long' })).toBe('measure_not_on_stream');
+  });
+
+  it('leaves a period or variance view of one stream as it was', () => {
+    const one = compiled({ ...periods, measures: ['sales'] });
+    expect(one.sql.startsWith('WITH g AS (')).toBe(true);
+    expect(one.streams).toBeUndefined();
+    expect(compiled({ ...variance, measures: ['sales'] }).streams).toBeUndefined();
+  });
+});
+
 describe('compileView, matrix mode', () => {
   const matrix = { mode: 'matrix', across: { dimension: 'product' } };
 
