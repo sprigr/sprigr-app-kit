@@ -1,0 +1,36 @@
+{
+  "name": "@sprigr/apps-reporting-core",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Pure reporting core: a model of dimensions and measures, a formula parser, a period engine, and a compiler from a saved view to one DuckDB statement.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsup src/index.ts --format esm --dts --out-dir dist --clean --tsconfig tsconfig.build.json",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sprigr/sprigr-app-kit.git",
+    "directory": "packages/reporting-core"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}
