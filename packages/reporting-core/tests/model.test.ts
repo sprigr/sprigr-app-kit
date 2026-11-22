@@ -112,9 +112,9 @@ describe('dimensionAvailability', () => {
     products: ['code', 'name', 'brand', 'dept'],
     departments: ['code', 'name'],
   };
-  /** FULL without one table, or without one column of it. */
-  const without = (table: string, column?: string): Record<string, string[]> => {
-    const schema = structuredClone(FULL);
+  /** A schema (FULL unless one is given) without one table, or without one column of it. */
+  const without = (table: string, column?: string, from: Record<string, string[]> = FULL): Record<string, string[]> => {
+    const schema = structuredClone(from);
     if (column === undefined) delete schema[table];
     else schema[table] = (schema[table] ?? []).filter((c) => c !== column);
     return schema;
@@ -178,5 +178,75 @@ describe('dimensionAvailability', () => {
   it('reads table and column names in any case', () => {
     const upper = Object.fromEntries(Object.entries(FULL).map(([table, cols]) => [table.toUpperCase(), cols.map((c) => c.toUpperCase())]));
     expect(dimensionAvailability(fixtureModel(), upper)).toEqual(WHOLE);
+  });
+
+  /** A checked model, or the problems thrown. */
+  const modelOf = (input: unknown) => {
+    const checked = validateModel(input);
+    if (!checked.ok) throw new Error(JSON.stringify(checked.problems));
+    return checked.model;
+  };
+
+  it('reaches a dimension two tables up only while every table on the way holds its column', () => {
+    const division = { key: 'division', label: 'Division', table: 'divisions', code: 'code', via: { dimension: 'department', column: 'division' } };
+    const model = modelOf(withChange({ dimensions: [...MODEL_JSON.dimensions, division] }));
+    const DEEP: Record<string, string[]> = { ...FULL, departments: ['code', 'name', 'division'], divisions: ['code'] };
+    const streamsOf = (schema: Record<string, string[]>) => dimensionAvailability(model, schema).division?.streams;
+    expect(streamsOf(DEEP)).toEqual(['sales', 'orders']);
+    // The parent's table lacks the column that holds the division.
+    expect(streamsOf(without('departments', 'division', DEEP))).toEqual([]);
+    // The grandparent's table lacks the column that holds the department.
+    expect(streamsOf(without('products', 'dept', DEEP))).toEqual([]);
+    // The grandparent's table is not held at all.
+    expect(streamsOf(without('products', undefined, DEEP))).toEqual([]);
+  });
+
+  it('reaches nothing through a parent the model gives no table or no code column', () => {
+    // validateModel refuses such a model, so each is made by editing a checked one.
+    const expected = {
+      ...WHOLE,
+      product: { streams: ['sales', 'orders'], table: false, name: false, properties: { brand: false } },
+      department: { ...WHOLE.department, streams: [] },
+    };
+    const noTable = fixtureModel();
+    const bare = noTable.dimensions.find((d) => d.key === 'product');
+    if (!bare) throw new Error('the fixture has no product dimension');
+    delete bare.table;
+    delete bare.code;
+    expect(dimensionAvailability(noTable, FULL)).toEqual(expected);
+
+    const noCode = fixtureModel();
+    const codeless = noCode.dimensions.find((d) => d.key === 'product');
+    if (!codeless) throw new Error('the fixture has no product dimension');
+    delete codeless.code;
+    expect(dimensionAvailability(noCode, FULL)).toEqual(expected);
+  });
+
+  it('reads a code that sits on the row from the row alone, and never falls back to the parent when that column is missing', () => {
+    const [sales, orders] = MODEL_JSON.streams;
+    const model = modelOf(withChange({ streams: [sales, { ...orders, dimension_keys: { product: 'product_code', department: 'dept_code' } }] }));
+    const ROW: Record<string, string[]> = { ...FULL, order_lines: ['order_date', 'product_code', 'amount', 'dept_code'] };
+    const streamsOf = (schema: Record<string, string[]>) => dimensionAvailability(model, schema).department?.streams;
+    expect(streamsOf(ROW)).toEqual(['sales', 'orders']);
+    // No parent table: orders reads the code off its own row, sales cannot reach it.
+    expect(streamsOf(without('products', undefined, ROW))).toEqual(['orders']);
+    // The parent table is held but the row's own column is not: the compiler reads the row, so orders is out.
+    expect(streamsOf(FULL)).toEqual(['sales']);
+  });
+
+  it('keeps the streams of a dimension reached through a parent when its own table is not held', () => {
+    expect(dimensionAvailability(fixtureModel(), without('departments'))).toEqual({
+      ...WHOLE,
+      department: { streams: ['sales', 'orders'], table: false, name: false, properties: {} },
+    });
+  });
+
+  it('lists no stream whose table the role lacks', () => {
+    expect(dimensionAvailability(fixtureModel(), without('sales_lines'))).toEqual({
+      ...WHOLE,
+      product: { ...WHOLE.product, streams: ['orders'] },
+      department: { ...WHOLE.department, streams: ['orders'] },
+      branch: { ...WHOLE.branch, streams: [] },
+    });
   });
 });
