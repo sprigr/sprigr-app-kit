@@ -4,7 +4,7 @@ Pure reporting core. No IO, no clock, no tenant names. It turns a saved view int
 
 | Module | What it does |
 |---|---|
-| `model` | `validateModel(json)`: a tenant's dimensions, measures, streams and calendar, checked. `measureAvailability(model, schema)`: which measures a role can use, given the columns its build holds. |
+| `model` | `validateModel(json)`: a tenant's dimensions, measures, streams and calendar, checked. `measureAvailability(model, schema)`: which measures a role can use, given the columns its build holds. `dimensionAvailability(model, schema)`: for each dimension, the streams the role can read it on and whether its table, name and each property can be read. |
 | `formula` | `parseFormula`, `emitFormulaSql`: formula measures over other measures. Closed function list, typed, every division guarded. |
 | `periods` | `resolvePeriod`, `splitWindow`, `comparisonWindow`, `monthsRange`: presets, custom and named periods, period columns. |
 | `compile` | `compileView(model, view, { today })`: the statement, the typed values it reads (`params`), the column map, the `months` range and the `tables` it reads. `compileRollupView`: the same view over a monthly rollup, for the browser. |

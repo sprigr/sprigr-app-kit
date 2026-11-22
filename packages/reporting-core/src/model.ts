@@ -413,3 +413,43 @@ export function measureAvailability(model: ReportingModel, schema: Record<string
   };
   return Object.fromEntries(model.measures.map((m) => [m.key, available(m.key, 0)]));
 }
+
+/** What a role can read of one dimension. */
+export interface DimensionAvailability {
+  /** The streams the role can read this dimension's code on, in the model's order. */
+  streams: string[];
+  /** Its own lookup table is held with its code column, which a join or a member list needs. */
+  table: boolean;
+  name: boolean;
+  /** Property key to whether the role holds its column. */
+  properties: Record<string, boolean>;
+}
+
+/**
+ * Which dimensions a role can use, given the tables and columns its build holds.
+ * A code is read off the stream's row, or through a parent's table the way the compiler joins it.
+ */
+export function dimensionAvailability(model: ReportingModel, schema: Record<string, readonly string[]>): Record<string, DimensionAvailability> {
+  const columns = new Map(Object.entries(schema).map(([table, cols]) => [table.toLowerCase(), new Set(cols.map((c) => c.toLowerCase()))]));
+  const holds = (table: string | undefined, ...cols: (string | undefined)[]): boolean => {
+    const held = table === undefined ? undefined : columns.get(table.toLowerCase());
+    return held !== undefined && cols.every((c) => c !== undefined && held.has(c.toLowerCase()));
+  };
+  const dimByKey = new Map(model.dimensions.map((d) => [d.key, d]));
+  const reaches = (stream: ModelStream, key: string, depth: number): boolean => {
+    if (has(stream.dimension_keys, key)) return holds(stream.table, stream.date, stream.dimension_keys[key]);
+    const via = dimByKey.get(key)?.via;
+    const parent = via ? dimByKey.get(via.dimension) : undefined;
+    return via !== undefined && parent !== undefined && depth < 20
+      && holds(parent.table, parent.code, via.column) && reaches(stream, parent.key, depth + 1);
+  };
+  return Object.fromEntries(model.dimensions.map((dim): [string, DimensionAvailability] => {
+    const table = holds(dim.table, dim.code);
+    return [dim.key, {
+      streams: model.streams.filter((s) => reaches(s, dim.key, 0)).map((s) => s.key),
+      table,
+      name: table && holds(dim.table, dim.name),
+      properties: Object.fromEntries(dim.properties.map((p) => [p.key, table && holds(dim.table, p.column)])),
+    }];
+  }));
+}
