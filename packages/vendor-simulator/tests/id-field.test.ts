@@ -30,8 +30,10 @@ const ROUTES: PlainRoute[] = [
   { method: 'PUT', path: '/contacts', op: 'create', resource: 'contacts', wrap: 'Contacts', bodyKey: 'Contacts' },
   { method: 'POST', path: '/contacts', op: 'create', resource: 'contacts', wrap: 'Contacts', bodyKey: 'Contacts', upsert: true },
   { method: 'GET', path: '/contacts/:id', op: 'get', resource: 'contacts', wrap: 'Contacts' },
+  { method: 'POST', path: '/contacts/:id', op: 'update', resource: 'contacts', wrap: 'Contacts', bodyKey: 'Contacts' },
   { method: 'PUT', path: '/tickets', op: 'create', resource: 'tickets', wrap: 'Tickets', bodyKey: 'Tickets' },
   { method: 'GET', path: '/tickets/:id', op: 'get', resource: 'tickets', wrap: 'Tickets' },
+  { method: 'POST', path: '/tickets/:id', op: 'update', resource: 'tickets', wrap: 'Tickets', bodyKey: 'Tickets' },
   { method: 'POST', path: '/projects/:projectId/tasks', op: 'create', resource: 'tasks', parent },
   { method: 'POST', path: '/projects/:projectId/tasks/:id', op: 'update', resource: 'tasks', parent },
 ];
@@ -136,5 +138,43 @@ describe('usable ids keep working', () => {
     expect((await answered(await sim.fetch(`${BASE}/tickets/2000`), 'Tickets'))[0]?.TicketID).toBe(2000);
     const contact = await sim.fetch(`${BASE}/contacts`, send('PUT', { Contacts: [{ ContactID: 'c9', Name: 'Bo' }] }));
     expect((await answered(contact, 'Contacts'))[0]?.ContactID).toBe('c9');
+  });
+});
+
+describe('an update body id', () => {
+  it('an update whose body names a different id is refused id, nothing is written, and neither id changes', async () => {
+    const { d1, sim } = install();
+    const err = await refusal(sim.fetch(`${BASE}/contacts/c1`, send('POST', { Contacts: [{ ContactID: 'c2', Name: 'Bo' }] })));
+    expect(err?.reason).toBe('id');
+    expect(count(d1.statements, WRITE)).toBe(0);
+    expect(await answered(await sim.fetch(`${BASE}/contacts/c1`), 'Contacts')).toEqual([{ ContactID: 'c1', Name: 'Ann' }]);
+    expect((await sim.fetch(`${BASE}/contacts/c2`)).status).toBe(404);
+  });
+
+  it('an update whose body id is true, an empty string or an object is refused id, and nothing is written', async () => {
+    for (const value of [true, '', {}]) {
+      const { d1, sim } = install();
+      const err = await refusal(sim.fetch(`${BASE}/contacts/c1`, send('POST', { Contacts: [{ ContactID: value, Name: 'Bo' }] })));
+      expect(err?.reason).toBe('id');
+      expect(count(d1.statements, WRITE)).toBe(0);
+      expect(await answered(await sim.fetch(`${BASE}/contacts/c1`), 'Contacts')).toEqual([{ ContactID: 'c1', Name: 'Ann' }]);
+    }
+  });
+
+  it('an update whose body carries the object\'s own id still answers, as a string and as a number', async () => {
+    const { sim } = install();
+    const contact = await sim.fetch(`${BASE}/contacts/c1`, send('POST', { Contacts: [{ ContactID: 'c1', Name: 'Bo' }] }));
+    expect(contact.status).toBe(200);
+    expect(await answered(contact, 'Contacts')).toEqual([{ ContactID: 'c1', Name: 'Bo' }]);
+    const ticket = await sim.fetch(`${BASE}/tickets/1041`, send('POST', { Tickets: [{ TicketID: 1041, Subject: 'b' }] }));
+    expect(ticket.status).toBe(200);
+    expect(await answered(ticket, 'Tickets')).toEqual([{ TicketID: 1041, Subject: 'b' }]);
+  });
+
+  it('an update whose body id is null is treated as absent and still answers', async () => {
+    const { sim } = install();
+    const res = await sim.fetch(`${BASE}/contacts/c1`, send('POST', { Contacts: [{ ContactID: null, Name: 'Bo' }] }));
+    expect(res.status).toBe(200);
+    expect(await answered(res, 'Contacts')).toEqual([{ ContactID: 'c1', Name: 'Bo' }]);
   });
 });
