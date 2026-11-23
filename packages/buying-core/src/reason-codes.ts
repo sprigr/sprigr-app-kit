@@ -16,8 +16,8 @@ export type ReasonCode =
   | 'TREND_ACCEL' // 30d velocity well above 30-90d base
   | 'TREND_DECEL' // 30d velocity well below 30-90d base
   | 'DEAD_STOCK' // stock on hand, zero blended velocity
-  | 'AGED_90' // oldest item past the first aged_days threshold (default 90 days)
-  | 'AGED_180' // oldest item past the second aged_days threshold (default 180 days)
+  | 'AGED_FIRST' // oldest item past the first aged_days threshold (default 90 days)
+  | 'AGED_SECOND' // oldest item past the second aged_days threshold (default 180 days)
   | 'OVERCOVER' // cover far past the overcover threshold - capital parked in excess stock (markdown candidate; NOT a cover shortfall like BELOW_TARGET_COVER)
   | 'PROFITABILITY_TIER_SUPPRESSED' // profitability curve cut the coverage target
   | 'INBOUND_COVERS_GAP' // suggested buy 0 because inbound stock covers it
@@ -40,7 +40,7 @@ export type ReasonCode =
   // Purchase-order reasons
   | 'SELL_THROUGH_STRONG' // sold share of received at or above the strong threshold
   | 'SELL_THROUGH_LOW' // sold share of received below the low threshold
-  | 'MARGIN_PER_DOLLAR_LOW' // margin per unit of landed cost under low_margin_per_landed
+  | 'MARGIN_PER_LANDED_LOW' // margin per unit of landed cost under low_margin_per_landed
   | 'STOCK_NEARLY_GONE' // in-stock at/below the reorder threshold
   | 'AGED_STOCK_SHARE_HIGH' // share of in-stock aged past 90d above the threshold
   | 'DEAD_STOCK_180' // units unsold past 180 days

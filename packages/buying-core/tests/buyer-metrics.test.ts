@@ -294,8 +294,8 @@ describe('skuReasons', () => {
       (r) => r.code,
     );
     expect(codes).toContain('PROFITABILITY_TIER_SUPPRESSED');
-    expect(codes).toContain('AGED_180');
-    expect(codes).not.toContain('AGED_90');
+    expect(codes).toContain('AGED_SECOND');
+    expect(codes).not.toContain('AGED_FIRST');
   });
 
   it('settings.aged_days sets where the two aged buckets start', () => {
@@ -304,11 +304,11 @@ describe('skuReasons', () => {
     const codesFor = (aged_days: [number, number]) =>
       skuReasons(d, { age_of_oldest_item_days: 200, qty: 100 }, { ...SETTINGS, aged_days }).map((r) => r.code);
     const first = codesFor([90, 365]);
-    expect(first).toContain('AGED_90');
-    expect(first).not.toContain('AGED_180');
+    expect(first).toContain('AGED_FIRST');
+    expect(first).not.toContain('AGED_SECOND');
     const none = codesFor([250, 400]);
-    expect(none).not.toContain('AGED_90');
-    expect(none).not.toContain('AGED_180');
+    expect(none).not.toContain('AGED_FIRST');
+    expect(none).not.toContain('AGED_SECOND');
   });
 
   it('settings.trend_reason_threshold decides when a trend is called out', () => {

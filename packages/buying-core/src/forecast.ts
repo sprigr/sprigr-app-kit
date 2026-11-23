@@ -503,8 +503,11 @@ export function classifyDemand(units: number[]): { cls: DemandClass; adi: number
   return { cls, adi: Math.round(adi * 100) / 100, cv2: Math.round(cv2 * 100) / 100 };
 }
 
+/** The default fast/slow line, in mean units a month over the last year. */
+export const DEFAULT_VELOCITY_SPLIT_UNITS_PER_MONTH = 8;
+
 /** Velocity band for tournament cells: mean units/mo over the last year. */
-export function velocityBand(units: number[], fastThreshold = 8): 'fast' | 'slow' {
+export function velocityBand(units: number[], fastThreshold: number = DEFAULT_VELOCITY_SPLIT_UNITS_PER_MONTH): 'fast' | 'slow' {
   const k = Math.min(12, units.length);
   if (k === 0) return 'slow';
   let s = 0;
@@ -597,6 +600,8 @@ export function runLiveForecast(
   horizon = 12,
   params?: Partial<ForecastParams>,
 ): LiveForecastRun {
+  // Band on the backtest's own split so each SKU lands in a cell it scored.
+  const split = backtest.velocity_split_units_per_month ?? DEFAULT_VELOCITY_SPLIT_UNITS_PER_MONTH;
   const indices = classSeasonalIndices(series, params);
   const winnerByCell = new Map<string, string>();
   const cells: LiveForecastRun['cells'] = [];
@@ -626,7 +631,7 @@ export function runLiveForecast(
   const firstTargetCalMonth = calMonth(nowMonth);
   const forecasts: LiveForecastRun['forecasts'] = [];
   for (const s of series) {
-    const band = velocityBand(s.units);
+    const band = velocityBand(s.units, split);
     const key = winnerByCell.get(`${s.class_1}|${band}`);
     const f = (key ? FORECASTER_BY_KEY.get(key) : undefined) ?? FALLBACK_FORECASTER;
     const ctx = { seasonalIndex: indices.get(s.class_1) ?? FLAT_INDEX, firstTargetCalMonth };

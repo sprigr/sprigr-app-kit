@@ -31,6 +31,7 @@ import {
   monthAdd,
   classifyDemand,
   velocityBand,
+  DEFAULT_VELOCITY_SPLIT_UNITS_PER_MONTH,
 } from './forecast';
 
 export interface MethodScore {
@@ -68,6 +69,8 @@ export interface CellBacktest {
 export interface BacktestResult {
   holdout_months: number;
   horizons: number;
+  /** The fast/slow line the cells were banded on; runLiveForecast reads it. */
+  velocity_split_units_per_month: number;
   /** Series long enough to score at least one point. */
   scored_skus: number;
   skipped_skus: number;
@@ -94,13 +97,24 @@ export interface BacktestOptions {
   min_train_months?: number;
   /** Forecast tuning handed to every forecaster; see ForecastParams for the defaults. */
   params?: Partial<ForecastParams>;
+  /**
+   * Mean units a month over the last year at or above which a series is in
+   * the fast band, otherwise slow. Default 8.
+   */
+  velocity_split_units_per_month?: number;
 }
 
 /** The defaults rollingBacktest uses for the optional BacktestOptions fields. */
 export const DEFAULT_BACKTEST_OPTIONS = {
   winner_epsilon_pts: 0.5,
   min_train_months: 6,
+  velocity_split_units_per_month: DEFAULT_VELOCITY_SPLIT_UNITS_PER_MONTH,
 } as const;
+
+/** A positive finite split as given; anything else is the default. */
+function validVelocitySplit(v: number | undefined): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : DEFAULT_BACKTEST_OPTIONS.velocity_split_units_per_month;
+}
 
 interface Acc {
   abs: number;
@@ -158,6 +172,7 @@ export function rollingBacktest(
     typeof minTrain === 'number' && Number.isFinite(minTrain) && minTrain >= 1
       ? Math.floor(minTrain)
       : DEFAULT_BACKTEST_OPTIONS.min_train_months;
+  const split = validVelocitySplit(opts.velocity_split_units_per_month);
   interface CellBox {
     class_1: string;
     band: 'fast' | 'slow';
@@ -185,7 +200,7 @@ export function rollingBacktest(
     scoredSkus++;
     // Band + demand class from the TRAINING window only (no holdout peek).
     const trainAll = s.units.slice(0, firstCut);
-    const band = velocityBand(trainAll);
+    const band = velocityBand(trainAll, split);
     const dc = classifyDemand(trainAll).cls;
     const key = `${s.class_1}|${band}`;
     const cbox =
@@ -269,6 +284,7 @@ export function rollingBacktest(
   return {
     holdout_months: holdout,
     horizons,
+    velocity_split_units_per_month: split,
     scored_skus: scoredSkus,
     skipped_skus: skippedSkus,
     classes,
