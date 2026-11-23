@@ -343,6 +343,9 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
       for (const u of resourceRules?.uses ?? []) related[u] = [...(await view(u)).objects.values()];
     }
     const fixed = parentField === undefined ? [idField] : [idField, parentField];
+    // A replace route keeps only the body and these fixed fields of the old object.
+    const fixedOf = (from: SampleObject): SampleObject =>
+      Object.fromEntries(fixed.filter((f) => Object.hasOwn(from, f)).map((f) => [f, from[f]]));
     const deriveFn = resourceRules?.derive;
     const derive = (obj: SampleObject): SampleObject => {
       if (!deriveFn) return obj;
@@ -395,7 +398,9 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
           const newId = String(minted ?? given);
           if (minted !== undefined && working.has(newId)) throw new Refusal('exists');
           const scoped = parentField === undefined ? obj : { ...obj, [parentField]: obj[parentField] ?? parentId };
-          const base = previous ? { ...previous, ...obj, [idField]: previous[idField] } : { ...scoped, [idField]: given ?? minted };
+          const onPrevious = (p: SampleObject) =>
+            route.replace ? { ...obj, ...fixedOf(p) } : { ...p, ...obj, [idField]: p[idField] };
+          const base = previous ? onPrevious(previous) : { ...scoped, [idField]: given ?? minted };
           const ctx = { op: previous ? 'update' : 'create', action: undefined, previous, objects: [...working.values()], parentId } as const;
           const stored = completeObject(resourceRules, base, ctx, fixed);
           answered.push(check(derive(stored)));
@@ -419,7 +424,7 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         const bodyId = patch[idField];
         if (bodyId != null && !(usableId(bodyId) && String(bodyId) === String(existing[idField]))) throw new Refusal('id');
         if (namesOtherParent(patch)) throw new Refusal('parent');
-        const merged = { ...existing, ...patch, [idField]: existing[idField] };
+        const merged = route.replace ? { ...patch, ...fixedOf(existing) } : { ...existing, ...patch, [idField]: existing[idField] };
         const ctx = { op: 'update', action: undefined, previous: existing, objects: [...objects.values()], parentId } as const;
         const stored = completeObject(resourceRules, merged, ctx, fixed);
         const answer = check(derive(stored));

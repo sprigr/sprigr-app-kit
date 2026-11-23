@@ -97,6 +97,7 @@ Routes map a method and a path under `base` to one of `list`, `get`, `create`, `
 - `envelope` (list only): fields beside `wrap`, computed from the page. See [Envelope fields](#envelope-fields).
 - `parent`: `{ param, resource, field }` for a route under a parent object, such as `/projects/:projectId/tasks`. `param` is the parent's path parameter, `resource` its seed resource, and `field` the child's field holding the parent id.
 - `upsert` (create only): for a vendor whose create endpoint also updates. An object whose id already exists is merged and completed as an update instead of refused.
+- `replace` (update, or upsert create, only): for a vendor whose update replaces the whole object. The stored object is the body plus its id and parent field, not the body merged onto the old object. A body that leaves out a field every seed object carries is refused `computed` unless `complete` fills it, so a replace works for full bodies. Any other route with `replace` fails the build.
 - `action` and `answer` (action only): see [Action routes](#action-routes).
 
 A get, update, delete or action route names its object id `:id`. Any other path parameter must be its declared parent's; `plainDialect` throws a `TypeError` at build otherwise.
@@ -115,7 +116,7 @@ A get, update, delete or action route names its object id `:id`. Any other path 
 
 The dialect matches the method and the path only, never the host. If your app calls two hosts, a path that matches a route is simulated whichever host it was sent to, and a call to a host whose paths have no route is refused with `NotSimulatedError`.
 
-A create without an id, or with a `null` one, gets a UUID, or the id its resource's `newId` returns; a body id must otherwise be a non-empty string or a finite number. A create carrying an id that already exists is refused unless the route declares `upsert`. An update merges fields into the object. A delete hides the object from list and get. Writes go to the overlay only; the seed is never changed.
+A create without an id, or with a `null` one, gets a UUID, or the id its resource's `newId` returns; a body id must otherwise be a non-empty string or a finite number. A create carrying an id that already exists is refused unless the route declares `upsert`. An update merges fields into the object, or replaces it on a route that declares `replace`. A delete hides the object from list and get. Writes go to the overlay only; the seed is never changed.
 
 Under a parent, a list returns only that parent's children. A get, update or delete of another parent's child answers 404, as does any request under a parent that does not exist. A create stores the parent id from the path.
 

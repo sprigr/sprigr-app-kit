@@ -50,6 +50,11 @@ export interface PlainRoute {
   parent?: ParentRelation;
   /** Create only. An object whose id exists is merged and completed as an update instead of refused. */
   upsert?: boolean;
+  /**
+   * Update, or upsert create, only. The stored object becomes the body plus
+   * its id (and parent field) instead of the body merged onto the old object.
+   */
+  replace?: boolean;
   /** Action only. Its name, passed to `complete`. */
   action?: string;
   /** Action only. 'object' answers the object, wrapped as a get; 'empty' answers 204 with no body. */
@@ -284,6 +289,9 @@ export function plainDialect({ base = '', routes, resources = {}, reserved = [] 
     checkPathParams(route);
     if (route.upsert && route.op !== 'create') {
       throw new TypeError(`vendor-simulator: route ${route.method} ${route.path}: upsert is for a create route`);
+    }
+    if (route.replace && route.op !== 'update' && !(route.op === 'create' && route.upsert)) {
+      throw new TypeError(`vendor-simulator: route ${route.method} ${route.path}: replace is for an update or upsert create route`);
     }
     checkAction(route, resources);
     checkPage(route);
