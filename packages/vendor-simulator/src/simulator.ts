@@ -278,6 +278,15 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     });
   }
 
+  // A create without an id would get a UUID, which a vendor that numbers its objects never answers.
+  for (const resource of dialect.created ?? []) {
+    const source = seed[resource];
+    if (!source || rules[resource]?.newId) continue;
+    if (source.items.some((item) => typeof item[source.idField] === 'number')) {
+      throw new TypeError(`vendor-simulator: resource ${JSON.stringify(resource)} has number ids and a create route; declare its newId`);
+    }
+  }
+
   // What every answered object must carry: each key every seed object of its resource
   // has as an own property (null included), plus the declared computed fields. Once, at build.
   const required = new Map<string, string[]>();

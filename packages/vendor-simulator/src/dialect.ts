@@ -119,6 +119,8 @@ export interface Dialect {
   resources?: Readonly<Record<string, ResourceRules>>;
   /** The resources a create, update or action route writes, checked against the seed at build. */
   written?: ReadonlySet<string>;
+  /** The resources a create route (upsert included) writes: a number-id one needs `newId`. */
+  created?: ReadonlySet<string>;
   /** Child relations declared by parent routes: a parent with children is not deleted. */
   parents?: ReadonlyArray<{ resource: string; field: string; parent: string }>;
 }
@@ -302,6 +304,7 @@ export function plainDialect({ base = '', routes, resources = {}, reserved = [] 
   for (const [resource, rules] of Object.entries(resources)) checkResourceRules(resource, rules);
   const writes: readonly RouteOp[] = ['create', 'update', 'action'];
   const written = new Set(routes.filter((r) => writes.includes(r.op)).map((r) => r.resource));
+  const created = new Set(routes.filter((r) => r.op === 'create').map((r) => r.resource));
   const relations = new Map<string, { resource: string; field: string; parent: string }>();
   for (const r of routes) {
     if (r.parent) relations.set(`${r.resource}\n${r.parent.field}\n${r.parent.resource}`, { resource: r.resource, field: r.parent.field, parent: r.parent.resource });
@@ -315,6 +318,7 @@ export function plainDialect({ base = '', routes, resources = {}, reserved = [] 
   return {
     resources,
     written,
+    created,
     parents,
     match(method: string, pathname: string): RouteMatch | null {
       if (root && pathname !== root && !pathname.startsWith(`${root}/`)) return null;
