@@ -142,10 +142,42 @@ describe('a declared parent scopes its children', () => {
     expect(count(d1.statements, WRITE)).toBe(0);
   });
 
-  it('a deleted parent answers 404 for its children', async () => {
+  it('a parent deleted after its children answers 404 for them', async () => {
     const { sim } = install();
+    for (const t of ['t1', 't2']) expect((await sim.fetch(`${BASE}/projects/p1/tasks/${t}`, { method: 'DELETE' })).status).toBe(204);
     expect((await sim.fetch(`${BASE}/projects/p1`, { method: 'DELETE' })).status).toBe(204);
     expect((await sim.fetch(`${BASE}/projects/p1/tasks`)).status).toBe(404);
     expect((await sim.fetch(`${BASE}/projects/p1/tasks/t1`)).status).toBe(404);
+  });
+});
+
+describe('a parent that still has children', () => {
+  const refusal = (p: Promise<Response>) =>
+    p.then(
+      () => null,
+      (e: unknown) => {
+        if (e instanceof NotSimulatedError) return e;
+        throw e;
+      },
+    );
+
+  it('cannot be deleted: the delete is refused children, nothing is written, and the parent still answers', async () => {
+    const { d1, sim } = install();
+    const err = await refusal(sim.fetch(`${BASE}/projects/p1`, { method: 'DELETE' }));
+    expect(err?.reason).toBe('children');
+    expect(count(d1.statements, WRITE)).toBe(0);
+    expect((await sim.fetch(`${BASE}/projects/p1`)).status).toBe(200);
+    expect(await taskIds(await sim.fetch(`${BASE}/projects/p1/tasks`))).toEqual(['t1', 't2']);
+  });
+
+  it('a child created in sample mode blocks the delete too', async () => {
+    const { d1, sim } = install();
+    expect((await sim.fetch(`${BASE}/projects/p2/tasks/t3`, { method: 'DELETE' })).status).toBe(204);
+    expect((await sim.fetch(`${BASE}/projects/p2/tasks`, post({ Name: 'Patch' }))).status).toBe(200);
+    const writes = count(d1.statements, WRITE);
+    const err = await refusal(sim.fetch(`${BASE}/projects/p2`, { method: 'DELETE' }));
+    expect(err?.reason).toBe('children');
+    expect(count(d1.statements, WRITE)).toBe(writes);
+    expect((await sim.fetch(`${BASE}/projects/p2`)).status).toBe(200);
   });
 });
