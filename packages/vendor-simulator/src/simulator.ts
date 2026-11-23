@@ -263,6 +263,21 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     });
   }
 
+  // A seed child naming no seed parent builds but is unreachable under every parent route. A child with no parent field is left alone.
+  for (const rel of dialect.parents ?? []) {
+    const parentSeed = seed[rel.parent];
+    const childSeed = seed[rel.resource];
+    if (!parentSeed || !childSeed) continue;
+    const parentIds = new Set(parentSeed.items.map((p) => String(p[parentSeed.idField])));
+    childSeed.items.forEach((child, i) => {
+      const value = child[rel.field];
+      if (value == null || (usableId(value) && parentIds.has(String(value)))) return;
+      throw new TypeError(
+        `vendor-simulator: resource ${JSON.stringify(rel.resource)}: seed object ${i} has ${rel.field} ${JSON.stringify(value)}, which names no ${JSON.stringify(rel.parent)} seed object`,
+      );
+    });
+  }
+
   // What every answered object must carry: each key every seed object of its resource
   // has as an own property (null included), plus the declared computed fields. Once, at build.
   const required = new Map<string, string[]>();

@@ -120,7 +120,7 @@ A create without an id, or with a `null` one, gets a UUID, or the id its resourc
 
 Under a parent, a list returns only that parent's children. A get, update or delete of another parent's child answers 404, as does any request under a parent that does not exist. A create stores the parent id from the path. A parent that still has children cannot be deleted (`children`).
 
-**Seed ids.** `createSimulator` throws a `TypeError` naming the resource, before any request, when a seed object has no id, a `null` one, or one that is not a usable id (a non-empty string or a finite number). It also throws when two objects of one resource have ids equal as strings, `5` and `"5"` included: the store keys objects by that string, so the later one would hide the earlier. A seed object's parent field is not checked.
+**Seed ids.** `createSimulator` throws a `TypeError` naming the resource, before any request, when a seed object has no id, a `null` one, or one that is not a usable id (a non-empty string or a finite number). It also throws when two objects of one resource have ids equal as strings, `5` and `"5"` included: the store keys objects by that string, so the later one would hide the earlier. A seed child under a route `parent` must name a seed parent: a parent field that is not a usable id, or names no object of the parent resource, throws too. A child whose parent field is absent or `null` is left alone.
 
 ### What the vendor computes
 
