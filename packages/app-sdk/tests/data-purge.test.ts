@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { deleteSnapshotIds, makeDataClient, purgeIndexByPrefix, snapshotIndexIds } from '../src/data-purge';
+import type { SprigrDataSearchResult } from '../src/index';
 
 const BRIDGE_ENV = { SPRIGR_PLATFORM_BASE: 'https://staging-webhooks.sprigr.com/', SPRIGR_INSTALL_TOKEN: 'inst_1.sig' };
 
@@ -289,5 +290,28 @@ describe('purgeIndexByPrefix never throws', () => {
     const res = await purgeIndexByPrefix(BRIDGE_ENV, ['']);
     expect(res.deleted).toBe(0);
     expect(res.error).toMatch(/prefix/);
+  });
+});
+
+describe('data.search reports what the engine dropped (sprigr-team#16100)', () => {
+  // A filter or facet on an attribute the index has not taken as facetable yet
+  // is dropped by the engine: the hits are unfiltered on it. The platform names
+  // those attributes; the client must hand them to the app unchanged.
+  function searchAnswers(answer: Record<string, unknown>) {
+    vi.stubGlobal('fetch', async () => Response.json({ ok: true, hits: [], nbHits: 0, page: 0, index: 'cards', ...answer }));
+  }
+
+  it('passes dropped_filters and dropped_facets through', async () => {
+    searchAnswers({ dropped_filters: ['due', 'member'], dropped_facets: ['label'] });
+    const res: SprigrDataSearchResult = await makeDataClient(BRIDGE_ENV)!.search({ index: 'cards', filters: 'member:m1' });
+    expect(res.dropped_filters).toEqual(['due', 'member']);
+    expect(res.dropped_facets).toEqual(['label']);
+  });
+
+  it('leaves both absent when nothing was dropped', async () => {
+    searchAnswers({});
+    const res: SprigrDataSearchResult = await makeDataClient(BRIDGE_ENV)!.search({ index: 'cards' });
+    expect('dropped_filters' in res).toBe(false);
+    expect('dropped_facets' in res).toBe(false);
   });
 });
