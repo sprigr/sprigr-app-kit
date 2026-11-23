@@ -41,7 +41,9 @@ const ROUTES: PlainRoute[] = [
 function install() {
   const d1 = makeMockD1(TABLE, [{ resource: SAMPLE_FLAG_RESOURCE, id: SAMPLE_FLAG_ID, body: '{}', deleted: 0 }]);
   const store = createSampleStore({ db: d1.db, table: TABLE });
-  const sim = createSimulator({ seed: SEED, dialect: plainDialect({ base: '/api', routes: ROUTES }), store });
+  // Tickets have number ids and a create route, so the build needs their newId; no row here mints one.
+  const resources = { tickets: { newId: () => 2001 } };
+  const sim = createSimulator({ seed: SEED, dialect: plainDialect({ base: '/api', routes: ROUTES, resources }), store });
   return { d1, sim };
 }
 
