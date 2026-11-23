@@ -296,7 +296,7 @@ After [sprigr-team #836] + [#851], every per-install WFP script gets these bindi
 | `SPRIGR_INSTALL_URL` | plain_text | `<portal>/dashboard/apps/installed/<INSTALL_ID>`: `https://team.sprigr.com/...` (prod) or `https://staging-team.sprigr.com/...` (staging), no trailing slash (sprigr-team #13588) | The install's page in the Sprigr portal, where a person manages it. Use it whenever a notice or your agent must tell someone where to fix something (reconnect, re-sign-in, pick a business). Append your own path for a deeper page: `${env.SPRIGR_INSTALL_URL}/settings`. Absent when the uploader has no portal URL configured, so treat it as optional and fall back to no link rather than hard-coding a host |
 | `COMPANY_ID` | plain_text | `app_installations.company_id` | Stamp on outbound requests |
 | `APP_SLUG` | plain_text | `marketplace_apps.slug` | Self-identification in logs |
-| `COMPANY_TIMEZONE` | plain_text | `companies.timezone`, only when it is a valid IANA zone (sprigr-team #11038) | The tenant's "today" or a local cut-off. Read it with `getCompanyTimezone(env)` (app-sdk 0.24.0), which returns `undefined` rather than a default when the company has no zone. Fixed at upload: a zone change reaches the install on its next build |
+| `COMPANY_TIMEZONE` | plain_text | `companies.timezone`, only when it is a valid IANA zone (sprigr-team #11038) | The tenant's "today" or a local cut-off. Read it with `getCompanyTimezone(env)` (app-sdk 0.24.0), which returns `undefined` rather than a default when the company has no zone; for the day itself use `companyToday` (below). Fixed at upload: a zone change reaches the install on its next build |
 | `SPRIGR_INSTALL_TOKEN` | plain_text | HMAC, signed at upload | Bearer for every `env.SPRIGR.*` call back to the platform |
 | `SPRIGR_PLATFORM_BASE` | plain_text | env-aware URL | The platform host `env.SPRIGR` calls: `https://webhooks.sprigr.com` (prod) or `https://staging-webhooks.sprigr.com` (staging). Read it from env; never hard-code it. It is not the API gateway, which does not serve `/internal/*` |
 | Plus every manifest `secrets[]` entry | secret_text | the install's encrypted secret store | Per-install OAuth keys, webhook signing keys, etc. Bound at runtime only, never at build time |
@@ -339,6 +339,29 @@ const { env } = await getCloudflareContext({ async: true });
 // call sites and had to fix them in v0.2.6.
 const { env } = await getCloudflareContext<ProcoreEnv>();
 ```
+
+### "Today" is the tenant's day, not the UTC day
+
+Your worker runs in UTC. `new Date().toISOString().slice(0, 10)` is the UTC day: in Sydney that is yesterday until 10 or 11am, and on the US west coast it is tomorrow from the afternoon. Use the UTC day for anything a person sees or a provider stores (a default payment date, a timecard, "days overdue", a daily sales bucket, a "today" range) and the customer gets the wrong day (sprigr-team#15956).
+
+Resolve the day with `companyToday` from `@sprigr/apps-app-sdk` (0.63.0):
+
+```ts
+import { addDays, companyToday, startOfLocalDay } from '@sprigr/apps-app-sdk';
+
+const providerZone = await readOrgTimezone(env); // the Xero org, simPRO business, Shopify shop; null if none
+const today = companyToday(env, { providerZone });
+// { date: '2026-11-18', zone: 'Australia/Sydney', source: 'provider' | 'company' | 'utc' }
+const dueDefault = addDays(today.date, 30);
+const since = startOfLocalDay(Date.now(), today.zone); // unix ms of local midnight
+```
+
+The precedence is fixed: the provider's own zone first, because the provider's records use it; then the company zone (`COMPANY_TIMEZONE`); then UTC. An invalid or empty provider zone falls through rather than throwing.
+
+- Echo `today.zone` (and `today.date` as `as_of`) in read results, so the agent can say which day and zone a figure used.
+- Use `addDays` on dates, never `ms + n * 86_400_000` on a local midnight: a DST change day is 23 or 25 hours long.
+- `source: 'utc'` means neither the provider nor the company has a zone. Say so rather than presenting the UTC day as local.
+- Keep UTC for housekeeping (TTLs, sweep cut-offs, cursors). Nobody reads those as a day.
 
 ### Never rebuild the dispatch env by spread (`{ ...env }` loses every binding)
 
