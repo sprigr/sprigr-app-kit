@@ -102,3 +102,14 @@ Revokers: `googleRevoker`, `asanaRevoker({ clientId, clientSecret })`, and
 `formPostRevoker(url, params)` for any endpoint that takes `token` as a form
 POST. A `ProviderRevoker` is `(token, { signal }) => Promise<boolean>`: true
 only when the provider confirmed it.
+
+## PKCE S256 for connect flows (0.5.0)
+
+`newCodeVerifier()` and `codeChallengeS256(verifier)` implement RFC 7636 S256.
+Mint the verifier when the connect starts and keep it server-side on the
+pending row (never in `state` or the URL). Put the challenge on the authorize
+URL with `code_challenge_method=S256`, and send the verifier as
+`code_verifier` on the code exchange. When adding PKCE to an app that already
+has connects in flight, a pending row from before the change has no verifier:
+exchange it without one, or refuse it with a "start again" message, but never
+send an empty `code_verifier`.
