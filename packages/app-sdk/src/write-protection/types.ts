@@ -54,6 +54,14 @@ export interface ConfirmRule {
    * and keeps asking twice.
    */
   attended?: 'approval_card';
+  /**
+   * `false`: this action never delivers a message to a person (sprigr-team
+   * decision 0414), so a workflow's standing-approval card can drop its
+   * "message anyone" option when every call on it says so. Action rules only;
+   * a whole tool uses the manifest's `delivers_message`. Prefer `noMessage`
+   * on the policy builders to writing it by hand.
+   */
+  deliversMessage?: boolean;
 }
 
 export interface ConfirmCondition {
@@ -69,6 +77,8 @@ export interface ConfirmationPolicy extends ConfirmRule {
    * back to the tool-level rule, which is normally absent.
    */
   actions?: Record<string, ConfirmRule>;
+  /** Not on the tool-level rule: publish rejects it there (decision 0414). */
+  deliversMessage?: never;
 }
 
 /**

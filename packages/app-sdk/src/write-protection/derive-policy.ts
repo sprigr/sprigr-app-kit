@@ -35,6 +35,8 @@ export interface DerivePolicyOptions {
   overrides?: Readonly<Record<string, ConfirmRule>>;
   /** Which actions an approval card covers; see `ApprovalCoverage`. */
   approval?: ApprovalCoverage;
+  /** Actions that never deliver a message to a person; see `PolicySource.noMessage`. */
+  noMessage?: Iterable<string>;
 }
 
 export interface DerivedPolicy {
@@ -77,7 +79,7 @@ export function deriveConfirmationPolicy(registry: Iterable<string>, opts: Deriv
     }
     if (!hit) unmatched.push(name);
   }
-  const policy = buildConfirmationPolicy({ irreversible, always, rules: overrides, approval: opts.approval }) as ConfirmationPolicy & {
+  const policy = buildConfirmationPolicy({ irreversible, always, rules: overrides, approval: opts.approval, noMessage: opts.noMessage }) as ConfirmationPolicy & {
     actions: Record<string, ConfirmRule>;
   };
   return { policy, ungated, unmatched };
