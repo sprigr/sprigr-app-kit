@@ -415,6 +415,9 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         if (patches && patches.length > 1) throw new Refusal('body');
         const patch = patches?.[0];
         if (!patch) return badRequest();
+        // A body id other than the object's own would be dropped quietly; null counts as absent, as on a create.
+        const bodyId = patch[idField];
+        if (bodyId != null && !(usableId(bodyId) && String(bodyId) === String(existing[idField]))) throw new Refusal('id');
         if (namesOtherParent(patch)) throw new Refusal('parent');
         const merged = { ...existing, ...patch, [idField]: existing[idField] };
         const ctx = { op: 'update', action: undefined, previous: existing, objects: [...objects.values()], parentId } as const;

@@ -17,7 +17,7 @@ export class SampleModeUnknownError extends Error {
  * the vendor would have filled in, a create with an id that already exists, a
  * body the route cannot take (any body on an action route, or more than one
  * object on an update, or no object on a create), or a body id that is not a
- * usable id.
+ * usable id or, on an update, is not the object's own id.
  */
 export type NotSimulatedReason = 'no_route' | 'query' | 'accept' | 'content_type' | 'parent' | 'computed' | 'exists' | 'body' | 'id';
 

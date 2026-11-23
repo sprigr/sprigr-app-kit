@@ -221,7 +221,7 @@ The engine refuses what it does not model, so it never answers wrongly. Each ref
 | `computed` | An answered object misses a field every seed object carries or a declared `computed` field; `complete`, `derive` or `newId` threw; or `newId` returned no usable id. See [What the vendor computes](#what-the-vendor-computes). |
 | `exists` | A create carrying an id that already exists, on a route without `upsert`, or an id from `newId` that already exists. Checked for the whole batch. |
 | `body` | A body the route cannot take: any request body sent to an action route, `{}` and JSON included (an action takes none), an update whose body carries more than one object, or a create whose body carries none (`[]`, bare or under `bodyKey`). Nothing is written. |
-| `id` | A create whose body id is present, not `null`, and not a usable id: a usable id is a non-empty string or a finite number, so `true`, `{}`, `[]`, `""` and `1e400` are refused. Checked for the whole batch, before any write. |
+| `id` | A create whose body id is present, not `null`, and not a usable id: a usable id is a non-empty string or a finite number, so `true`, `{}`, `[]`, `""` and `1e400` are refused. Checked for the whole batch, before any write. Also an update whose body id is present, not `null`, and is not a usable id or is not the object's own id (compared as strings, so `1041` matches the path's `"1041"`). Nothing is written. |
 
 ## Cost
 
