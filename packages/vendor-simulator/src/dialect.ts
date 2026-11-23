@@ -59,6 +59,12 @@ export interface PlainRoute {
   action?: string;
   /** Action only. 'object' answers the object, wrapped as a get; 'empty' answers 204 with no body. */
   answer?: 'object' | 'empty';
+  /**
+   * Get or update only. Answers one object under `wrap`, not a one-object array.
+   * A get may leave out `:id` and answer the resource's only object, or with
+   * `pick` the one object whose `pick` field is true.
+   */
+  single?: true | { pick: string };
 }
 
 export interface CompleteContext {
@@ -123,6 +129,8 @@ export interface Dialect {
   created?: ReadonlySet<string>;
   /** Child relations declared by parent routes: a parent with children is not deleted. */
   parents?: ReadonlyArray<{ resource: string; field: string; parent: string }>;
+  /** Id-less single get routes with no parent: the seed must hold exactly one object, or one `pick` match. */
+  singles?: ReadonlyArray<{ resource: string; pick: string | undefined }>;
 }
 
 const trimSlash = (p: string): string => (p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p);
@@ -136,6 +144,8 @@ function decodeSegment(s: string): string | null {
 }
 
 const OPS_WITH_ID: readonly RouteOp[] = ['get', 'update', 'delete', 'action'];
+
+const namesId = (route: PlainRoute): boolean => trimSlash(route.path).split('/').includes(':id');
 
 /**
  * A route's path parameters must be exactly its own `:id` (get, update, delete, action)
@@ -151,7 +161,8 @@ function checkPathParams(route: PlainRoute): void {
   const allowed = new Set<string>();
   if (OPS_WITH_ID.includes(route.op)) {
     const article = route.op === 'action' ? 'an' : 'a';
-    if (!names.includes('id')) throw new TypeError(`${where}: ${article} ${route.op} route names its object id :id`);
+    const idless = route.op === 'get' && route.single !== undefined;
+    if (!names.includes('id') && !idless) throw new TypeError(`${where}: ${article} ${route.op} route names its object id :id`);
     allowed.add('id');
   }
   if (route.parent) {
@@ -291,6 +302,14 @@ export function plainDialect({ base = '', routes, resources = {}, reserved = [] 
   const root = trimSlash(base) === '/' ? '' : trimSlash(base);
   for (const route of routes) {
     checkPathParams(route);
+    if (route.single !== undefined) {
+      if (route.op !== 'get' && route.op !== 'update') {
+        throw new TypeError(`vendor-simulator: route ${route.method} ${route.path}: single is for a get or update route`);
+      }
+      if (route.single !== true && (route.op !== 'get' || namesId(route))) {
+        throw new TypeError(`vendor-simulator: route ${route.method} ${route.path}: pick is for a get route without :id`);
+      }
+    }
     if (route.upsert && route.op !== 'create') {
       throw new TypeError(`vendor-simulator: route ${route.method} ${route.path}: upsert is for a create route`);
     }
@@ -305,6 +324,9 @@ export function plainDialect({ base = '', routes, resources = {}, reserved = [] 
   const writes: readonly RouteOp[] = ['create', 'update', 'action'];
   const written = new Set(routes.filter((r) => writes.includes(r.op)).map((r) => r.resource));
   const created = new Set(routes.filter((r) => r.op === 'create').map((r) => r.resource));
+  const singles = routes
+    .filter((r) => r.op === 'get' && r.single !== undefined && !r.parent && !namesId(r))
+    .map((r) => ({ resource: r.resource, pick: r.single === true ? undefined : r.single?.pick }));
   const relations = new Map<string, { resource: string; field: string; parent: string }>();
   for (const r of routes) {
     if (r.parent) relations.set(`${r.resource}\n${r.parent.field}\n${r.parent.resource}`, { resource: r.resource, field: r.parent.field, parent: r.parent.resource });
@@ -320,6 +342,7 @@ export function plainDialect({ base = '', routes, resources = {}, reserved = [] 
     written,
     created,
     parents,
+    singles,
     match(method: string, pathname: string): RouteMatch | null {
       if (root && pathname !== root && !pathname.startsWith(`${root}/`)) return null;
       const segments = trimSlash(pathname.slice(root.length) || '/').split('/').map(decodeSegment);

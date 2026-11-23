@@ -287,6 +287,16 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
     }
   }
 
+  // An id-less single route answers exactly one object; a seed with another count has no answer to give.
+  for (const { resource, pick } of dialect.singles ?? []) {
+    const items = seed[resource]?.items ?? [];
+    const matches = pick === undefined ? items.length : items.filter((item) => item[pick] === true).length;
+    if (matches !== 1) {
+      const which = pick === undefined ? 'seed objects' : `seed objects with ${pick} true`;
+      throw new TypeError(`vendor-simulator: resource ${JSON.stringify(resource)} has ${matches} ${which}, but an id-less single route answers exactly one`);
+    }
+  }
+
   // What every answered object must carry: each key every seed object of its resource
   // has as an own property (null included), plus the declared computed fields. Once, at build.
   const required = new Map<string, string[]>();
@@ -358,7 +368,7 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
 
     const { idField, objects } = await view(route.resource);
     const id = params.id;
-    const one = (obj: SampleObject): unknown => (route.wrap ? { [route.wrap]: [obj] } : obj);
+    const one = (obj: SampleObject): unknown => (route.wrap ? { [route.wrap]: route.single ? obj : [obj] } : obj);
     const resourceRules = rules[route.resource];
 
     // Every answered object is derived, then checked; a delete answers no object.
@@ -391,6 +401,14 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         return json(route.wrap ? { [route.wrap]: items, ...envelopeOf(route, page) } : items);
       }
       case 'get': {
+        if (id === undefined && route.single) {
+          const pick = route.single === true ? undefined : route.single.pick;
+          const matches = [...objects.values()].filter((o) => ownChild(o) !== undefined && (pick === undefined || o[pick] === true));
+          // Answering one of several, or none, would be an answer the vendor never gives.
+          const [only] = matches;
+          if (matches.length !== 1 || !only) throw new Refusal('computed');
+          return json(one(check(derive(only))));
+        }
         const obj = id === undefined ? undefined : ownChild(objects.get(id));
         return obj ? json(one(check(derive(obj)))) : notFound();
       }

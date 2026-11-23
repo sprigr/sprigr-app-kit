@@ -14,7 +14,8 @@ export class SampleModeUnknownError extends Error {
  * Why a request was refused: no route, a query parameter the route does not
  * declare or cannot apply, a response that would not be JSON, a body that is
  * not JSON, a child that names a different parent, an answer missing a field
- * the vendor would have filled in, a create with an id that already exists, a
+ * the vendor would have filled in or a single route with no one object to
+ * answer, a create with an id that already exists, a
  * body the route cannot take (any body on an action route, or more than one
  * object on an update, or no object on a create), or a body id that is not a
  * usable id or, on an update, is not the object's own id, or a delete of a
