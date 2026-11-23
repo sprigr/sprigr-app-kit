@@ -443,6 +443,13 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
       }
       case 'delete': {
         if (id === undefined || !ownChild(objects.get(id))) return notFound();
+        // Deleting a parent that still has children would leave them unreachable under every parent route.
+        for (const rel of dialect.parents ?? []) {
+          if (rel.parent !== route.resource) continue;
+          for (const child of (await view(rel.resource)).objects.values()) {
+            if (usableId(child[rel.field]) && String(child[rel.field]) === id) throw new Refusal('children');
+          }
+        }
         await store.put(route.resource, id, null);
         return new Response(null, { status: 204 });
       }

@@ -119,6 +119,8 @@ export interface Dialect {
   resources?: Readonly<Record<string, ResourceRules>>;
   /** The resources a create, update or action route writes, checked against the seed at build. */
   written?: ReadonlySet<string>;
+  /** Child relations declared by parent routes: a parent with children is not deleted. */
+  parents?: ReadonlyArray<{ resource: string; field: string; parent: string }>;
 }
 
 const trimSlash = (p: string): string => (p.length > 1 && p.endsWith('/') ? p.slice(0, -1) : p);
@@ -300,6 +302,11 @@ export function plainDialect({ base = '', routes, resources = {}, reserved = [] 
   for (const [resource, rules] of Object.entries(resources)) checkResourceRules(resource, rules);
   const writes: readonly RouteOp[] = ['create', 'update', 'action'];
   const written = new Set(routes.filter((r) => writes.includes(r.op)).map((r) => r.resource));
+  const relations = new Map<string, { resource: string; field: string; parent: string }>();
+  for (const r of routes) {
+    if (r.parent) relations.set(`${r.resource}\n${r.parent.field}\n${r.parent.resource}`, { resource: r.resource, field: r.parent.field, parent: r.parent.resource });
+  }
+  const parents = [...relations.values()];
   const compiled = routes.map((route) => ({ route, method: route.method.toUpperCase(), ...pattern(route.path) }));
   const reservedPatterns = reserved.map(pattern);
   checkShapes(compiled, reservedPatterns);
@@ -308,6 +315,7 @@ export function plainDialect({ base = '', routes, resources = {}, reserved = [] 
   return {
     resources,
     written,
+    parents,
     match(method: string, pathname: string): RouteMatch | null {
       if (root && pathname !== root && !pathname.startsWith(`${root}/`)) return null;
       const segments = trimSlash(pathname.slice(root.length) || '/').split('/').map(decodeSegment);

@@ -118,7 +118,7 @@ The dialect matches the method and the path only, never the host. If your app ca
 
 A create without an id, or with a `null` one, gets a UUID, or the id its resource's `newId` returns; a body id must otherwise be a non-empty string or a finite number. A create carrying an id that already exists is refused unless the route declares `upsert`. An update merges fields into the object, or replaces it on a route that declares `replace`. A delete hides the object from list and get. Writes go to the overlay only; the seed is never changed.
 
-Under a parent, a list returns only that parent's children. A get, update or delete of another parent's child answers 404, as does any request under a parent that does not exist. A create stores the parent id from the path.
+Under a parent, a list returns only that parent's children. A get, update or delete of another parent's child answers 404, as does any request under a parent that does not exist. A create stores the parent id from the path. A parent that still has children cannot be deleted (`children`).
 
 **Seed ids.** `createSimulator` throws a `TypeError` naming the resource, before any request, when a seed object has no id, a `null` one, or one that is not a usable id (a non-empty string or a finite number). It also throws when two objects of one resource have ids equal as strings, `5` and `"5"` included: the store keys objects by that string, so the later one would hide the earlier. A seed object's parent field is not checked.
 
@@ -223,6 +223,7 @@ The engine refuses what it does not model, so it never answers wrongly. Each ref
 | `exists` | A create carrying an id that already exists, on a route without `upsert`, or an id from `newId` that already exists. Checked for the whole batch. |
 | `body` | A body the route cannot take: any request body sent to an action route, `{}` and JSON included (an action takes none), an update whose body carries more than one object, or a create whose body carries none (`[]`, bare or under `bodyKey`). Nothing is written. |
 | `id` | A create whose body id is present, not `null`, and not a usable id: a usable id is a non-empty string or a finite number, so `true`, `{}`, `[]`, `""` and `1e400` are refused. Checked for the whole batch, before any write. Also an update whose body id is present, not `null`, and is not a usable id or is not the object's own id (compared as strings, so `1041` matches the path's `"1041"`). Nothing is written. |
+| `children` | A delete of an object that a parent route's children still name in their parent field, seed or sample-mode children alike. Delete the children first. Nothing is written. |
 
 ## Cost
 
