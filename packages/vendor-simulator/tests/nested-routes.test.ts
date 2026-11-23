@@ -180,4 +180,31 @@ describe('a parent that still has children', () => {
     expect(count(d1.statements, WRITE)).toBe(writes);
     expect((await sim.fetch(`${BASE}/projects/p2`)).status).toBe(200);
   });
+
+  /** Projects p1 and p2 with a tasks route under them, over the given tasks seed (none when absent). */
+  function projectsOnly(tasks?: SampleSeed[string]) {
+    const d1 = makeMockD1(TABLE, [{ resource: SAMPLE_FLAG_RESOURCE, id: SAMPLE_FLAG_ID, body: '{}', deleted: 0 }]);
+    const store = createSampleStore({ db: d1.db, table: TABLE });
+    const projects = { idField: 'ProjectID', items: [{ ProjectID: 'p1', Name: 'Fitout' }, { ProjectID: 'p2', Name: 'Roof' }] };
+    const routes: PlainRoute[] = [
+      { method: 'GET', path: '/projects/:id', op: 'get', resource: 'projects' },
+      { method: 'DELETE', path: '/projects/:id', op: 'delete', resource: 'projects' },
+      { method: 'GET', path: '/projects/:projectId/tasks', op: 'list', resource: 'tasks', parent },
+    ];
+    const seed: SampleSeed = tasks ? { projects, tasks } : { projects };
+    return createSimulator({ seed, dialect: plainDialect({ base: '/api', routes }), store });
+  }
+
+  it('a parent whose child resource is not in the seed has no children, so its delete answers 204', async () => {
+    const sim = projectsOnly();
+    expect((await sim.fetch(`${BASE}/projects/p1`, { method: 'DELETE' })).status).toBe(204);
+    expect((await sim.fetch(`${BASE}/projects/p1`)).status).toBe(404);
+    expect((await sim.fetch(`${BASE}/projects/p2`)).status).toBe(200);
+  });
+
+  it('a parent whose child resource has no seed objects has no children, so its delete answers 204', async () => {
+    const sim = projectsOnly({ idField: 'TaskID', items: [] });
+    expect((await sim.fetch(`${BASE}/projects/p1`, { method: 'DELETE' })).status).toBe(204);
+    expect((await sim.fetch(`${BASE}/projects/p1`)).status).toBe(404);
+  });
 });
