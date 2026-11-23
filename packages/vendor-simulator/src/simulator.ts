@@ -371,6 +371,8 @@ export function createSimulator({ seed, dialect, store }: SimulatorOptions): Sim
         const body = await readJson(req, init);
         const incoming = body.ok ? bodyObjects(route, body.value) : null;
         if (!body.ok || !incoming) return badRequest();
+        // An empty batch would answer 200 having written nothing, which a caller reads as success.
+        if (incoming.length === 0) throw new Refusal('body');
         // All or nothing: no object in the batch may name, or by its id take over, another parent's child.
         const takesOtherChild = (obj: SampleObject): boolean => {
           const given = obj[idField];
