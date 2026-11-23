@@ -68,6 +68,18 @@ export interface RunResumablePageOpts<TRow> {
   scope?: string;
   fetchPage: (cursor: string | null) => Promise<FetchPageResult<TRow>>;
   writeRows: (rows: TRow[]) => Promise<void>;
+  /**
+   * Skip the sync_state write when the cursor did not move and the stored
+   * row's `last_run_at` is younger than this many ms (sprigr-app-kit#255).
+   * Without it, every page writes, including a no-op tick of a finished walk.
+   * The first row is always written, and a stale or unreadable `last_run_at`
+   * is refreshed, so "when did this last sync" stays true to within this
+   * interval.
+   *
+   * Leave it unset if the caller ORDERS its work by `last_run_at` (stale
+   * first): a skipped refresh would keep the unit that just ran at the front.
+   */
+  refreshUnchangedAfterMs?: number;
 }
 
 export interface FetchPageResult<TRow> {
@@ -90,7 +102,7 @@ export interface RunResumablePageResult {
 export async function runResumablePage<TRow>(
   opts: RunResumablePageOpts<TRow>,
 ): Promise<RunResumablePageResult> {
-  const { state, resource, scope, fetchPage, writeRows } = opts;
+  const { state, resource, scope, fetchPage, writeRows, refreshUnchangedAfterMs } = opts;
   const existing = await state.read(resource, scope);
   const startCursor = existing?.cursor ?? null;
 
@@ -102,20 +114,30 @@ export async function runResumablePage<TRow>(
   const advanced = nextCursor !== startCursor;
   const done = nextCursor == null || !advanced;
 
-  // Always persist a sync_state row, even when the cursor didn't
-  // advance (single-page dataset OR completed walk). The previous
-  // behaviour skipped the write when `!advanced`, which left zero
-  // bookkeeping rows after a successful one-page backfill — observers
-  // couldn't tell whether the sync had ever run. The write is
-  // idempotent (`ON CONFLICT(resource, scope) DO UPDATE`) and refreshes
-  // `last_run_at` either way, so callers can answer "when did this
-  // resource last sync" from the row.
+  // Persist a sync_state row even when the cursor didn't advance
+  // (single-page dataset OR completed walk). Skipping it left zero
+  // bookkeeping rows after a successful one-page backfill, so observers
+  // couldn't tell whether the sync had ever run. The write is idempotent
+  // (`ON CONFLICT(resource, scope) DO UPDATE`) and refreshes `last_run_at`
+  // either way. With `refreshUnchangedAfterMs`, an unchanged cursor over a
+  // recent row is not rewritten (#255).
   const persistCursor = advanced ? nextCursor : startCursor;
-  await state.write(resource, scope, persistCursor);
+  if (advanced || !unchangedIsFresh(existing?.lastRunAt, refreshUnchangedAfterMs)) {
+    await state.write(resource, scope, persistCursor);
+  }
 
   return {
     rowsThisPage: rows.length,
     done,
     nextCursor: done ? null : nextCursor,
   };
+}
+
+/** Whether an existing row's `last_run_at` is younger than `maxAgeMs`. */
+function unchangedIsFresh(lastRunAt: string | undefined, maxAgeMs: number | undefined): boolean {
+  if (maxAgeMs === undefined || lastRunAt === undefined) return false;
+  // D1's datetime('now') is `YYYY-MM-DD HH:MM:SS` in UTC with no zone.
+  const iso = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(lastRunAt) ? `${lastRunAt.replace(' ', 'T')}Z` : lastRunAt;
+  const at = Date.parse(iso);
+  return Number.isFinite(at) && Date.now() - at < maxAgeMs;
 }
