@@ -169,3 +169,67 @@ describe('idempotentToolResult', () => {
     expect(idempotentToolResult({ status: 'outcome_unknown' })).toMatchObject({ ok: false, error: expect.stringMatching(/^write_outcome_unknown:/), hint: expect.stringMatching(/Read back first.*an identical retry will run the write again/) });
   });
 });
+
+describe('makeIdempotentWrite takeover signal', () => {
+  type Ctx = { takeover: boolean };
+
+  it('a first run is told takeover: false', async () => {
+    const { db } = sqliteD1();
+    const fn = vi.fn(async (_ctx: Ctx) => 'x');
+    const w = makeIdempotentWrite({ db, table: 'app_write_keys' });
+    expect(await w.run('w1:k', fn)).toEqual({ status: 'ran', result: 'x' });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith({ takeover: false });
+  });
+
+  it('a run with no key is told takeover: false', async () => {
+    const { db } = sqliteD1();
+    const fn = vi.fn(async (_ctx: Ctx) => 'x');
+    const w = makeIdempotentWrite({ db, table: 'app_write_keys' });
+    await w.run(undefined, fn);
+    expect(fn).toHaveBeenCalledWith({ takeover: false });
+  });
+
+  it('the run that takes over after a may-have-landed throw is told takeover: true, so it can read back before writing', async () => {
+    const { db } = sqliteD1();
+    class MayHaveLanded extends Error {}
+    const w = makeIdempotentWrite({ db, table: 'app_write_keys', releaseOnError: (err) => !(err instanceof MayHaveLanded) });
+    const first = vi.fn(async (_ctx: Ctx): Promise<string> => { throw new MayHaveLanded('reset after send'); });
+    await expect(w.run('w1:k', first)).rejects.toThrow('reset after send');
+    expect(first).toHaveBeenCalledWith({ takeover: false });
+    const fn = vi.fn(async (ctx: Ctx) => (ctx.takeover ? 'read back first' : 'blind write'));
+    expect(await w.run('w1:k', fn)).toEqual({ status: 'outcome_unknown' });
+    expect(fn).not.toHaveBeenCalled();
+    expect(await w.run('w1:k', fn)).toEqual({ status: 'ran', result: 'read back first' });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith({ takeover: true });
+  });
+
+  it('the run that takes over a claim left running past staleRunningSec is told takeover: true', async () => {
+    const { db, raw } = sqliteD1();
+    const old = new Date(Date.now() - 10 * 60_000).toISOString();
+    raw.prepare(`INSERT INTO app_write_keys VALUES ('w1:k', 'running', NULL, ?, ?)`).run(old, new Date(Date.now() + 3600_000).toISOString());
+    const fn = vi.fn(async (_ctx: Ctx) => 'retried');
+    const w = makeIdempotentWrite({ db, table: 'app_write_keys', staleRunningSec: 120 });
+    expect(await w.run('w1:k', fn)).toEqual({ status: 'outcome_unknown' });
+    expect(await w.run('w1:k', fn)).toEqual({ status: 'ran', result: 'retried' });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith({ takeover: true });
+  });
+
+  it('a replay runs nothing, so no takeover is reported', async () => {
+    const { db } = sqliteD1();
+    const fn = vi.fn(async (_ctx: Ctx) => 'x');
+    const w = makeIdempotentWrite({ db, table: 'app_write_keys' });
+    await w.run('w1:k', fn);
+    expect(await w.run('w1:k', fn)).toEqual({ status: 'replayed', result: 'x' });
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith({ takeover: false });
+  });
+
+  it('a write that takes no argument still runs unchanged', async () => {
+    const { db } = sqliteD1();
+    const w = makeIdempotentWrite({ db, table: 'app_write_keys' });
+    expect(await w.run('w1:k', async () => 42)).toEqual({ status: 'ran', result: 42 });
+  });
+});
