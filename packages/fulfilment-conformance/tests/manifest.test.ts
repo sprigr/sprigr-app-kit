@@ -161,6 +161,51 @@ describe('checkAdapterManifest', () => {
     expect(failed(report), formatReport(report)).toEqual([]);
   });
 
+  // variants_by_sku_prefix (order_source 1.12.0, decision 0397) is a read the
+  // hub's parent-SKU check asks; it may not be pinned before it existed.
+  const SOURCE_UNCLAIMED = [
+    'list_locations', 'register_location', 'get_order', 'accept_request', 'reject_request',
+    'mark_shipped', 'hold', 'release', 'cancel', 'split', 'set_stock_level', 'add_note',
+  ];
+  function sourceManifest(prefixOpVersion?: string): Record<string, unknown> {
+    const ops: [string, string][] = [['describe', '1.0.0']];
+    if (prefixOpVersion) ops.push(['variants_by_sku_prefix', prefixOpVersion]);
+    return {
+      metadata: { slug: 'tiny-src' },
+      tools: ops.map(([op]) => ({ name: `tiny_src_${op}`, handler: 'src/handlers/source.ts' })),
+      cross_tenant_tools: ops.map(([op, version]) => ({
+        tool_name: `tiny_src_${op}`,
+        resource_type: 'orders',
+        action: 'read',
+        description: `op ${op}`,
+        input_schema: { type: 'object', properties: {} },
+        provides: { interface: 'fulfilment-hub/order_source', op, version },
+      })),
+      events: { emits: [{ name: 'source.order.created' }, { name: 'source.request.submitted' }] },
+    };
+  }
+
+  it('accepts variants_by_sku_prefix pinned at 1.12.0 or later', () => {
+    for (const v of ['1.12.0', '1.13.4']) {
+      const report = checkAdapterManifest(sourceManifest(v), 'order_source', { allowUnclaimedOps: SOURCE_UNCLAIMED });
+      expect(failed(report), `${v}\n${formatReport(report)}`).toEqual([]);
+    }
+  });
+
+  it('fails variants_by_sku_prefix pinned before it existed', () => {
+    for (const v of ['1.11.0', '2.0.0']) {
+      expect(
+        failed(checkAdapterManifest(sourceManifest(v), 'order_source', { allowUnclaimedOps: SOURCE_UNCLAIMED })),
+        v,
+      ).toEqual(['provides.variants_by_sku_prefix.version']);
+    }
+  });
+
+  it('still passes an order source that does not claim variants_by_sku_prefix', () => {
+    const report = checkAdapterManifest(sourceManifest(), 'order_source', { allowUnclaimedOps: SOURCE_UNCLAIMED });
+    expect(failed(report), formatReport(report)).toEqual([]);
+  });
+
   it('fails a write op with no effects: write', () => {
     const m = providerManifest();
     delete (m.tools as Record<string, unknown>[])[2]!.effects;

@@ -154,6 +154,8 @@ All on the decision 0030 field types (`string | number | date | boolean`). The h
 
 **1.4.0 adds `update_address`.** An operator looking at a wrong ship-to in the hub can correct it and have the selling system corrected with it, which is what an operator connector's address edit did before the hub existed. It is a PARTIAL update: only the address fields supplied change, so correcting a street number cannot clobber a name. `address.email` is not a shipping-address field in the selling systems we target, so a source may ignore it; the hub keeps the customer email on its own record. A source that cannot implement the op answers `{ status: 'rejected', reason: 'unsupported' }` and reports `supports_address_update: false` (or omits the flag, which reads the same); a source that can, but not for this order any longer, answers `rejected` with its own reason, and the hub shows that text to the operator. Per clarification 9 the refusal must be an ACK, never a throw.
 
+**1.12.0 adds `variants_by_sku_prefix`.** The hub refuses an inbound PO line for a parent (colour-level) code, and its own order and stock history only knows sizes it has sold or stocked; this op lets it ask the selling system for the rest (decision 0397 in sprigr-team). Per prefix the source returns the variants whose SKU starts with it, matched case-insensitively as selling systems search, at most 100, with `truncated: true` when there were more. The source matches by plain prefix and the hub decides which codes are sizes. A prefix the source could not read (a failed call, a time budget spent) is left out of `results`, never answered with an empty list: the hub reads a missing prefix as unchecked and refuses the send, where an empty list would wave a parent code through. It is optional (`optionalSince: '1.12.0'`) with no capability flag and no events: the hub calls it only on a binding that claims the op, and a 1.11.0 source keeps the history-only check.
+
 `consumers: any`. Every op takes and returns JSON objects; `input_schema` / `output_schema` in the manifest are the source of truth for shapes.
 
 | op | effects | input | output |
@@ -172,6 +174,7 @@ All on the decision 0030 field types (`string | number | date | boolean`). The h
 | `set_stock_level` | write | `{ source_location_ref, sku, on_hand }` | `{ status, reason? }` |
 | `add_note` | write | `{ source_ref, note, tags?: string[] }` | `{ status }` |
 | `update_address` | write | `{ source_ref, ship_to: address, reason? }` | `{ status, reason? }` (1.4.0; PARTIAL update, only supplied fields change) |
+| `variants_by_sku_prefix` | read | `{ prefixes: string[] }` (1 to 50, each at least 3 characters) | `{ results: [{ prefix, variants: [{ sku, title?, barcode? }], truncated? }] }` (1.12.0, optional; at most 100 variants per prefix; no events) |
 
 Events (the adapter emits; the hub subscribes):
 
